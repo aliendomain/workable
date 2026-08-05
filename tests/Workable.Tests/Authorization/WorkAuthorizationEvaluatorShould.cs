@@ -79,6 +79,60 @@ public sealed class WorkAuthorizationEvaluatorShould
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RequireDiagnosticsWhenAuthorizedOperationsExplicitlySelectFullProfileCapture(
+        bool canViewDiagnostics)
+    {
+        var work = CreatePermissionedWork(
+            "profiled.work",
+            "operators",
+            WorkOperationPermissions.Queue | WorkOperationPermissions.ReconfigureDefinition);
+        var catalog = CreateCatalog(work);
+        var groups = canViewDiagnostics
+            ? Groups("operators", "diagnostics")
+            : Groups("operators");
+        var systemAuthorization = new WorkSystemAuthorizationEvaluator(
+            WorkSystemAuthorizationConfiguration.Default with
+            {
+                DiagnosticsGroups = Groups("diagnostics"),
+            },
+            groups);
+        var evaluator = new WorkAuthorizationEvaluator(
+            catalog,
+            groups,
+            isKnownAuthenticatedUser: true,
+            systemAuthorization);
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("profile-operator"));
+        var fullCapture = WorkerOptions.Default with
+        {
+            ProfilingEnabled = true,
+            ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+        };
+
+        var queue = evaluator.AuthorizeQueue(
+            work,
+            input: null,
+            fullCapture,
+            requestContext);
+        var reconfigure = evaluator.AuthorizeDefinitionReconfiguration(
+            work,
+            new WorkDefinitionReconfiguration(DefaultOptions: fullCapture),
+            requestContext);
+        var boundedQueue = evaluator.AuthorizeQueue(
+            work,
+            input: null,
+            WorkerOptions.Default with { ProfilingCaptureMode = WorkProfileCaptureMode.Bounded },
+            requestContext);
+
+        Assert.Equal(canViewDiagnostics, queue.IsAllowed);
+        Assert.Equal(canViewDiagnostics, reconfigure.IsAllowed);
+        Assert.True(boundedQueue.IsAllowed);
+    }
+
+    [Theory]
     [InlineData(WorkAction.Start, WorkOperationPermissions.Start)]
     [InlineData(WorkAction.Pause, WorkOperationPermissions.Pause)]
     [InlineData(WorkAction.Cancel, WorkOperationPermissions.Cancel)]

@@ -9,14 +9,19 @@ internal sealed class WorkerExecutionInvoker(
     IWorkerPersistenceCoordinator persistence,
     WorkerEventPublisher workerEvents,
     Action<WorkerRecord, WorkIdentifier> identifierDiscovered,
-    WorkInitializationExecutor initialization)
+    WorkInitializationExecutor initialization,
+    WorkSystemProfilingConfiguration? profilingConfiguration = null)
 {
     public async Task<WorkerExecutionInvocationResult> Execute(WorkerRecord worker, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         var activeProfile = worker.Options.ProfilingEnabled
-            ? new WorkProfile($"Worker {worker.Id.Value} {worker.Work.Definition.Name}")
+            ? new WorkProfile(
+                $"Worker {worker.Id.Value} {worker.Work.Definition.Name}",
+                (profilingConfiguration ?? WorkSystemProfilingConfiguration.Default)
+                    .MaximumAutomaticInstrumentationNodes,
+                worker.Options.ProfilingCaptureMode)
             : null;
         using var profileContext = WorkProfilerContext.Begin(workSystemId, activeProfile);
         using var logCapture = WorkableLogCaptureContext.Begin(worker, workerEvents);

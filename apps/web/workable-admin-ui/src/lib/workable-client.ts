@@ -14,6 +14,13 @@ export class WorkableApiError extends Error {
   }
 }
 
+export class WorkableRealtimeAuthenticationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkableRealtimeAuthenticationError";
+  }
+}
+
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
 const inFlightQueryRequests = new Map<string, Promise<unknown>>();
 const realtimeAccessTokenCache = new Map<string, {
@@ -21,8 +28,10 @@ const realtimeAccessTokenCache = new Map<string, {
   expiresAt: number;
 }>();
 const inFlightRealtimeAccessTokenRequests = new Map<string, Promise<string | undefined>>();
-const realtimeAccessTokenTtlMs = 55 * 60 * 1000;
+const realtimeAccessTokenForceRefresh = new Set<string>();
+const realtimeAccessTokenFallbackTtlMs = 5 * 60 * 1000;
 const realtimeMissingAccessTokenTtlMs = 5 * 60 * 1000;
+const realtimeAccessTokenRefreshSkewMs = 60 * 1000;
 let loginRedirectInFlight = false;
 const adminUiAuthRequiredError = "Authentication is required for the Workable admin UI.";
 
@@ -183,7 +192,8 @@ export function createWorkableRealtimeUrl(connection: WorkableConnection) {
 export async function getWorkableRealtimeAccessToken(apiUrl: string) {
   const cached = realtimeAccessTokenCache.get(apiUrl);
   const now = Date.now();
-  if (cached && cached.expiresAt > now + 30_000) {
+  const forceRefresh = realtimeAccessTokenForceRefresh.has(apiUrl);
+  if (!forceRefresh && cached && cached.expiresAt > now + realtimeAccessTokenRefreshSkewMs) {
     return cached.accessToken;
   }
 
@@ -193,15 +203,19 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
   }
 
   const request = (async () => {
+    const query = new URLSearchParams({ apiUrl });
     const response = await fetch(
-      `/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
+      `/api/auth/entra/workable-token?${query.toString()}`,
       {
         cache: "no-store",
         credentials: "same-origin",
+        headers: forceRefresh
+          ? { "x-workable-force-token-refresh": "true" }
+          : undefined,
       }
     );
     const body = await response.json().catch(() => ({}));
-    if (shouldRedirectToLogin(response.status, body)) {
+    if (response.status === 401) {
       redirectToLogin(apiUrl, "unauthorized");
     }
 
@@ -209,8 +223,13 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
       const message = typeof body?.error === "string" && body.error.trim()
         ? body.error
         : "Unable to acquire a hosted Workable API access token.";
+      if (response.status === 401) {
+        throw new WorkableRealtimeAuthenticationError(message);
+      }
       throw new Error(message);
     }
+
+    realtimeAccessTokenForceRefresh.delete(apiUrl);
 
     const accessToken = typeof body?.accessToken === "string" ? body.accessToken.trim() : "";
     if (!accessToken) {
@@ -223,7 +242,7 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
 
     realtimeAccessTokenCache.set(apiUrl, {
       accessToken,
-      expiresAt: now + realtimeAccessTokenTtlMs,
+      expiresAt: getRealtimeAccessTokenExpiration(body, now),
     });
     return accessToken;
   })();
@@ -234,6 +253,33 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
     () => inFlightRealtimeAccessTokenRequests.delete(apiUrl)
   );
   return request;
+}
+
+export function invalidateWorkableRealtimeAccessToken(
+  apiUrl: string,
+  forceRefresh = false
+) {
+  realtimeAccessTokenCache.delete(apiUrl);
+  if (forceRefresh) {
+    realtimeAccessTokenForceRefresh.add(apiUrl);
+  }
+}
+
+export function isWorkableRealtimeAuthenticationError(
+  error: unknown
+): error is WorkableRealtimeAuthenticationError {
+  return error instanceof WorkableRealtimeAuthenticationError;
+}
+
+function getRealtimeAccessTokenExpiration(body: unknown, now: number) {
+  if (body && typeof body === "object" && "accessTokenExpiresInSeconds" in body) {
+    const expiresInSeconds = Number(body.accessTokenExpiresInSeconds);
+    if (Number.isFinite(expiresInSeconds) && expiresInSeconds > 0) {
+      return now + expiresInSeconds * 1000;
+    }
+  }
+
+  return now + realtimeAccessTokenFallbackTtlMs;
 }
 
 function redirectToLogin(error?: string, reason?: "unauthorized") {

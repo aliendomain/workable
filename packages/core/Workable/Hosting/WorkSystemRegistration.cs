@@ -20,4 +20,5 @@ internal sealed record WorkSystemRegistration(
     bool StartWithHost,
     WorkSystemShutdownGracePeriod ShutdownGracePeriod,
     WorkSystemRetentionConfiguration Retention,
-    WorkSystemCapacityConfiguration Capacity);
+    WorkSystemCapacityConfiguration Capacity,
+    WorkSystemProfilingConfiguration Profiling);

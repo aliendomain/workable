@@ -46,6 +46,7 @@ internal sealed class WorkSystemSessionFactory(
             ?? groupProvider.GetGroups(requestContext.Actor, systemName)
             ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, groups);
+        var canViewDiagnostics = systemAuthorization.CanViewDiagnostics();
         var authorization = new WorkAuthorizationEvaluator(
             catalog,
             groups,
@@ -68,14 +69,14 @@ internal sealed class WorkSystemSessionFactory(
             systemName,
             capabilities,
             getSystemState,
-            systemAuthorization.CanViewDiagnostics()
+            canViewDiagnostics
                 ? sessionDiagnostics
                 : new UnauthorizedWorkSystemDiagnostics(systemId, systemName),
             new AuthorizedWorkCatalog(catalog, sessionCatalog, authorization, requestContext),
-            new AuthorizedWorkQueueService(catalog, sessionQueue, authorization, requestContext),
-            new AuthorizedWorkerOperations(catalog, sessionWorkers, sessionQuery, authorization, requestContext),
-            new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization),
+            new AuthorizedWorkQueueService(catalog, sessionQueue, authorization, requestContext, canViewDiagnostics),
+            new AuthorizedWorkerOperations(catalog, sessionWorkers, sessionQuery, authorization, requestContext, canViewDiagnostics),
+            new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization, canViewDiagnostics),
             new AuthorizedWorkEventStream(sessionEvents, readableDefinitionNames),
-            new AuthorizedWorkChangeStream(sessionChanges, authorization, systemAuthorization.CanViewDiagnostics()));
+            new AuthorizedWorkChangeStream(sessionChanges, authorization, canViewDiagnostics));
     }
 }

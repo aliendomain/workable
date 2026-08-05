@@ -66,6 +66,7 @@ function system(overrides: Partial<WorkableSystemConnection>): WorkableSystemCon
     id: "system-1",
     name: "Default",
     capabilities: {
+      httpClientProfilingAvailable: false,
       persistentCoordinationAvailable: false,
       sqlProfilingAvailable: false,
     },
@@ -99,7 +100,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
     systems: [
       {
         access,
-        capabilities: { persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
+        capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
         id: { value: "server-default" },
         isDefault: true,
         name: null,
@@ -107,7 +108,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
       },
       {
         access,
-        capabilities: { persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
+        capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
         id: { value: "server-ops" },
         isDefault: false,
         name: "Ops",
@@ -134,6 +135,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
         id: "default-existing",
         name: "Default",
         capabilities: {
+          httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: true,
           sqlProfilingAvailable: false,
         },
@@ -144,6 +146,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
         id: "ops-existing",
         name: "Ops",
         capabilities: {
+          httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: false,
           sqlProfilingAvailable: false,
         },
@@ -465,6 +468,7 @@ test("server dialog edit mode refreshes discovery, preserves matched systems, an
         id: "ops-existing",
         name: "Ops",
         capabilities: {
+          httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: false,
           sqlProfilingAvailable: false,
         },
@@ -476,6 +480,7 @@ test("server dialog edit mode refreshes discovery, preserves matched systems, an
         id: "missing-existing",
         name: "Missing",
         capabilities: {
+          httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: false,
           sqlProfilingAvailable: false,
         },
@@ -648,7 +653,7 @@ test("navigation system helpers cover access badges, names, lifecycle, and state
 
   const defaultSystem: WorkableHttpSystemDescriptor = {
     access,
-    capabilities: { persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
+    capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
     id: { value: "server-default" },
     isDefault: true,
     name: null,
@@ -716,7 +721,7 @@ function discoveredHost(options?: {
     systems: options?.systems ?? [
       {
         access,
-        capabilities: { persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
+        capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: true, sqlProfilingAvailable: false },
         id: { value: "default-server-id" },
         isDefault: true,
         name: null,
@@ -724,7 +729,7 @@ function discoveredHost(options?: {
       },
       {
         access,
-        capabilities: { persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
+        capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
         id: { value: "ops-server-id" },
         isDefault: false,
         name: "Ops",
@@ -740,7 +745,7 @@ function discoveredSystem(
   const name = overrides.name ?? "Ops";
   return {
     access,
-    capabilities: { persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
+    capabilities: { httpClientProfilingAvailable: false, persistentCoordinationAvailable: false, sqlProfilingAvailable: false },
     id: { value: `${name ?? "default"}-server-id` },
     isDefault: name === null,
     name,

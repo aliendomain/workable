@@ -194,6 +194,68 @@ test("shared view pool publishes connection state changes to listeners", async (
   assert.ok(states.includes("reconnecting"));
 });
 
+test("shared view pool forces one fresh token after a realtime authentication failure", async () => {
+  const connection = new FakeHubConnection();
+  connection.startErrors.push(
+    new Error("Failed to complete negotiation: Status code '401'")
+  );
+  const invalidations: Array<{ apiUrl: string; forceRefresh?: boolean }> = [];
+  const pool = createConsoleRealtimeSharedViewPool({
+    createConnection: () => connection as unknown as HubConnection,
+    invalidateAccessToken: (apiUrl, forceRefresh) => {
+      invalidations.push({ apiUrl, forceRefresh });
+    },
+    restartDelayMs: 0,
+    stopDelayMs: 0,
+  });
+  const lease = acquire(pool);
+
+  lease.ensureStarted();
+  await wait(10);
+
+  assert.equal(connection.startCount, 2);
+  assert.equal(lease.getSnapshot().connectionState, "connected");
+  assert.deepEqual(invalidations, [
+    {
+      apiUrl: "https://workable.example.com/workable",
+      forceRefresh: true,
+    },
+  ]);
+
+  lease.release();
+});
+
+test("shared view pool stops retrying after a fresh token is also rejected", async () => {
+  const connection = new FakeHubConnection();
+  connection.startErrors.push(
+    new Error("Failed to complete negotiation: Status code '401'"),
+    new Error("Failed to complete negotiation: Status code '401'")
+  );
+  const invalidations: string[] = [];
+  const pool = createConsoleRealtimeSharedViewPool({
+    createConnection: () => connection as unknown as HubConnection,
+    invalidateAccessToken: (apiUrl) => {
+      invalidations.push(apiUrl);
+    },
+    restartDelayMs: 0,
+    stopDelayMs: 0,
+  });
+  const lease = acquire(pool);
+
+  lease.ensureStarted();
+  await wait(10);
+  const startsAfterRejectedRefresh = connection.startCount;
+  await wait(10);
+
+  assert.equal(startsAfterRejectedRefresh, 2);
+  assert.equal(connection.startCount, 2);
+  assert.equal(lease.getSnapshot().connectionState, "disconnected");
+  assert.match(lease.getSnapshot().error ?? "", /401/);
+  assert.deepEqual(invalidations, ["https://workable.example.com/workable"]);
+
+  lease.release();
+});
+
 function acquire(pool: ReturnType<typeof createConsoleRealtimeSharedViewPool>): ConsoleRealtimeSharedViewConnectionLease {
   return pool.acquire({
     apiUrl: "https://workable.example.com/workable",
@@ -216,6 +278,7 @@ class FakeHubConnection {
   public readonly invokes: Array<{ args: unknown[]; method: string }> = [];
   public readonly offRegistrations = new Map<string, number>();
   public readonly onRegistrations = new Map<string, number>();
+  public readonly startErrors: Error[] = [];
   public startCount = 0;
   public stopCount = 0;
 
@@ -262,6 +325,12 @@ class FakeHubConnection {
 
   public start() {
     this.startCount += 1;
+    const error = this.startErrors.shift();
+    if (error) {
+      this.state = HubConnectionState.Disconnected;
+      return Promise.reject(error);
+    }
+
     this.state = HubConnectionState.Connected;
     return Promise.resolve();
   }

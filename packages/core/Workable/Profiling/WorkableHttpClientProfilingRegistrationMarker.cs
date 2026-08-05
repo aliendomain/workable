@@ -1,0 +1,3 @@
+namespace Workable;
+
+internal sealed class WorkableHttpClientProfilingRegistrationMarker;

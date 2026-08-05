@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   WorkableApiError,
+  WorkableRealtimeAuthenticationError,
   getWorkableRealtimeAccessToken,
+  invalidateWorkableRealtimeAccessToken,
   workableFetch,
   workableQueryFetch,
   type WorkableConnection,
@@ -109,7 +111,10 @@ test("getWorkableRealtimeAccessToken fetches, caches, and reuses hosted API toke
   const calls: string[] = [];
   const restoreFetch = mockFetch(async (input) => {
     calls.push(String(input));
-    return jsonResponse({ accessToken: "token-123" });
+    return jsonResponse({
+      accessToken: "token-123",
+      accessTokenExpiresInSeconds: 3600,
+    });
   });
 
   try {
@@ -126,6 +131,69 @@ test("getWorkableRealtimeAccessToken fetches, caches, and reuses hosted API toke
   }
 });
 
+test("getWorkableRealtimeAccessToken renews according to the token's actual expiration", async () => {
+  const apiUrl = "https://token-expiration.example.com/workable";
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  const calls: string[] = [];
+  Date.now = () => now;
+  const restoreFetch = mockFetch(async (input) => {
+    calls.push(String(input));
+    return jsonResponse({
+      accessToken: calls.length === 1 ? "nearly-expired-token" : "renewed-token",
+      accessTokenExpiresInSeconds: calls.length === 1 ? 120 : 3600,
+    });
+  });
+
+  try {
+    assert.equal(await getWorkableRealtimeAccessToken(apiUrl), "nearly-expired-token");
+    assert.equal(await getWorkableRealtimeAccessToken(apiUrl), "nearly-expired-token");
+
+    now += 61_000;
+
+    assert.equal(await getWorkableRealtimeAccessToken(apiUrl), "renewed-token");
+    assert.equal(calls.length, 2);
+  } finally {
+    restoreFetch();
+    Date.now = originalNow;
+  }
+});
+
+test("getWorkableRealtimeAccessToken can force a server-side refresh after a realtime 401", async () => {
+  const apiUrl = "https://token-force-refresh.example.com/workable";
+  const calls: Array<{ forceRefresh: string | null; input: string }> = [];
+  const restoreFetch = mockFetch(async (input, init) => {
+    calls.push({
+      forceRefresh: new Headers(init?.headers).get("x-workable-force-token-refresh"),
+      input: String(input),
+    });
+    return jsonResponse({
+      accessToken: calls.length === 1 ? "rejected-token" : "replacement-token",
+      accessTokenExpiresInSeconds: 3600,
+    });
+  });
+
+  try {
+    assert.equal(await getWorkableRealtimeAccessToken(apiUrl), "rejected-token");
+
+    invalidateWorkableRealtimeAccessToken(apiUrl, true);
+
+    assert.equal(await getWorkableRealtimeAccessToken(apiUrl), "replacement-token");
+    assert.deepEqual(calls, [
+      {
+        forceRefresh: null,
+        input: "/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Ftoken-force-refresh.example.com%2Fworkable",
+      },
+      {
+        forceRefresh: "true",
+        input: "/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Ftoken-force-refresh.example.com%2Fworkable",
+      },
+    ]);
+  } finally {
+    restoreFetch();
+  }
+});
+
 test("getWorkableRealtimeAccessToken throws the server error message when token acquisition fails", async () => {
   const apiUrl = "https://token-error.example.com/workable";
   const restoreFetch = mockFetch(async () =>
@@ -136,6 +204,29 @@ test("getWorkableRealtimeAccessToken throws the server error message when token 
     await assert.rejects(
       getWorkableRealtimeAccessToken(apiUrl),
       /Hosted token exchange failed\./
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("getWorkableRealtimeAccessToken classifies interactive sign-in requirements", async () => {
+  const apiUrl = "https://token-sign-in.example.com/workable";
+  const restoreFetch = mockFetch(async () =>
+    jsonResponse(
+      { error: "Microsoft Entra ID access has expired. Sign in again." },
+      { status: 401 }
+    )
+  );
+
+  try {
+    await assert.rejects(
+      getWorkableRealtimeAccessToken(apiUrl),
+      (error) => {
+        assert.equal(error instanceof WorkableRealtimeAuthenticationError, true);
+        assert.match((error as Error).message, /Sign in again/);
+        return true;
+      }
     );
   } finally {
     restoreFetch();

@@ -67,8 +67,8 @@ internal static class SampleFakeAuth
         new(
             "system-admin",
             "System Admin",
-            "System administrator across both systems. This user should be able to inspect diagnostics, control systems, and operate work everywhere.",
-            "Discovery should show both systems and all system-level features should be available.",
+            "System administrator across both systems. This user can inspect diagnostics, control systems, and read all work, but intentionally cannot operate or queue work.",
+            "Discovery should show both systems and all system-level features, while queue and worker operations remain unavailable.",
             IsAuthenticated: true,
             Groups:
             [
@@ -88,10 +88,15 @@ internal static class SampleFakeAuth
         new(
             "work-admin",
             "Work Admin",
-            "Work administrator across both systems, but without diagnostics or system control permissions.",
-            "Discovery should show both systems. Work should be fully visible and operable, but diagnostics and lifecycle control should still be denied.",
+            "Work administrator across both systems with diagnostics access, but without system control permissions.",
+            "Discovery should show both systems. Work should be fully visible and operable and diagnostics should be available, while lifecycle control remains denied.",
             IsAuthenticated: true,
-            Groups: [WorkAdministratorGroup]),
+            Groups:
+            [
+                WorkAdministratorGroup,
+                OperationsDiagnosticsGroup,
+                FulfillmentDiagnosticsGroup,
+            ]),
         new(
             "custom",
             "Custom Rights",

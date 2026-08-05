@@ -93,7 +93,8 @@ public sealed record WorkerSnapshot(
     public IReadOnlyList<WorkerActionHistoryEntry> ActionHistory { get; init; } = [];
 
     /// <summary>
-    /// Gets the latest retained execution profile for the worker, when profiling was enabled.
+    /// Gets the latest retained execution profile for the worker, when profiling was enabled and the
+    /// authorized session has diagnostics permission.
     /// </summary>
     public WorkProfileSnapshot? Profile { get; init; }
 

@@ -4,9 +4,10 @@ internal sealed class AuthorizedWorkQueueService(
     WorkSystemCatalog catalog,
     IWorkQueueService inner,
     WorkAuthorizationEvaluator authorization,
-    WorkRequestContext requestContext) : IWorkQueueService
+    WorkRequestContext requestContext,
+    bool canViewDiagnostics) : IWorkQueueService
 {
-    public Task<IWorkerHandle> Enqueue(
+    public async Task<IWorkerHandle> Enqueue(
         string name,
         WorkInput? input = null,
         WorkerOptions? options = null,
@@ -20,7 +21,8 @@ internal sealed class AuthorizedWorkQueueService(
         var decision = authorization.AuthorizeQueue(registeredWork, input, options, requestContext);
         if (decision.IsAllowed)
         {
-            return inner.Enqueue(name, input, options, cancellationToken);
+            var handle = await inner.Enqueue(name, input, options, cancellationToken);
+            return canViewDiagnostics ? handle : new ProfileFilteredWorkerHandle(handle);
         }
 
         return decision.IsInvalid
@@ -28,7 +30,7 @@ internal sealed class AuthorizedWorkQueueService(
             : Rejected(name);
     }
 
-    public Task<IWorkerHandle> Enqueue<TInput>(
+    public async Task<IWorkerHandle> Enqueue<TInput>(
         string name,
         TInput input,
         WorkerOptions? options = null,
@@ -43,7 +45,8 @@ internal sealed class AuthorizedWorkQueueService(
         var decision = authorization.AuthorizeQueue(registeredWork, workInput, options, requestContext);
         if (decision.IsAllowed)
         {
-            return inner.Enqueue(name, workInput, options, cancellationToken);
+            var handle = await inner.Enqueue(name, workInput, options, cancellationToken);
+            return canViewDiagnostics ? handle : new ProfileFilteredWorkerHandle(handle);
         }
 
         return decision.IsInvalid
@@ -51,14 +54,14 @@ internal sealed class AuthorizedWorkQueueService(
             : Rejected(name);
     }
 
-    private static Task<IWorkerHandle> Rejected(string name)
-        => Task.FromResult<IWorkerHandle>(WorkerHandle.Rejected(WorkQueueOutcome.Unauthorized(name)));
+    private static IWorkerHandle Rejected(string name)
+        => WorkerHandle.Rejected(WorkQueueOutcome.Unauthorized(name));
 
-    private static Task<IWorkerHandle> Invalid(IReadOnlyList<WorkMessage> messages)
-        => Task.FromResult<IWorkerHandle>(WorkerHandle.Rejected(WorkQueueOutcome.Invalid(messages)));
+    private static IWorkerHandle Invalid(IReadOnlyList<WorkMessage> messages)
+        => WorkerHandle.Rejected(WorkQueueOutcome.Invalid(messages));
 
-    private static Task<IWorkerHandle> NotFound(string name)
-        => Task.FromResult<IWorkerHandle>(WorkerHandle.Rejected(WorkQueueOutcome.NotFound(name)));
+    private static IWorkerHandle NotFound(string name)
+        => WorkerHandle.Rejected(WorkQueueOutcome.NotFound(name));
 
     private static WorkInput? ToWorkInput<TInput>(TInput input)
         => input switch
@@ -67,4 +70,23 @@ internal sealed class AuthorizedWorkQueueService(
             WorkInput workInput => workInput,
             _ => WorkInput.FromValue(input, WorkData.DefaultJsonOptions),
         };
+
+    private sealed class ProfileFilteredWorkerHandle(IWorkerHandle inner) : IWorkerHandle
+    {
+        public WorkQueueOutcome QueueOutcome => inner.QueueOutcome;
+
+        public WorkerId? WorkerId => inner.WorkerId;
+
+        public async Task<WorkCompletion> WaitForCompletion(
+            CancellationToken cancellationToken = default)
+            => WorkProfileAccessFilter.Apply(
+                await inner.WaitForCompletion(cancellationToken),
+                canViewDiagnostics: false);
+
+        public async Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(
+            CancellationToken cancellationToken = default)
+            => WorkProfileAccessFilter.Apply(
+                await inner.WaitForCompletion<TOutput>(cancellationToken),
+                canViewDiagnostics: false);
+    }
 }

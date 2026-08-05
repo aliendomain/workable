@@ -63,6 +63,7 @@ type EntraTargetTokenBinding = {
 type EntraTargetAccessTokenSuccess = {
   ok: true;
   accessToken?: string;
+  accessTokenExpiresAt?: number;
   setCookieHeaders: string[];
 };
 
@@ -71,6 +72,7 @@ type EntraTargetAccessTokenFailure = AdminSecurityFailure & {
 };
 
 type EntraTargetAccessTokenOptions = {
+  forceRefresh?: boolean;
   requestedApiUrl?: URL | null;
 };
 
@@ -198,10 +200,11 @@ export async function getEntraTargetAccessToken(
   }
 
   const existing = stored.bindings[binding.key];
-  if (existing && !isExpired(existing.accessTokenExpiresAt)) {
+  if (existing && !options.forceRefresh && !isExpired(existing.accessTokenExpiresAt)) {
     return {
       ok: true,
       accessToken: existing.accessToken,
+      accessTokenExpiresAt: existing.accessTokenExpiresAt,
       setCookieHeaders: [],
     };
   }
@@ -223,13 +226,14 @@ export async function getEntraTargetAccessToken(
       settings,
       fetcher
     );
+    const accessTokenExpiresAt = Math.floor(Date.now() / 1000) + (refreshed.expires_in ?? 0);
     const nextState: StoredEntraTargetTokenState = {
       refreshToken: refreshed.refresh_token ?? stored.refreshToken,
       bindings: {
         ...stored.bindings,
         [binding.key]: {
           accessToken: refreshed.access_token ?? "",
-          accessTokenExpiresAt: Math.floor(Date.now() / 1000) + (refreshed.expires_in ?? 0),
+          accessTokenExpiresAt,
           apiUrl: binding.apiUrl,
           scope: binding.scope,
           tokenType: refreshed.token_type ?? existing?.tokenType ?? "Bearer",
@@ -240,6 +244,7 @@ export async function getEntraTargetAccessToken(
     return {
       ok: true,
       accessToken: nextState.bindings[binding.key]?.accessToken,
+      accessTokenExpiresAt,
       setCookieHeaders: serializeStateCookie(nextState, request, settings),
     };
   } catch {
@@ -258,7 +263,9 @@ export async function createEntraTargetAccessTokenResponse(
   env: AdminSecurityEnvironment = process.env,
   fetcher: FetchLike = fetch
 ) {
-  const token = await getEntraTargetAccessToken(request, env, fetcher);
+  const token = await getEntraTargetAccessToken(request, env, fetcher, {
+    forceRefresh: request.headers.get("x-workable-force-token-refresh") === "true",
+  });
   if (!token.ok) {
     return Response.json(
       { error: token.error },
@@ -279,7 +286,12 @@ export async function createEntraTargetAccessTokenResponse(
   }
 
   return Response.json(
-    { accessToken: token.accessToken },
+    {
+      accessToken: token.accessToken,
+      accessTokenExpiresInSeconds: token.accessTokenExpiresAt === undefined
+        ? null
+        : Math.max(0, token.accessTokenExpiresAt - Math.floor(Date.now() / 1000)),
+    },
     {
       headers: withCookies(noStoreHeaders, token.setCookieHeaders),
     }

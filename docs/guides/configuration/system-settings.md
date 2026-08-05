@@ -10,6 +10,20 @@ System settings control the main startup-only limits that apply across the whole
 | --- | --- | --- |
 | `MaximumWorkers` | `1_000_000` | Approximate non-final worker record limit for the system. When the system is at or above this count, new queue requests are rejected with `workable.system.capacity_reached`. Must be greater than zero. |
 
+## Profiling Limit
+
+Automatic SQL, HTTP, and extension instrumentation shares a hard per-profile node limit. Explicit application nodes created through `IWorkProfiler` are not counted against it.
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `WorkSystemProfilingConfiguration.MaximumAutomaticInstrumentationNodes` | `500` | Maximum automatic instrumentation nodes admitted to one worker-iteration profile. Must be greater than zero. Temporary full-capture rules can intentionally bypass this limit for selected workers. |
+
+The limit is shared across SQL client, HTTP client, and custom automatic instrumentation; it is not a separate allowance for each source. Admission, including HTTP sampling, is atomic under concurrent bursts. When the limit is reached, one truncation summary reports omitted counts by source; it retains at most 32 source keys of up to 128 characters and aggregates additional custom keys under `other`. Built-in instrumentation avoids constructing context for rejected nodes, and HTTP capture stops requesting full activity data for subsequent requests in that bounded profile. Explicit `IWorkProfiler` nodes are outside this budget.
+
+The node limit is not a byte limit, so each integration must also bound its retained context. Built-in HTTP capture limits text fields and excludes headers, bodies, URI query contents, URI user information, and exception messages. Built-in SQL capture bounds statements, parameter previews, metadata, and exception messages; see [Work Profiling](../../concepts/profiling.md#automatic-sql-client-timing) for the exact limits.
+
+A temporary `Full` capture rule bypasses this node-count limit only. It does not bypass queue authorization, security redaction, or retention. See [Work Profiling](../../concepts/profiling.md#temporary-full-capture) for the API and admin UI workflow.
+
 ## System Final Worker Cap
 
 Workable also has a separate system-wide retained final-worker cap. This is not admission capacity for non-final workers, but it is the other main system-level limit that affects how much worker history the system keeps.
@@ -41,6 +55,7 @@ services.AddWorkableSystem(builder =>
 {
     builder.ConfigureCapacity(maximumWorkers: 1_000_000);
     builder.ConfigureRetention(maximumFinalWorkers: 10_000);
+    builder.ConfigureProfiling(maximumAutomaticInstrumentationNodes: 500);
     builder.UseShutdownGracePeriodRatio(0.8);
 
     builder.AddWork<RefreshCacheWork>(

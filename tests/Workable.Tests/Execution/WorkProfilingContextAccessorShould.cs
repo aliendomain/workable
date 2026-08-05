@@ -23,4 +23,20 @@ public sealed class WorkProfilingContextAccessorShould
 
         Assert.False(accessor.TryGetCurrent(out _));
     }
+
+    [Fact]
+    public void AutomaticContributionMethodsRemainCompatibleWithPlainProfilers()
+    {
+        var context = new WorkProfilingContext(WorkSystemId.New(), NoOpWorkProfiler.Instance);
+
+        Assert.True(context.TryAddAutomaticInfo("custom.client", "Custom info"));
+        Assert.True(context.TryStartAutomaticTiming(
+            "custom.client",
+            "Custom timing",
+            context: null,
+            out var scope));
+
+        Assert.NotNull(scope);
+        scope.Dispose();
+    }
 }

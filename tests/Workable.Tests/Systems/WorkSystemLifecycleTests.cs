@@ -99,6 +99,14 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public void SystemProfilingDefaultsMatchConfiguredValues()
+    {
+        var profiling = WorkSystemProfilingConfiguration.Default;
+
+        Assert.Equal(500, profiling.MaximumAutomaticInstrumentationNodes);
+    }
+
+    [Fact]
     public void SystemRetentionRejectsInvalidMaximumFinalWorkers()
     {
         var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
@@ -114,6 +122,33 @@ public sealed class WorkSystemLifecycleTests
             .AddWorkableSystem(builder => builder.ConfigureCapacity(maximumWorkers: 0)));
 
         Assert.Contains("maximum workers", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemProfilingRejectsInvalidAutomaticInstrumentationLimit()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.ConfigureProfiling(maximumAutomaticInstrumentationNodes: 0)));
+
+        Assert.Contains("automatic instrumentation nodes", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemProfilingUsesConfiguredAutomaticInstrumentationLimit()
+    {
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseProfiling(new WorkSystemProfilingConfiguration
+            {
+                MaximumAutomaticInstrumentationNodes = 17,
+            }))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        Assert.Equal(
+            17,
+            Assert.IsAssignableFrom<IWorkProfileCaptureRuleSystem>(system)
+                .ProfilingConfiguration.MaximumAutomaticInstrumentationNodes);
     }
 
     [Fact]

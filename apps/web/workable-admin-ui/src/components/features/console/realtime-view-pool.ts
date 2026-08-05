@@ -1,7 +1,12 @@
 "use client";
 
 import { HubConnectionBuilder, HubConnectionState, LogLevel, type HubConnection, type IHttpConnectionOptions } from "@microsoft/signalr";
-import { createWorkableRealtimeUrl, getWorkableRealtimeAccessToken } from "../../../lib/workable.ts";
+import {
+  createWorkableRealtimeUrl,
+  getWorkableRealtimeAccessToken,
+  invalidateWorkableRealtimeAccessToken,
+  isWorkableRealtimeAuthenticationError,
+} from "../../../lib/workable.ts";
 
 export const consoleRealtimeAutomaticReconnectDelaysMs = [0, 2000, 10000, 30000] as const;
 export const consoleRealtimeFallbackRestartDelayMs = 5000;
@@ -47,6 +52,7 @@ type SharedConnectionStateListener = (snapshot: SharedConnectionSnapshot) => voi
 
 type SharedConnectionEntry = {
   apiUrl: string;
+  authenticationRefreshAttempted: boolean;
   connectionKey: string;
   consumerCount: number;
   createConnection: SharedConnectionFactory;
@@ -63,9 +69,13 @@ type SharedConnectionEntry = {
 
 export function createConsoleRealtimeSharedViewPool({
   createConnection = createConsoleRealtimeHubConnection,
+  invalidateAccessToken = invalidateWorkableRealtimeAccessToken,
+  restartDelayMs = consoleRealtimeFallbackRestartDelayMs,
   stopDelayMs = consoleRealtimeSharedConnectionReleaseDelayMs,
 }: {
   createConnection?: SharedConnectionFactory;
+  invalidateAccessToken?: (apiUrl: string, forceRefresh?: boolean) => void;
+  restartDelayMs?: number;
   stopDelayMs?: number;
 } = {}): ConsoleRealtimeSharedViewConnectionPool {
   const entries = new Map<string, SharedConnectionEntry>();
@@ -84,32 +94,27 @@ export function createConsoleRealtimeSharedViewPool({
 
   const scheduleRestart = (entry: SharedConnectionEntry, error: unknown) => {
     if (entry.retryTimer || entry.consumerCount <= 0) {
-      setEntryState(entry, "disconnected", error);
+      updateEntrySnapshot(entry, "disconnected", error);
       return;
     }
 
-    setEntryState(entry, "disconnected", error);
+    if (isConsoleRealtimeAuthenticationError(error)) {
+      if (entry.authenticationRefreshAttempted) {
+        updateEntrySnapshot(entry, "disconnected", error);
+        return;
+      }
+
+      entry.authenticationRefreshAttempted = true;
+      invalidateAccessToken(entry.apiUrl, true);
+    }
+
+    updateEntrySnapshot(entry, "disconnected", error);
     entry.retryTimer = setTimeout(() => {
       entry.retryTimer = null;
       if (entry.consumerCount > 0 && entry.hubConnection.state === HubConnectionState.Disconnected) {
         startEntry(entry);
       }
-    }, consoleRealtimeFallbackRestartDelayMs);
-  };
-
-  const setEntryState = (
-    entry: SharedConnectionEntry,
-    connectionState: string,
-    error?: unknown
-  ) => {
-    entry.error = error && !isExpectedConsoleRealtimeDisconnect(error)
-      ? getConsoleRealtimeErrorMessage(error, "Realtime view connection closed.")
-      : undefined;
-    emitState(entry);
-    if (entry.hubConnection.state === HubConnectionState.Connected && connectionState !== "connected") {
-      return;
-    }
-    void connectionState;
+    }, Math.max(0, restartDelayMs));
   };
 
   const updateEntrySnapshot = (
@@ -154,6 +159,7 @@ export function createConsoleRealtimeSharedViewPool({
     const hubConnection = createConnection({ apiUrl, hubUrl });
     const entry: SharedConnectionEntry = {
       apiUrl,
+      authenticationRefreshAttempted: false,
       connectionKey,
       consumerCount: 0,
       createConnection,
@@ -173,6 +179,7 @@ export function createConsoleRealtimeSharedViewPool({
       updateEntrySnapshot(entry, "reconnecting", error);
     });
     hubConnection.onreconnected(() => {
+      entry.authenticationRefreshAttempted = false;
       entry.hasConnected = true;
       updateEntrySnapshot(entry, "connected");
     });
@@ -198,6 +205,7 @@ export function createConsoleRealtimeSharedViewPool({
     entry.startPromise = entry.hubConnection
       .start()
       .then(() => {
+        entry.authenticationRefreshAttempted = false;
         entry.hasConnected = true;
         updateEntrySnapshot(entry, "connected");
       })
@@ -359,6 +367,10 @@ function getConsoleRealtimeErrorMessage(error: unknown, fallback: string) {
 }
 
 function isExpectedConsoleRealtimeDisconnect(error: unknown) {
+  if (isConsoleRealtimeAuthenticationError(error)) {
+    return false;
+  }
+
   const message = getConsoleRealtimeErrorMessage(error, "").toLowerCase();
   return (
     message.includes("failed to fetch") ||
@@ -366,6 +378,15 @@ function isExpectedConsoleRealtimeDisconnect(error: unknown) {
     message.includes("failed to start the connection") ||
     message.includes("websocket closed with status code: 1006")
   );
+}
+
+function isConsoleRealtimeAuthenticationError(error: unknown) {
+  if (isWorkableRealtimeAuthenticationError(error)) {
+    return true;
+  }
+
+  const message = getConsoleRealtimeErrorMessage(error, "");
+  return /(?:status code[^0-9]*401|\b401\b|unauthori[sz]ed)/i.test(message);
 }
 
 function reportSharedConnectionHandlerError(scope: string, error: unknown) {

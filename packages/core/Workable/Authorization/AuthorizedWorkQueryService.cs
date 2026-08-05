@@ -3,7 +3,8 @@ namespace Workable;
 internal sealed class AuthorizedWorkQueryService(
     IWorkCatalog catalog,
     IWorkQueryService inner,
-    WorkAuthorizationEvaluator authorization) : IWorkQueryService
+    WorkAuthorizationEvaluator authorization,
+    bool canViewDiagnostics) : IWorkQueryService
 {
     public async Task<WorkerSnapshot?> Worker(
         WorkerId workerId,
@@ -16,7 +17,7 @@ internal sealed class AuthorizedWorkQueryService(
         }
 
         return catalog.TryGet(worker.DefinitionName, out var definition) && authorization.CanRead(definition)
-            ? worker
+            ? WorkProfileAccessFilter.Apply(worker, canViewDiagnostics)
             : null;
     }
 
@@ -25,7 +26,8 @@ internal sealed class AuthorizedWorkQueryService(
         CancellationToken cancellationToken = default)
     {
         var worker = await this.Worker(iteration.WorkerId, cancellationToken);
-        return worker is null ? null : await inner.WorkerIteration(iteration, cancellationToken);
+        var snapshot = worker is null ? null : await inner.WorkerIteration(iteration, cancellationToken);
+        return snapshot is null ? null : WorkProfileAccessFilter.Apply(snapshot, canViewDiagnostics);
     }
 
     public async Task<WorkerQueryResult> Workers(

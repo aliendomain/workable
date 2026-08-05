@@ -17,4 +17,10 @@ public sealed record WorkableHttpWorkerConfiguration(
     WorkSubjectId? SubjectId,
     WorkConcurrencyKey? ConcurrencyKey,
     WorkInfo? DefinitionInfo,
-    WorkableHttpQueueRequestDescriptor QueueRequestSchema);
+    WorkableHttpQueueRequestDescriptor QueueRequestSchema)
+{
+    /// <summary>
+    /// Gets whether automatic instrumentation is bounded or fully captured for this worker.
+    /// </summary>
+    public WorkProfileCaptureMode ProfilingCaptureMode { get; init; }
+}

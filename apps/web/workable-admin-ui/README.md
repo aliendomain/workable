@@ -27,6 +27,26 @@ Example response:
 }
 ```
 
+## Profile Viewer Filters
+
+The iteration profile viewer classifies nodes by the API's required `instrumentation` field. Use the compact database button to show only `sql.client` nodes or the globe button to show only `http.client` nodes. These two instrumentation filters are mutually exclusive; selecting one replaces the other.
+
+The text search, hotspot threshold, and method-scope filters can be combined with either instrumentation filter. **Ancestor context** controls whether matching SQL or HTTP nodes are shown alone or with their containing scopes. The SQL batch viewer also accepts only `sql.client` nodes before reading their captured command context. The UI does not infer SQL or HTTP identity from labels, provider names, or context payloads.
+
+## Targeted Full Profile Capture
+
+The admin UI can temporarily bypass the bounded automatic SQL, HTTP, and extension instrumentation limit for selected future workers:
+
+- To match a work type, select a system, open **Catalog**, select the definition, and use the **Full profile capture** card.
+- To match a user, select a system, open **Workers**, open a retained worker created by that actor, expand **Worker controls**, and use **Capture by user**.
+- From the same worker card, use **Capture this user + work type** to require both the actor id and definition to match.
+
+Choose how many matching workers to capture and how soon the rule expires. One rule supports 1–1,000 matches and a 1–1,440 minute lifetime; one system can hold at most 1,000 active rules. Rules affect future accepted workers only. Opening an existing worker supplies its stable actor id as a selector; the existing worker is not changed or reprofiled.
+
+A matching rule enables profiling and sets the worker's capture mode to `Full`. This bypasses only the automatic instrumentation node-count limit. It does not bypass queue authorization, invocation-channel restrictions, HTTP privacy exclusions, SQL parameter redaction, or worker/iteration retention.
+
+The UI needs access to the built-in Workable HTTP surface and diagnostics access to list, create, or delete the rules. The capture card is hidden when the selected system reports that the caller lacks diagnostics access. A system administrator has diagnostics permission by default but still cannot queue work unless separately authorized for that work definition. Rule creation and queueing are intentionally separate operations.
+
 ## Admin UI Security Defaults
 
 The admin UI is default-deny. The page and `/api/workable/*` proxy require authentication unless you explicitly opt into anonymous local use. The proxy does not implement its own operation-level role map; the hosted Workable API remains the authority for whether the current caller may read, operate, configure, run lifecycle actions, or inspect diagnostics.
@@ -170,7 +190,7 @@ If you also want the admin UI to call Entra-protected hosted Workable APIs, conf
 
 That `scope` value must come from the target API app registration's **Expose an API** page, and the target API should be configured to issue v2 access tokens for it.
 
-That forwarding is explicit and host-bound. The admin UI only forwards a delegated token to a URL that has a matching `targetApis` entry, even if other URLs are allow-listed for the proxy. The token stays out of `localStorage` and `sessionStorage`; the Next.js server keeps refresh/access state in encrypted HttpOnly cookies and uses a same-origin token endpoint only to feed SignalR's in-memory `accessTokenFactory`.
+That forwarding is explicit and host-bound. The admin UI only forwards a delegated token to a URL that has a matching `targetApis` entry, even if other URLs are allow-listed for the proxy. The token stays out of `localStorage` and `sessionStorage`; the Next.js server keeps refresh/access state in encrypted HttpOnly cookies and uses a same-origin token endpoint only to feed SignalR's in-memory `accessTokenFactory`. The token endpoint also reports the access token's server-calculated remaining lifetime so reconnects renew it before it expires instead of relying on a fixed browser cache lifetime or synchronized browser/server clocks.
 
 The Entra integration authenticates access to this admin UI; the hosted Workable API still decides whether each proxied operation is allowed.
 
@@ -238,6 +258,6 @@ The proxy rejects browser-supplied `x-workable-api-url` values that are not conf
 
 Unsafe proxy requests also require a same-origin `Origin` header to reduce CSRF risk when browser credentials are used. The proxy does not forward the admin UI `Authorization` header to the hosted Workable API. When `entraId.targetApis` is configured, the proxy instead forwards a delegated Entra bearer token only to a configured matching hosted API URL. The hosted system must continue to enforce its own authentication and authorization on every Workable adapter surface. If the hosted API rejects a request with `401` or `403`, the admin UI returns that response instead of overriding it with local operation-role logic.
 
-The admin UI accepts realtime hub paths only when the hosted system reports an HTTP(S) hub URL on the same origin as the configured Workable API URL. Cross-origin or non-HTTP(S) hub metadata is ignored by default so a hostile hosted system cannot silently make the browser connect to an arbitrary realtime endpoint. When Entra target-token forwarding is configured, SignalR connections fetch that token from a same-origin admin UI endpoint and keep it only in memory on the browser side.
+The admin UI accepts realtime hub paths only when the hosted system reports an HTTP(S) hub URL on the same origin as the configured Workable API URL. Cross-origin or non-HTTP(S) hub metadata is ignored by default so a hostile hosted system cannot silently make the browser connect to an arbitrary realtime endpoint. When Entra target-token forwarding is configured, SignalR connections fetch that token from a same-origin admin UI endpoint and keep it only in memory on the browser side. A realtime `401` invalidates the cached token and permits one forced refresh/reconnect attempt. If the replacement token is also rejected, retries stop; if the refresh token requires interactive authentication, the browser returns to sign-in.
 
 For the admin UI's proxied HTTP API calls, the browser talks only to the Next.js origin, so the hosted Workable HTTP API usually does not need browser CORS for those requests. Realtime is different: the browser connects directly to the hosted SignalR hub URL reported by the Workable host. If that hub is on another origin, the hosted application must configure CORS for the SignalR endpoint, for example with `app.MapWorkableSignalR().RequireCors("WorkableRealtime")`.

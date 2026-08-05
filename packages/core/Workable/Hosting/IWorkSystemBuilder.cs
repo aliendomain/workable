@@ -338,6 +338,20 @@ public interface IWorkSystemBuilder
     IWorkSystemBuilder ConfigureCapacity(int? maximumWorkers = null);
 
     /// <summary>
+    /// Replaces the system-wide profiling settings.
+    /// </summary>
+    /// <param name="profiling">The profiling configuration to apply to the system.</param>
+    /// <returns>The same builder so additional system configuration can be chained.</returns>
+    IWorkSystemBuilder UseProfiling(WorkSystemProfilingConfiguration profiling);
+
+    /// <summary>
+    /// Configures the per-profile automatic instrumentation node limit.
+    /// </summary>
+    /// <param name="maximumAutomaticInstrumentationNodes">The shared SQL, HTTP, and extension instrumentation limit.</param>
+    /// <returns>The same builder so additional system configuration can be chained.</returns>
+    IWorkSystemBuilder ConfigureProfiling(int? maximumAutomaticInstrumentationNodes = null);
+
+    /// <summary>
     /// Adds an exception classifier that applies to work registered in this system.
     /// </summary>
     /// <param name="classifier">The classifier Workable evaluates when work in this system throws.</param>

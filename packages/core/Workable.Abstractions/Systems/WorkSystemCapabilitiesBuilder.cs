@@ -16,9 +16,17 @@ public sealed class WorkSystemCapabilitiesBuilder
     public bool SqlProfilingAvailable { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether outbound HTTP client profiling is available.
+    /// </summary>
+    public bool HttpClientProfilingAvailable { get; set; }
+
+    /// <summary>
     /// Creates an immutable snapshot from the current capability values.
     /// </summary>
     /// <returns>The immutable system capability snapshot.</returns>
     public WorkSystemCapabilities Build()
-        => new(this.PersistentCoordinationAvailable, this.SqlProfilingAvailable);
+        => new(this.PersistentCoordinationAvailable, this.SqlProfilingAvailable)
+        {
+            HttpClientProfilingAvailable = this.HttpClientProfilingAvailable,
+        };
 }

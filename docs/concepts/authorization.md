@@ -3,7 +3,7 @@
 Workable supports authorization at two levels:
 
 - work-definition authorization controls who can read or operate individual work definitions
-- system authorization controls who can discover a system when they have actual access to it, view diagnostics, or start and stop it
+- system authorization controls who can discover a system when they have actual access to it, view diagnostics, control lifecycle, or manage temporary profiling capture rules
 
 The model is request-context based. Callers create or receive a `WorkRequestContext`, Workable creates an `IWorkSystemSession`, and that session exposes the caller-scoped catalog, queue, worker operations, query service, event stream, and diagnostics.
 
@@ -16,7 +16,7 @@ When authorization is enabled on a system:
 - work with no authorization configured is closed by default
 - read surfaces filter out work the caller cannot read
 - queueing and worker operations return unauthorized outcomes when the caller cannot operate the target work
-- diagnostics require system-level diagnostics permission
+- diagnostics, retained profile telemetry, full-capture selection, and profiling capture-rule management require system-level diagnostics permission
 - start and stop require system-level control permission
 - system discovery is filtered to systems where the caller has actual access
 
@@ -320,9 +320,12 @@ Built-in role semantics are:
   - grants `Diagnostics`
   - grants `ControlSystem`
   - grants `ReadAllWork`
+  - does not grant queueing, worker operations, or `OperateAllWork`
 - `WorkAdministrators(...)`
   - grants `ReadAllWork`
   - grants `OperateAllWork`
+
+This separation is intentional. A system administrator can inspect diagnostics, manage lifecycle, and create a temporary full-profile capture rule, but another caller still needs queue permission for the matching work definition. Creating a capture rule never elevates the creator's work-operation permissions.
 
 When the host maps the built-in `Workable.HttpApi` routes through `MapWorkableApi(...)`, both roles also grant entry to that built-in `/workable` surface for the same system. Host-defined endpoints that call Workable directly are unaffected.
 
@@ -357,9 +360,11 @@ Named built-in routes such as `/workable/systems/{systemName}/...` also require 
 Granular system permissions are:
 
 - `AllowDiagnosticsToGroups(...)`
-  - controls `IWorkSystemSession.Diagnostics` and transport diagnostics routes/views
+  - controls `IWorkSystemSession.Diagnostics`, transport diagnostics routes/views, and listing, creating, or deleting temporary profiling capture rules
+  - controls whether profile data is present in authorized worker queries, iteration queries, queue completions, worker-action outcomes, and system-stop results
+  - is also required when an authorized queue request or definition reconfiguration explicitly selects full profile capture
 - `AllowControlSystemToGroups(...)`
-  - controls start and stop
+  - controls starting and stopping the system lifecycle
 - `AllowBuiltInHttpApiToGroups(...)`
   - grants access to the built-in `MapWorkableApi(...)` HTTP surface for that system without also granting administrator semantics
 - `AllowReadAllWorkToGroups(...)`

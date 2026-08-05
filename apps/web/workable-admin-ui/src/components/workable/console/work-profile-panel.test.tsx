@@ -26,6 +26,7 @@ function profileSnapshot(): WorkProfileSnapshot {
             {
               children: [],
               label: "Query database",
+              instrumentation: "application",
               metricType: "Timing",
               nodeMilliseconds: 12,
               treeMilliseconds: 12,
@@ -33,6 +34,7 @@ function profileSnapshot(): WorkProfileSnapshot {
           ],
           context: { cacheKey: "home-page" },
           label: "Load source data",
+          instrumentation: "application",
           metricType: "Scope",
           nodeMilliseconds: 8,
           treeMilliseconds: 20,
@@ -42,12 +44,14 @@ function profileSnapshot(): WorkProfileSnapshot {
             {
               children: [],
               label: "Render section",
+              instrumentation: "application",
               metricType: "Timing",
               nodeMilliseconds: 5,
               treeMilliseconds: 5,
             },
           ],
           label: "Executing DemoProfilingSectionWorker.RunAsync",
+          instrumentation: "application",
           metricType: "MethodScope",
           nodeMilliseconds: 5,
           treeMilliseconds: 5,
@@ -55,12 +59,14 @@ function profileSnapshot(): WorkProfileSnapshot {
         {
           children: [],
           label: "Message count",
+          instrumentation: "application",
           metricType: "Metric",
           nodeMilliseconds: 0,
           treeMilliseconds: 0,
         },
       ],
       label: "Executing ImportOrders.Execute",
+      instrumentation: "application",
       metricType: "MethodScope",
       nodeMilliseconds: 12,
       treeMilliseconds: 37,
@@ -79,12 +85,14 @@ function duplicateMethodScopeProfileSnapshot(): WorkProfileSnapshot {
             {
               children: [],
               label: "Render header",
+              instrumentation: "application",
               metricType: "Timing",
               nodeMilliseconds: 7,
               treeMilliseconds: 7,
             },
           ],
           label: "Executing DemoProfilingSectionWorker.RunAsync",
+          instrumentation: "application",
           metricType: "MethodScope",
           nodeMilliseconds: 7,
           treeMilliseconds: 7,
@@ -94,12 +102,14 @@ function duplicateMethodScopeProfileSnapshot(): WorkProfileSnapshot {
             {
               children: [],
               label: "Render footer",
+              instrumentation: "application",
               metricType: "Timing",
               nodeMilliseconds: 9,
               treeMilliseconds: 9,
             },
           ],
           label: "Executing DemoProfilingSectionWorker.RunAsync",
+          instrumentation: "application",
           metricType: "MethodScope",
           nodeMilliseconds: 9,
           treeMilliseconds: 9,
@@ -107,12 +117,14 @@ function duplicateMethodScopeProfileSnapshot(): WorkProfileSnapshot {
         {
           children: [],
           label: "Capture summary",
+          instrumentation: "application",
           metricType: "Metric",
           nodeMilliseconds: 0,
           treeMilliseconds: 0,
         },
       ],
       label: "Executing ImportOrders.Execute",
+      instrumentation: "application",
       metricType: "MethodScope",
       nodeMilliseconds: 16,
       treeMilliseconds: 16,
@@ -146,6 +158,7 @@ function sqlProfileSnapshot(): WorkProfileSnapshot {
                 StatementKind: "SELECT",
               },
               label: "SQL ExecuteReader",
+              instrumentation: "sql.client",
               metricType: "Timing",
               nodeMilliseconds: 14,
               treeMilliseconds: 14,
@@ -167,12 +180,14 @@ function sqlProfileSnapshot(): WorkProfileSnapshot {
                 StatementKind: "SELECT",
               },
               label: "SQL ExecuteScalar",
+              instrumentation: "sql.client",
               metricType: "Timing",
               nodeMilliseconds: 9,
               treeMilliseconds: 9,
             },
           ],
           label: "Capture database sample",
+          instrumentation: "application",
           metricType: "Scope",
           nodeMilliseconds: 3,
           treeMilliseconds: 26,
@@ -180,15 +195,94 @@ function sqlProfileSnapshot(): WorkProfileSnapshot {
         {
           children: [],
           label: "Render summary",
+          instrumentation: "application",
           metricType: "Timing",
           nodeMilliseconds: 6,
           treeMilliseconds: 6,
         },
       ],
       label: "Executing DemoProfilingLabWork.RunAsync",
+      instrumentation: "application",
       metricType: "MethodScope",
       nodeMilliseconds: 9,
       treeMilliseconds: 32,
+    },
+    startedAt: "2026-06-10T18:04:58.000Z",
+  };
+}
+
+function httpProfileSnapshot(): WorkProfileSnapshot {
+  return {
+    capturedAt: "2026-06-10T18:05:00.000Z",
+    root: {
+      children: [
+        {
+          children: [
+            {
+              children: [],
+              context: {
+                telemetry: {
+                  method: "GET",
+                  outcome: "Success",
+                  provider: "System.Net.Http",
+                  statusCode: 200,
+                  uri: "https://api.example.test/orders",
+                },
+              },
+              label: "HTTP Request",
+              instrumentation: "http.client",
+              metricType: "Timing",
+              nodeMilliseconds: 14,
+              treeMilliseconds: 14,
+            },
+            {
+              children: [],
+              context: {
+                Outcome: "Completed",
+                Provider: "System.Net.Http",
+                retryCount: 1,
+              },
+              label: "HTTP retry budget",
+              instrumentation: "custom.http-retry",
+              metricType: "Metric",
+              nodeMilliseconds: 0,
+              treeMilliseconds: 0,
+            },
+          ],
+          label: "Capture HTTP sample",
+          instrumentation: "application",
+          metricType: "Scope",
+          nodeMilliseconds: 3,
+          treeMilliseconds: 17,
+        },
+        {
+          children: [],
+          context: {
+            CommandType: "Text",
+            Operation: "ExecuteScalar",
+            Provider: "Microsoft.Data.SqlClient",
+            Statement: "SELECT COUNT(*) FROM workable.WorkEntries;",
+          },
+          label: "SQL ExecuteScalar",
+          instrumentation: "sql.client",
+          metricType: "Timing",
+          nodeMilliseconds: 8,
+          treeMilliseconds: 8,
+        },
+        {
+          children: [],
+          label: "Render summary",
+          instrumentation: "application",
+          metricType: "Timing",
+          nodeMilliseconds: 4,
+          treeMilliseconds: 4,
+        },
+      ],
+      label: "Executing DemoProfilingLabWork.RunAsync",
+      instrumentation: "application",
+      metricType: "MethodScope",
+      nodeMilliseconds: 15,
+      treeMilliseconds: 29,
     },
     startedAt: "2026-06-10T18:04:58.000Z",
   };
@@ -221,18 +315,21 @@ function nestedSqlProfileSnapshot(): WorkProfileSnapshot {
                 },
               },
               label: "SQL ExecuteReader",
+              instrumentation: "sql.client",
               metricType: "Timing",
               nodeMilliseconds: 14,
               treeMilliseconds: 14,
             },
           ],
           label: "Capture database sample",
+          instrumentation: "application",
           metricType: "Scope",
           nodeMilliseconds: 3,
           treeMilliseconds: 17,
         },
       ],
       label: "Executing DemoProfilingLabWork.RunAsync",
+      instrumentation: "application",
       metricType: "MethodScope",
       nodeMilliseconds: 9,
       treeMilliseconds: 20,
@@ -265,18 +362,21 @@ function camelCaseSqlProfileSnapshot(): WorkProfileSnapshot {
                 statementKind: "SELECT",
               },
               label: "SQL ExecuteReader",
+              instrumentation: "sql.client",
               metricType: "Timing",
               nodeMilliseconds: 12,
               treeMilliseconds: 12,
             },
           ],
           label: "Capture database sample",
+          instrumentation: "application",
           metricType: "Scope",
           nodeMilliseconds: 3,
           treeMilliseconds: 15,
         },
       ],
       label: "Executing DemoProfilingLabWork.RunAsync",
+      instrumentation: "application",
       metricType: "MethodScope",
       nodeMilliseconds: 6,
       treeMilliseconds: 18,
@@ -311,18 +411,21 @@ function largeSqlProfileSnapshot(): WorkProfileSnapshot {
                 StatementKind: "SELECT",
               },
               label: "SQL ExecuteScalar",
+              instrumentation: "sql.client",
               metricType: "Timing",
               nodeMilliseconds: 12,
               treeMilliseconds: 12,
             },
           ],
           label: "Capture database sample",
+          instrumentation: "application",
           metricType: "Scope",
           nodeMilliseconds: 3,
           treeMilliseconds: 15,
         },
       ],
       label: "Executing DemoProfilingLabWork.RunAsync",
+      instrumentation: "application",
       metricType: "MethodScope",
       nodeMilliseconds: 6,
       treeMilliseconds: 18,
@@ -354,6 +457,7 @@ function sqlLabelFalsePositiveProfileSnapshot(): WorkProfileSnapshot {
                 StatementKind: "SELECT",
               },
               label: "SQL InternalExecuteReaderAsync",
+              instrumentation: "custom.sql-probe",
               metricType: "Timing",
               nodeMilliseconds: 1,
               treeMilliseconds: 1,
@@ -366,12 +470,14 @@ function sqlLabelFalsePositiveProfileSnapshot(): WorkProfileSnapshot {
             phase: "Preparation",
           },
           label: "Executing SampleHost.Demo.DemoProfilingSqlProbe.CaptureAsync",
+          instrumentation: "application",
           metricType: "MethodScope",
           nodeMilliseconds: 18,
           treeMilliseconds: 18,
         },
       ],
       label: "Executing DemoProfilingLabWork.RunAsync",
+      instrumentation: "application",
       metricType: "MethodScope",
       nodeMilliseconds: 2,
       treeMilliseconds: 20,
@@ -404,18 +510,21 @@ function storedProcedureSqlProfileSnapshot(): WorkProfileSnapshot {
                 statementKind: "EXEC",
               },
               label: "SQL ExecuteNonQuery",
+              instrumentation: "sql.client",
               metricType: "Timing",
               nodeMilliseconds: 8,
               treeMilliseconds: 8,
             },
           ],
           label: "Invoke stored procedure",
+          instrumentation: "application",
           metricType: "Scope",
           nodeMilliseconds: 2,
           treeMilliseconds: 10,
         },
       ],
       label: "Executing DemoProfilingLabWork.RunAsync",
+      instrumentation: "application",
       metricType: "MethodScope",
       nodeMilliseconds: 5,
       treeMilliseconds: 13,
@@ -756,6 +865,54 @@ test("work profile panel can filter directly to SQL nodes and optionally keep an
   }
 });
 
+test("work profile panel filters HTTP nodes by instrumentation identity", async () => {
+  const result = await renderDom(
+    <WorkProfilePanel
+      onClose={() => undefined}
+      onViewStateChange={() => undefined}
+      profile={httpProfileSnapshot()}
+      viewState="standard"
+    />
+  );
+
+  try {
+    const httpOnlyButton = result.getByRole("button", { name: "HTTP request nodes only" });
+    assert.equal(
+      httpOnlyButton.getAttribute("title"),
+      "HTTP-only filter is off. Show only captured HTTP request nodes."
+    );
+
+    await result.click(httpOnlyButton);
+    await result.waitFor(() => result.getByText("HTTP Request"));
+    await result.waitFor(() => {
+      assert.equal(httpOnlyButton.getAttribute("aria-pressed"), "true");
+      assert.equal(
+        httpOnlyButton.getAttribute("title"),
+        "HTTP-only filter is on. The profile tree is limited to captured HTTP request nodes."
+      );
+      assert.equal(result.queryByText("Capture HTTP sample"), null);
+      assert.equal(result.queryByText("HTTP retry budget"), null);
+      assert.equal(result.queryByText("SQL ExecuteScalar"), null);
+      assert.equal(result.queryByText("Render summary"), null);
+    });
+
+    await result.click(result.getByRole("button", { name: "Ancestor context" }));
+    await result.waitFor(() => result.getByText("Capture HTTP sample"));
+    assert.equal(result.queryByText("HTTP retry budget"), null);
+
+    const sqlOnlyButton = result.getByRole("button", { name: "SQL nodes only" });
+    await result.click(sqlOnlyButton);
+    await result.waitFor(() => result.getByText("SQL ExecuteScalar"));
+    await result.waitFor(() => {
+      assert.equal(sqlOnlyButton.getAttribute("aria-pressed"), "true");
+      assert.equal(httpOnlyButton.getAttribute("aria-pressed"), "false");
+      assert.equal(result.queryByText("HTTP Request"), null);
+    });
+  } finally {
+    await result.restore();
+  }
+});
+
 test("work profile panel exposes the SQL filter state and enables SQL batch from nested SQL context", async () => {
   const result = await renderDom(
     <WorkProfilePanel
@@ -829,6 +986,36 @@ test("work profile panel disables SQL actions and explains how to enable them wh
   }
 });
 
+test("work profile panel disables the HTTP filter and explains how to enable profiling when unavailable", async () => {
+  const result = await renderDom(
+    <WorkProfilePanel
+      httpClientProfilingAvailable={false}
+      onClose={() => undefined}
+      onViewStateChange={() => undefined}
+      profile={profileSnapshot()}
+      viewState="standard"
+    />
+  );
+
+  try {
+    const httpOnlyButton = result.getByRole("button", { name: "HTTP request nodes only" });
+    assert.equal(httpOnlyButton.hasAttribute("disabled"), true);
+    assert.equal(
+      httpOnlyButton.getAttribute("title"),
+      "HTTP client profiling is not available for this system. Enable it by calling AddWorkableHttpClientProfiling() in the host's Workable configuration."
+    );
+
+    const httpOnlyTrigger = httpOnlyButton.parentElement;
+    assert.ok(httpOnlyTrigger instanceof result.dom.window.HTMLElement);
+    await result.focus(httpOnlyTrigger);
+    await result.waitFor(() => result.getByText(
+      "HTTP client profiling is not available for this system. Enable it by calling AddWorkableHttpClientProfiling() in the host's Workable configuration."
+    ));
+  } finally {
+    await result.restore();
+  }
+});
+
 test("work profile panel opens an informational SQL batch dialog when the profile has no captured SQL commands", async () => {
   const result = await renderDom(
     <WorkProfilePanel
@@ -860,7 +1047,8 @@ test("work profile panel opens an informational SQL batch dialog when the profil
   }
 });
 
-test("work profile panel does not treat labels containing sql as SQL command nodes", async () => {
+test("work profile panel does not infer SQL instrumentation from labels or context", async () => {
+  assert.equal(createWorkProfileSqlBatch(sqlLabelFalsePositiveProfileSnapshot()), null);
   const result = await renderDom(
     <WorkProfilePanel
       onClose={() => undefined}
@@ -874,18 +1062,9 @@ test("work profile panel does not treat labels containing sql as SQL command nod
     await result.waitFor(() => result.getByText("Executing SampleHost.Demo.DemoProfilingSqlProbe.CaptureAsync"));
     await result.click(result.getByRole("button", { name: "SQL nodes only" }));
 
-    await result.waitFor(() => result.getByText("SQL InternalExecuteReaderAsync"));
-    await result.waitFor(() => {
-      assert.equal(
-        result.queryByText("Executing SampleHost.Demo.DemoProfilingSqlProbe.CaptureAsync"),
-        null
-      );
-    });
-
-    await result.click(result.getByRole("button", { name: "Ancestor context" }));
-    await result.waitFor(() =>
-      result.getByText("Executing SampleHost.Demo.DemoProfilingSqlProbe.CaptureAsync")
-    );
+    await result.waitFor(() => result.getByText("No SQL profile nodes matched the active filters."));
+    assert.equal(result.queryByText("SQL InternalExecuteReaderAsync"), null);
+    assert.equal(result.queryByText("Executing SampleHost.Demo.DemoProfilingSqlProbe.CaptureAsync"), null);
   } finally {
     await result.restore();
   }

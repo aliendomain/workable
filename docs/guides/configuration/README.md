@@ -30,10 +30,10 @@ Some registration-time behavior is attached with the same fluent builder but is 
 
 Workable exposes configuration in four related shapes:
 
-- `WorkerOptions`: queue-time or definition-default worker options such as `ProfilingEnabled`, `Configuration`, and `QueueDurabilityTransaction`.
+- `WorkerOptions`: queue-time or definition-default worker options such as `ProfilingEnabled`, `ProfilingCaptureMode`, `Configuration`, and `QueueDurabilityTransaction`. `Bounded` is the normal automatic-instrumentation mode; temporary diagnostic capture rules resolve selected workers to `Full`. On authorization-enabled systems, caller-supplied `Full` queue options or definition defaults also require diagnostics permission in addition to the corresponding work-operation permission.
 - `WorkConfiguration`: per-definition and per-worker runtime behavior with `Start`, `Coordination`, `Recurrence`, `TransientRetry`, `FailedWorker`, `Logging`, `Retention`, and `Invocation`.
 - Nested coordination facets inside `WorkCoordinationConfiguration`: `Idempotency`, `Concurrency`, and `Durability`.
-- System bootstrap configuration on `IWorkSystemBuilder`: `WorkSystemRetentionConfiguration`, `WorkSystemCapacityConfiguration`, and shutdown grace period settings.
+- System bootstrap configuration on `IWorkSystemBuilder`: `WorkSystemRetentionConfiguration`, `WorkSystemCapacityConfiguration`, `WorkSystemProfilingConfiguration`, and shutdown grace period settings.
 
 ## Configuration Types
 

@@ -85,5 +85,11 @@ public static class WorkableServiceCollectionExtensions
         services.AddSingleton<IWorkProfiler, WorkProfilerFacade>();
         services.RemoveAll<IWorkProfilingContextAccessor>();
         services.AddSingleton<IWorkProfilingContextAccessor, WorkProfilingContextAccessor>();
+        if (!services.Any(descriptor => descriptor.ServiceType == typeof(WorkProfilingInstrumentationLifecycleObserver)))
+        {
+            services.AddSingleton<WorkProfilingInstrumentationLifecycleObserver>();
+            services.AddSingleton<IWorkSystemLifecycleObserver>(serviceProvider =>
+                serviceProvider.GetRequiredService<WorkProfilingInstrumentationLifecycleObserver>());
+        }
     }
 }

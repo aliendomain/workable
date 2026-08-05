@@ -14,6 +14,11 @@ public sealed record WorkSystemCapabilities(
     bool SqlProfilingAvailable)
 {
     /// <summary>
+    /// Gets whether the system currently has outbound HTTP client profiling capability available for captured worker profiles.
+    /// </summary>
+    public bool HttpClientProfilingAvailable { get; init; }
+
+    /// <summary>
     /// Gets a capability snapshot with every known capability disabled.
     /// </summary>
     public static WorkSystemCapabilities None { get; } = new(false, false);

@@ -7,6 +7,26 @@ namespace Workable.Tests;
 public sealed class WorkMergeTests
 {
     [Fact]
+    public void WorkerOptionsMergePreservesAndOverridesProfilingCaptureMode()
+    {
+        var full = new WorkerOptions
+        {
+            ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+        };
+
+        var inherited = full.Merge(new WorkerOptions());
+        var bounded = full.Merge(new WorkerOptions
+        {
+            ProfilingCaptureMode = WorkProfileCaptureMode.Bounded,
+        });
+
+        Assert.Equal(WorkProfileCaptureMode.Full, inherited.ProfilingCaptureMode);
+        Assert.True(inherited.HasExplicitProfilingCaptureMode);
+        Assert.Equal(WorkProfileCaptureMode.Bounded, bounded.ProfilingCaptureMode);
+        Assert.True(bounded.HasExplicitProfilingCaptureMode);
+    }
+
+    [Fact]
     public void WorkerOptionsMergeWithNullOverridesReturnsSameOptions()
     {
         var options = new WorkerOptions(

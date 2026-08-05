@@ -21,6 +21,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private WorkSystemShutdownGracePeriod shutdownGracePeriod = WorkSystemShutdownGracePeriod.HostRelative();
     private WorkSystemRetentionConfiguration retention = WorkSystemRetentionConfiguration.Default;
     private WorkSystemCapacityConfiguration capacity = WorkSystemCapacityConfiguration.Default;
+    private WorkSystemProfilingConfiguration profiling = WorkSystemProfilingConfiguration.Default;
 
     public IWorkSystemBuilder WithWorkDefaults(
         Action<IWorkDefinitionBuilder> register,
@@ -231,6 +232,26 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         return this;
     }
 
+    public IWorkSystemBuilder UseProfiling(WorkSystemProfilingConfiguration profiling)
+    {
+        ArgumentNullException.ThrowIfNull(profiling);
+        ValidateProfiling(profiling);
+
+        this.profiling = profiling;
+        return this;
+    }
+
+    public IWorkSystemBuilder ConfigureProfiling(int? maximumAutomaticInstrumentationNodes = null)
+    {
+        this.profiling = this.profiling with
+        {
+            MaximumAutomaticInstrumentationNodes = maximumAutomaticInstrumentationNodes ??
+                WorkSystemProfilingConfiguration.Default.MaximumAutomaticInstrumentationNodes,
+        };
+        ValidateProfiling(this.profiling);
+        return this;
+    }
+
     public IWorkSystemBuilder IncludeContributedWork(bool enabled = true)
     {
         this.includeContributedWork = enabled;
@@ -347,7 +368,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             this.startWithHost,
             this.shutdownGracePeriod,
             this.retention,
-            this.capacity);
+            this.capacity,
+            this.profiling);
 
     private static WorkflowDefinition ApplyWorkflowAuthorization(
         WorkflowDefinition definition,
@@ -394,6 +416,14 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         if (capacity.MaximumWorkers <= 0)
         {
             throw new InvalidOperationException("System capacity maximum workers must be greater than zero.");
+        }
+    }
+
+    private static void ValidateProfiling(WorkSystemProfilingConfiguration profiling)
+    {
+        if (profiling.MaximumAutomaticInstrumentationNodes <= 0)
+        {
+            throw new InvalidOperationException("System profiling maximum automatic instrumentation nodes must be greater than zero.");
         }
     }
 }

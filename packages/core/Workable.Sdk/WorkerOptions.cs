@@ -8,7 +8,9 @@ namespace Workable;
 public sealed record WorkerOptions
 {
     private bool hasExplicitProfilingEnabled;
+    private bool hasExplicitProfilingCaptureMode;
     private bool profilingEnabled;
+    private WorkProfileCaptureMode profilingCaptureMode;
 
     /// <summary>
     /// Initializes worker options without explicitly setting profiling.
@@ -68,6 +70,20 @@ public sealed record WorkerOptions
     }
 
     /// <summary>
+    /// Gets or sets how automatic instrumentation is retained when profiling is enabled.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public WorkProfileCaptureMode ProfilingCaptureMode
+    {
+        get => this.profilingCaptureMode;
+        init
+        {
+            this.profilingCaptureMode = value;
+            this.hasExplicitProfilingCaptureMode = true;
+        }
+    }
+
+    /// <summary>
     /// Gets or sets optional runtime configuration overrides that Workable merges over the work definition defaults for this worker.
     /// </summary>
     public WorkConfiguration? Configuration { get; init; }
@@ -89,6 +105,12 @@ public sealed record WorkerOptions
     public bool HasExplicitProfilingEnabled => this.hasExplicitProfilingEnabled;
 
     /// <summary>
+    /// Gets whether <see cref="ProfilingCaptureMode"/> was explicitly set on this instance instead of being inherited.
+    /// </summary>
+    [JsonIgnore]
+    public bool HasExplicitProfilingCaptureMode => this.hasExplicitProfilingCaptureMode;
+
+    /// <summary>
     /// Merges queue-time overrides over the current worker options instance.
     /// </summary>
     /// <param name="overrides">The overriding options to apply, or <see langword="null"/> to leave the current options unchanged.</param>
@@ -107,6 +129,11 @@ public sealed record WorkerOptions
             ? overrides.ProfilingEnabled
             : this.profilingEnabled;
         merged.hasExplicitProfilingEnabled = overrides.HasExplicitProfilingEnabled || this.hasExplicitProfilingEnabled;
+        merged.profilingCaptureMode = overrides.HasExplicitProfilingCaptureMode
+            ? overrides.ProfilingCaptureMode
+            : this.profilingCaptureMode;
+        merged.hasExplicitProfilingCaptureMode =
+            overrides.HasExplicitProfilingCaptureMode || this.hasExplicitProfilingCaptureMode;
         return merged;
     }
 }

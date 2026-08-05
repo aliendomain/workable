@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronRight, ChevronsUpDown, Copy, DatabaseSearch, DatabaseZap, GitBranchMinus, GitBranchPlus, Info, Maximize2, Minimize2, SquareTerminal } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, Copy, DatabaseSearch, DatabaseZap, GitBranchMinus, GitBranchPlus, Globe2, Info, Maximize2, Minimize2, SquareTerminal } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { PanelScrollViewport, PanelShell } from "@/components/features/console/panel-shell";
 import { ToolbarIconButton } from "@/components/features/console/toolbar-icon-button";
@@ -62,6 +62,7 @@ export type WorkProfileSummary = {
 
 export type WorkProfileHotspotMode = "off" | "tree" | "node";
 export type WorkProfileHotspotThreshold = "pct10" | "pct25" | "ms25" | "ms50" | "top5";
+type WorkProfileInstrumentationFilter = "all" | "http" | "sql";
 
 export type WorkProfileSearchResult = {
   expandableNodeIds: string[];
@@ -89,6 +90,7 @@ type WorkProfileSqlBatchMode = "replayable" | "original";
 const sqlBatchUnavailableMessage = "SQL batch is unavailable for this profile because it does not contain captured SQL commands.";
 const sqlBatchOpenTooltip = "Open the SQL batch viewer for any captured SQL commands in this profile.";
 const sqlProfilingUnavailableTooltip = "SQL profiling is not available for this system. Enable it by calling AddWorkableSqlServerProfiling() in the host's Workable SQL Server configuration.";
+const httpClientProfilingUnavailableTooltip = "HTTP client profiling is not available for this system. Enable it by calling AddWorkableHttpClientProfiling() in the host's Workable configuration.";
 
 type WorkProfileMethodScopeOption = {
   label: string;
@@ -314,8 +316,8 @@ export function searchWorkProfile(
 ): WorkProfileSearchResult | null {
   return filterWorkProfile(profile, query, {
     hotspotActive: false,
+    instrumentationFilter: "all",
     keepAncestors: options?.keepAncestors ?? false,
-    sqlOnly: false,
   });
 }
 
@@ -382,6 +384,7 @@ export function findWorkProfileHotspots(
 }
 
 export function WorkProfilePanel({
+  httpClientProfilingAvailable = true,
   iterationIsFinal,
   iterationStatus,
   onClose,
@@ -391,6 +394,7 @@ export function WorkProfilePanel({
   sqlProfilingAvailable = true,
   viewState,
 }: {
+  httpClientProfilingAvailable?: boolean;
   iterationIsFinal?: boolean;
   iterationStatus?: WorkCompletionStatus | null;
   onClose: () => void;
@@ -421,7 +425,7 @@ export function WorkProfilePanel({
   const [hotspotMode, setHotspotMode] = useState<WorkProfileHotspotMode>("off");
   const [hotspotThreshold, setHotspotThreshold] = useState<WorkProfileHotspotThreshold>("pct10");
   const [selectedMethodScopeIdentity, setSelectedMethodScopeIdentity] = useState("");
-  const [sqlOnly, setSqlOnly] = useState(false);
+  const [instrumentationFilter, setInstrumentationFilter] = useState<WorkProfileInstrumentationFilter>("all");
   const [sqlBatchOpen, setSqlBatchOpen] = useState(false);
   const [keepAncestors, setKeepAncestors] = useState(false);
   const [searchText, setSearchText] = useState("");
@@ -443,11 +447,11 @@ export function WorkProfilePanel({
     () => filterWorkProfile(profile, deferredSearchText, {
       hotspotActive: hotspotMode !== "off",
       hotspotNodeIds: hotspotResult?.matchedNodeIds,
+      instrumentationFilter,
       keepAncestors,
       methodScopeSelection: selectedMethodScope,
-      sqlOnly,
     }),
-    [deferredSearchText, hotspotMode, hotspotResult, keepAncestors, profile, selectedMethodScope, sqlOnly]
+    [deferredSearchText, hotspotMode, hotspotResult, instrumentationFilter, keepAncestors, profile, selectedMethodScope]
   );
   const profileKey = `${profile?.startedAt ?? "none"}:${profile?.capturedAt ?? "none"}:${profile?.root.label ?? "none"}`;
   const lastProfileKeyRef = useRef(profileKey);
@@ -458,17 +462,22 @@ export function WorkProfilePanel({
     () => new Set(createDefaultExpandedWorkProfileNodeIds(profile))
   );
   const expandedNodeIdsRef = useRef(expandedNodeIds);
+  const httpActionsDisabled = !httpClientProfilingAvailable;
   const sqlActionsDisabled = !sqlProfilingAvailable;
   const hotspotActive = hotspotMode !== "off";
   const methodScopeActive = selectedMethodScopeIdentity.length > 0;
+  const httpOnly = instrumentationFilter === "http";
+  const sqlOnly = instrumentationFilter === "sql";
   const selectedMethodScopeLabel = methodScopeOptions.find((option) => option.value === selectedMethodScopeIdentity)?.label ?? null;
   const filterCountLabel = sqlOnly && activeSearchText.length === 0 && !hotspotActive && !methodScopeActive
     ? "SQL nodes"
-    : hotspotActive && activeSearchText.length === 0 && !methodScopeActive && !sqlOnly
-    ? "Hotspots"
-    : methodScopeActive && activeSearchText.length === 0 && !hotspotActive && !sqlOnly
-      ? "Method scopes"
-      : "Matches";
+    : httpOnly && activeSearchText.length === 0 && !hotspotActive && !methodScopeActive
+      ? "HTTP requests"
+      : hotspotActive && activeSearchText.length === 0 && !methodScopeActive && instrumentationFilter === "all"
+        ? "Hotspots"
+        : methodScopeActive && activeSearchText.length === 0 && !hotspotActive && instrumentationFilter === "all"
+          ? "Method scopes"
+          : "Matches";
   const sqlOnlyTooltip = sqlActionsDisabled
     ? sqlProfilingUnavailableTooltip
     : sqlOnly
@@ -482,6 +491,16 @@ export function WorkProfilePanel({
   const sqlBatchTooltip = sqlActionsDisabled
     ? sqlProfilingUnavailableTooltip
     : sqlBatchOpenTooltip;
+  const httpOnlyTooltip = httpActionsDisabled
+    ? httpClientProfilingUnavailableTooltip
+    : httpOnly
+      ? "HTTP-only filter is enabled. The profile tree is currently limited to captured System.Net.Http request nodes."
+      : "Filter the profile tree down to captured System.Net.Http request nodes.";
+  const httpOnlyTitle = httpActionsDisabled
+    ? httpClientProfilingUnavailableTooltip
+    : httpOnly
+      ? "HTTP-only filter is on. The profile tree is limited to captured HTTP request nodes."
+      : "HTTP-only filter is off. Show only captured HTTP request nodes.";
 
   useEffect(() => {
     expandedNodeIdsRef.current = expandedNodeIds;
@@ -553,10 +572,18 @@ export function WorkProfilePanel({
 
   useEffect(() => {
     if (!sqlProfilingAvailable) {
-      setSqlOnly(false);
+      setInstrumentationFilter((current) => current === "sql" ? "all" : current);
       setSqlBatchOpen(false);
     }
   }, [sqlProfilingAvailable]);
+
+  useEffect(() => {
+    if (!httpClientProfilingAvailable) {
+      queueMicrotask(() => {
+        setInstrumentationFilter((current) => current === "http" ? "all" : current);
+      });
+    }
+  }, [httpClientProfilingAvailable]);
 
   const expandAll = useCallback(() => {
     setExpandedNodeIds(new Set(filterResult?.expandableNodeIds ?? expandableNodeIds));
@@ -695,7 +722,7 @@ export function WorkProfilePanel({
                       ) : null}
                     </div>
                     <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-                      <div className="min-w-56 flex-1 max-w-sm">
+                      <div className="min-w-40 flex-1 max-w-56">
                         <Input
                           aria-label="Search profile nodes"
                           onChange={(event) => setSearchText(event.target.value)}
@@ -725,7 +752,7 @@ export function WorkProfilePanel({
                               <Button
                                 aria-label="SQL nodes only"
                                 aria-pressed={sqlOnly}
-                                onClick={() => setSqlOnly((current) => !current)}
+                                onClick={() => setInstrumentationFilter(sqlOnly ? "all" : "sql")}
                                 size="icon-sm"
                                 title={sqlOnlyTitle}
                                 type="button"
@@ -741,6 +768,40 @@ export function WorkProfilePanel({
                           </TooltipTrigger>
                           <TooltipContent sideOffset={6}>
                             {sqlOnlyTooltip}
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            {httpActionsDisabled ? (
+                              <span className="inline-flex" tabIndex={0}>
+                                <Button
+                                  aria-label="HTTP request nodes only"
+                                  aria-pressed={false}
+                                  disabled
+                                  size="icon-sm"
+                                  title={httpOnlyTitle}
+                                  type="button"
+                                  variant="outline"
+                                >
+                                  <Globe2 className="size-3.5" />
+                                </Button>
+                              </span>
+                            ) : (
+                              <Button
+                                aria-label="HTTP request nodes only"
+                                aria-pressed={httpOnly}
+                                onClick={() => setInstrumentationFilter(httpOnly ? "all" : "http")}
+                                size="icon-sm"
+                                title={httpOnlyTitle}
+                                type="button"
+                                variant={httpOnly ? "secondary" : "outline"}
+                              >
+                                <Globe2 className="size-3.5" />
+                              </Button>
+                            )}
+                          </TooltipTrigger>
+                          <TooltipContent sideOffset={6}>
+                            {httpOnlyTooltip}
                           </TooltipContent>
                         </Tooltip>
                         <Tooltip>
@@ -807,7 +868,7 @@ export function WorkProfilePanel({
                 </div>
                 {filterResult && filterResult.matchedNodeCount === 0 ? (
                   <ConsoleEmptyState className="rounded-xl border bg-muted/10" fill padding="spacious">
-                    {createWorkProfileEmptyStateMessage(activeSearchText, hotspotActive, selectedMethodScopeLabel, sqlOnly)}
+                    {createWorkProfileEmptyStateMessage(activeSearchText, hotspotActive, selectedMethodScopeLabel, instrumentationFilter)}
                   </ConsoleEmptyState>
                 ) : profile?.root ? (
                   <WorkProfileTreeNode
@@ -1748,17 +1809,18 @@ function filterWorkProfile(
   options: {
     hotspotActive: boolean;
     hotspotNodeIds?: ReadonlySet<string>;
+    instrumentationFilter: WorkProfileInstrumentationFilter;
     keepAncestors: boolean;
     methodScopeSelection?: WorkProfileMethodScopeSelection | null;
-    sqlOnly: boolean;
   }
 ): WorkProfileSearchResult | null {
   const normalizedQuery = normalizeWorkProfileSearchQuery(query);
   const searchActive = normalizedQuery.length > 0;
   const methodScopeRootNodeIds = options.methodScopeSelection?.nodeIds ?? [];
   const methodScopeActive = methodScopeRootNodeIds.length > 0;
-  const scopeOnlyFilter = methodScopeActive && !searchActive && !options.hotspotActive && !options.sqlOnly;
-  if (!profile || (!searchActive && !options.hotspotActive && !methodScopeActive && !options.sqlOnly)) {
+  const instrumentationFilterActive = options.instrumentationFilter !== "all";
+  const scopeOnlyFilter = methodScopeActive && !searchActive && !options.hotspotActive && !instrumentationFilterActive;
+  if (!profile || (!searchActive && !options.hotspotActive && !methodScopeActive && !instrumentationFilterActive)) {
     return null;
   }
 
@@ -1769,7 +1831,9 @@ function filterWorkProfile(
   const visit = (node: WorkProfileSnapshotNode, nodeId: string): boolean => {
     const searchMatched = searchActive && createWorkProfileNodeSearchText(node).includes(normalizedQuery);
     const hotspotMatched = options.hotspotActive && options.hotspotNodeIds?.has(nodeId) === true;
-    const sqlMatched = !options.sqlOnly || isWorkProfileSqlNode(node);
+    const instrumentationMatched = options.instrumentationFilter === "all"
+      || (options.instrumentationFilter === "sql" && isWorkProfileSqlNode(node))
+      || (options.instrumentationFilter === "http" && isWorkProfileHttpNode(node));
     const inSelectedSubtree = !methodScopeActive || methodScopeRootNodeIds.some((selectedNodeId) =>
       isWorkProfileNodeWithinSelectedScope(nodeId, selectedNodeId)
     );
@@ -1781,7 +1845,7 @@ function filterWorkProfile(
       : inSelectedSubtree
         && (!searchActive || searchMatched)
         && (!options.hotspotActive || hotspotMatched)
-        && sqlMatched;
+        && instrumentationMatched;
     let hasVisibleDescendant = false;
 
     node.children.forEach((child, index) => {
@@ -2050,6 +2114,10 @@ function collectWorkProfileSqlCommands(node: WorkProfileSnapshotNode): Normalize
 function normalizeWorkProfileSqlCommand(
   node: WorkProfileSnapshotNode
 ): NormalizedWorkProfileSqlCommand | null {
+  if (!isWorkProfileSqlNode(node)) {
+    return null;
+  }
+
   const context = findWorkProfileSqlCommandContext(node.context);
   if (!context) {
     return null;
@@ -2542,7 +2610,11 @@ function escapeWorkProfileSqlLiteral(value: string): string {
 }
 
 function isWorkProfileSqlNode(node: WorkProfileSnapshotNode): boolean {
-  return findWorkProfileSqlCommandContext(node.context) !== null;
+  return node.instrumentation === "sql.client";
+}
+
+function isWorkProfileHttpNode(node: WorkProfileSnapshotNode): boolean {
+  return node.instrumentation === "http.client";
 }
 
 function getWorkProfileObjectValue<TRecord extends Record<string, unknown>>(
@@ -2621,38 +2693,44 @@ function createWorkProfileEmptyStateMessage(
   searchQuery: string,
   hotspotActive: boolean,
   selectedMethodScopeLabel: string | null,
-  sqlOnly: boolean
+  instrumentationFilter: WorkProfileInstrumentationFilter
 ): string {
-  if (searchQuery.length > 0 && hotspotActive && selectedMethodScopeLabel && sqlOnly) {
-    return `No SQL profile nodes matched "${searchQuery}" within the selected hotspots for ${selectedMethodScopeLabel}.`;
-  }
+  const filteredNodeLabel = instrumentationFilter === "sql"
+    ? "SQL profile nodes"
+    : instrumentationFilter === "http"
+      ? "HTTP request profile nodes"
+      : null;
 
-  if (searchQuery.length > 0 && hotspotActive && sqlOnly) {
-    return `No SQL profile nodes matched "${searchQuery}" within the selected hotspots.`;
-  }
+  if (filteredNodeLabel) {
+    if (searchQuery.length > 0 && hotspotActive && selectedMethodScopeLabel) {
+      return `No ${filteredNodeLabel} matched "${searchQuery}" within the selected hotspots for ${selectedMethodScopeLabel}.`;
+    }
 
-  if (searchQuery.length > 0 && selectedMethodScopeLabel && sqlOnly) {
-    return `No SQL profile nodes matched "${searchQuery}" within ${selectedMethodScopeLabel}.`;
-  }
+    if (searchQuery.length > 0 && hotspotActive) {
+      return `No ${filteredNodeLabel} matched "${searchQuery}" within the selected hotspots.`;
+    }
 
-  if (searchQuery.length > 0 && sqlOnly) {
-    return `No SQL profile nodes matched "${searchQuery}".`;
-  }
+    if (searchQuery.length > 0 && selectedMethodScopeLabel) {
+      return `No ${filteredNodeLabel} matched "${searchQuery}" within ${selectedMethodScopeLabel}.`;
+    }
 
-  if (hotspotActive && selectedMethodScopeLabel && sqlOnly) {
-    return `No SQL profile nodes matched the selected hotspots within ${selectedMethodScopeLabel}.`;
-  }
+    if (searchQuery.length > 0) {
+      return `No ${filteredNodeLabel} matched "${searchQuery}".`;
+    }
 
-  if (hotspotActive && sqlOnly) {
-    return "No SQL profile nodes matched the selected hotspots.";
-  }
+    if (hotspotActive && selectedMethodScopeLabel) {
+      return `No ${filteredNodeLabel} matched the selected hotspots within ${selectedMethodScopeLabel}.`;
+    }
 
-  if (selectedMethodScopeLabel && sqlOnly) {
-    return `No SQL profile nodes matched within ${selectedMethodScopeLabel}.`;
-  }
+    if (hotspotActive) {
+      return `No ${filteredNodeLabel} matched the selected hotspots.`;
+    }
 
-  if (sqlOnly) {
-    return "No SQL profile nodes matched the active filters.";
+    if (selectedMethodScopeLabel) {
+      return `No ${filteredNodeLabel} matched within ${selectedMethodScopeLabel}.`;
+    }
+
+    return `No ${filteredNodeLabel} matched the active filters.`;
   }
 
   if (searchQuery.length > 0 && hotspotActive && selectedMethodScopeLabel) {

@@ -59,6 +59,7 @@ function system(overrides: Partial<WorkableSystemConnection> = {}): WorkableSyst
     id: "system-1",
     name: "Default",
     capabilities: {
+      httpClientProfilingAvailable: false,
       persistentCoordinationAvailable: false,
       sqlProfilingAvailable: false,
     },
@@ -222,6 +223,7 @@ test("stored host and system helpers normalize legacy realtime metadata, access,
     id: "system-2",
     name: "",
     capabilities: {
+      httpClientProfilingAvailable: true,
       persistentCoordinationAvailable: true,
       sqlProfilingAvailable: false,
     },
@@ -230,6 +232,7 @@ test("stored host and system helpers normalize legacy realtime metadata, access,
   assert.equal(normalizedSystem.hostId, "host-2");
   assert.equal(normalizedSystem.name, "Default");
   assert.equal(normalizedSystem.state, null);
+  assert.equal(normalizedSystem.capabilities.httpClientProfilingAvailable, true);
   assert.equal(normalizedSystem.capabilities.persistentCoordinationAvailable, true);
   assert.equal(createDefaultSystem("host-3").hostId, "host-3");
   assert.equal(createFullAccessSummary().canOperateAllWork, true);

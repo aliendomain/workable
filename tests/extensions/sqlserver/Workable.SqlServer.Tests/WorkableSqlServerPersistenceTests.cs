@@ -980,6 +980,66 @@ FROM workable.WorkflowRuns;
     }
 
     [Fact]
+    public async Task DurableQueueRoundTripsExplicitProfilingCaptureModes()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var systemName = $"profiling-capture-mode-{Guid.NewGuid():N}";
+        const string fullDefinitionName = "profiling-capture-mode-full";
+        const string boundedDefinitionName = "profiling-capture-mode-bounded";
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var systemId = WorkSystemId.New();
+        var fullWorkerId = WorkerId.New();
+        var boundedWorkerId = WorkerId.New();
+
+        await store.Enqueue(CreateDurableEnqueueRequest(
+            systemId,
+            systemName,
+            fullWorkerId,
+            fullDefinitionName,
+            "profiling-full",
+            transaction: null,
+            enableIdempotency: false,
+            options: new WorkerOptions
+            {
+                ProfilingEnabled = true,
+                ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+            }));
+        await store.Enqueue(CreateDurableEnqueueRequest(
+            systemId,
+            systemName,
+            boundedWorkerId,
+            boundedDefinitionName,
+            "profiling-bounded",
+            transaction: null,
+            enableIdempotency: false,
+            options: new WorkerOptions
+            {
+                ProfilingEnabled = true,
+                ProfilingCaptureMode = WorkProfileCaptureMode.Bounded,
+            }));
+
+        var claimed = await ClaimReady(
+            store,
+            "profiling-consumer",
+            batchSize: 10,
+            workSystemName: systemName);
+        var byWorkerId = claimed.ToDictionary(entry => entry.Lease.WorkerId);
+
+        Assert.Equal(WorkProfileCaptureMode.Full, byWorkerId[fullWorkerId].Options.ProfilingCaptureMode);
+        Assert.True(byWorkerId[fullWorkerId].Options.HasExplicitProfilingCaptureMode);
+        Assert.Equal(WorkProfileCaptureMode.Bounded, byWorkerId[boundedWorkerId].Options.ProfilingCaptureMode);
+        Assert.True(byWorkerId[boundedWorkerId].Options.HasExplicitProfilingCaptureMode);
+    }
+
+    [Fact]
     public async Task WorkflowTransactionRollbackDiscardsWorkflowRunsAndDurableWorkersTogether()
     {
         if (this.SkipIfUnavailable())
@@ -1233,6 +1293,7 @@ WHERE RunId = '{runId.Value:D}';
                 node.Label.StartsWith("SQL ", StringComparison.Ordinal));
         var contextJson = JsonSerializer.Serialize(sqlNode.Context);
 
+        Assert.Equal("sql.client", sqlNode.Instrumentation);
         Assert.Contains("Microsoft.Data.SqlClient", contextJson, StringComparison.Ordinal);
         Assert.Contains("ExecuteScalar", contextJson, StringComparison.Ordinal);
         Assert.Contains("\"Statement\":\"SELECT @Value;\"", contextJson, StringComparison.Ordinal);
@@ -1240,6 +1301,117 @@ WHERE RunId = '{runId.Value:D}';
         Assert.Contains("\"Name\":\"@Value\"", contextJson, StringComparison.Ordinal);
         Assert.Contains("\"Value\":42", contextJson, StringComparison.Ordinal);
         Assert.Contains("\"IsRedacted\":false", contextJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FailedSqlClientExecutionAddsFailureToItsSingleTimingNode()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-failed-command";
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Profiles a failed Microsoft.Data.SqlClient command once.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT * FROM workable.__profiling_missing_table;";
+                    try
+                    {
+                        await command.ExecuteScalarAsync(cancellationToken);
+                    }
+                    catch (SqlException)
+                    {
+                        return WorkExecutionResult.Success();
+                    }
+
+                    return WorkExecutionResult.Failure([
+                        WorkMessage.Error("sql.failure.expected", "The deliberately invalid statement unexpectedly succeeded."),
+                    ]);
+                }))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var profile = completion.Worker?.Profile ?? throw new InvalidOperationException("Expected worker profile.");
+        var nodes = Flatten(profile.Root).ToList();
+        var sqlNode = Assert.Single(
+            nodes,
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+        var contextJson = JsonSerializer.Serialize(sqlNode.Context);
+
+        Assert.DoesNotContain(nodes, node => node.Label == "SQL Error");
+        Assert.Contains("\"Outcome\":\"Faulted\"", contextJson, StringComparison.Ordinal);
+        Assert.Contains("Microsoft.Data.SqlClient.SqlException", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"MessageTruncated\":false", contextJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SqlProfilingUsesSharedAutomaticInstrumentationLimitAndReportsOmissions()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-automatic-limit";
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSqlServerDurableQueue(
+                this.ConnectionString,
+                SchemaName)
+            .AddWorkableSystem(builder =>
+            {
+                builder.ConfigureProfiling(maximumAutomaticInstrumentationNodes: 1);
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        workName,
+                        "Bounds automatic SQL profile nodes.",
+                        defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                    async (context, input, cancellationToken) =>
+                    {
+                        await using var connection = new SqlConnection(this.ConnectionString);
+                        await connection.OpenAsync(cancellationToken);
+                        for (var value = 1; value <= 2; value++)
+                        {
+                            await using var command = connection.CreateCommand();
+                            command.CommandText = "SELECT @Value;";
+                            command.Parameters.AddWithValue("@Value", value);
+                            await command.ExecuteScalarAsync(cancellationToken);
+                        }
+
+                        return WorkExecutionResult.Success();
+                    });
+            })
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var profile = completion.Worker?.Profile ?? throw new InvalidOperationException("Expected worker profile.");
+        Assert.Single(
+            Flatten(profile.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+        var summary = Assert.Single(
+            Flatten(profile.Root),
+            node => node.Label == "Automatic instrumentation truncated");
+        Assert.Contains("sql.client", JsonSerializer.Serialize(summary.Context), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1306,6 +1478,103 @@ WHERE RunId = '{runId.Value:D}';
         Assert.Contains($"\"Statement\":{JsonSerializer.Serialize(statement)}", contextJson, StringComparison.Ordinal);
         Assert.Contains($"\"Value\":{JsonSerializer.Serialize(description)}", contextJson, StringComparison.Ordinal);
         Assert.Contains($"\"Value\":{JsonSerializer.Serialize($"0x{Convert.ToHexString(payload)}")}", contextJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SqlProfilingBoundsLargeStatementsTextAndBinaryParameterPreviews()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-bounded-values";
+        var text = new string('t', 8_000);
+        var payload = Enumerable.Range(0, 2_048).Select(static index => (byte)index).ToArray();
+        var statement = "SELECT LEN(@Text), DATALENGTH(@Payload); --" + new string('s', 40_000);
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Bounds large SQL profile context values.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await using var connection = new SqlConnection(this.ConnectionString);
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = statement;
+                    command.Parameters.AddWithValue("@Text", text);
+                    command.Parameters.Add("@Payload", SqlDbType.VarBinary, payload.Length).Value = payload;
+                    await command.ExecuteScalarAsync(cancellationToken);
+                    return WorkExecutionResult.Success();
+                }))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        var sqlNode = Assert.Single(
+            Flatten(completion.Worker!.Profile!.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(sqlNode.Context));
+        var root = json.RootElement;
+        var parameters = root.GetProperty("Parameters").EnumerateArray().ToArray();
+        var textParameter = Assert.Single(parameters, parameter => parameter.GetProperty("Name").GetString() == "@Text");
+        var binaryParameter = Assert.Single(parameters, parameter => parameter.GetProperty("Name").GetString() == "@Payload");
+
+        Assert.True(root.GetProperty("StatementTruncated").GetBoolean());
+        Assert.Equal(8_192, root.GetProperty("Statement").GetString()!.Length);
+        Assert.True(textParameter.GetProperty("IsTruncated").GetBoolean());
+        Assert.Equal(1_024, textParameter.GetProperty("Value").GetString()!.Length);
+        Assert.True(binaryParameter.GetProperty("IsTruncated").GetBoolean());
+        Assert.Equal(2 + (256 * 2), binaryParameter.GetProperty("Value").GetString()!.Length);
+    }
+
+    [Fact]
+    public async Task SqlProfilingFinalizesOutstandingCommandsBeforePublishingProfileSnapshot()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string workName = "sql-profiled-outstanding-command";
+        await using var pendingConnection = new SqlConnection(this.ConnectionString);
+        await using var pendingCommand = pendingConnection.CreateCommand();
+        pendingCommand.CommandText = "WAITFOR DELAY '00:00:01'; SELECT 1;";
+        Task<object?>? pendingExecution = null;
+        using var provider = new ServiceCollection()
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create(
+                    workName,
+                    "Finalizes an outstanding SQL profile timing.",
+                    defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
+                async (context, input, cancellationToken) =>
+                {
+                    await pendingConnection.OpenAsync(cancellationToken);
+                    pendingExecution = pendingCommand.ExecuteScalarAsync(CancellationToken.None);
+                    return WorkExecutionResult.Success();
+                }))
+            .BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var completion = await WaitForCompletion(await system.Queue.Enqueue(workName));
+        var sqlNode = Assert.Single(
+            Flatten(completion.Worker!.Profile!.Root),
+            node => node.MetricType == WorkProfileMetricType.Timing &&
+                node.Label.StartsWith("SQL ", StringComparison.Ordinal));
+        var beforeCompletion = JsonSerializer.Serialize(sqlNode.Context);
+
+        Assert.Contains("\"Outcome\":\"Incomplete\"", beforeCompletion, StringComparison.Ordinal);
+        await (pendingExecution ?? throw new InvalidOperationException("Expected pending SQL execution."));
+        Assert.Equal(beforeCompletion, JsonSerializer.Serialize(sqlNode.Context));
     }
 
     [Fact]
@@ -3358,12 +3627,13 @@ WHERE entries.SubjectValue = @SubjectValue;
     private static async Task<IReadOnlyList<WorkQueueDurabilityEntry>> ClaimReady(
         IWorkPersistenceStore store,
         string ownerId,
-        int batchSize)
+        int batchSize,
+        string? workSystemName = null)
     {
         var entries = new List<WorkQueueDurabilityEntry>();
         await foreach (var entry in store.ClaimReady(
             new WorkQueueDurabilityClaimRequest(
-                WorkSystemName: null,
+                WorkSystemName: workSystemName,
                 OwnerId: ownerId,
                 BatchSize: batchSize,
                 LeaseDuration: TimeSpan.FromMinutes(1))))
@@ -3852,14 +4122,15 @@ WHERE WorkerId = @WorkerId;
         string definitionName,
         string subjectValue,
         IWorkQueueDurabilityTransaction? transaction,
-        bool enableIdempotency = true)
+        bool enableIdempotency = true,
+        WorkerOptions? options = null)
         => new(
             systemId,
             systemName,
             workerId,
             WorkDefinition.Create(definitionName),
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", subjectValue)),
-            WorkerOptions.Default,
+            options ?? WorkerOptions.Default,
             DurablePersistenceConcurrencyConfiguration(enableIdempotency: enableIdempotency),
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow,

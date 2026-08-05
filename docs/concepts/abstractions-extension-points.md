@@ -10,6 +10,7 @@ Reach for these APIs only when one of these is true:
 
 - you are implementing a persistence-backed durability provider
 - you want Workable iterations translated into your metrics pipeline
+- you are adding automatic profiling instrumentation for another dependency or protocol
 - you need a host lifecycle callback during shutdown
 - you are advertising or replacing a realtime transport
 - you need custom authorization-group resolution
@@ -129,6 +130,31 @@ Workable calls it when an iteration result is recorded. That makes it the clean 
 
 The important detail is that the hook is iteration based, not queue-request based. For recurring work and transient retry, one worker can produce multiple iteration records over time.
 
+## Profiling Instrumentation Factory
+
+`IWorkProfilingInstrumentationFactory` is the public seam for integrations that automatically contribute dependency timings to active worker profiles:
+
+```csharp
+public interface IWorkProfilingInstrumentationFactory
+{
+    IDisposable Create(
+        WorkSystemId systemId,
+        IWorkProfilingContextAccessor profilingContextAccessor);
+}
+```
+
+Register factory implementations as `IWorkProfilingInstrumentationFactory` singletons. Workable calls the factory once for each started system and disposes the returned instrumentation when that system stops. A factory can subscribe to a provider's `ActivitySource`, `DiagnosticListener`, or another process-wide hook without coupling that subscription to executor code.
+
+The returned object can be a system-scoped registration lease over shared instrumentation. The built-in HTTP and SQL client integrations use that pattern to maintain one process-wide provider observer for all started Workable systems in the host instead of installing an observer per system.
+
+The returned instrumentation must use `IWorkProfilingContextAccessor` before recording an operation. Capture only when the ambient context exists and its `SystemId` matches the factory's system id. That check keeps process-wide telemetry correctly isolated when multiple Workable systems share a host.
+
+After resolving the matching `WorkProfilingContext`, automatic integrations should use `TryStartAutomaticTiming(...)` and `TryAddAutomaticInfo(...)` instead of calling `context.Profiler` directly. Pass a non-empty, stable, collision-resistant instrumentation key and do not reuse Workable's reserved `application`, `workable.profiling`, `sql.client`, or `http.client` values. Workable retains the exact key in the required `WorkProfileSnapshotNode.Instrumentation` property, uses it for shared-budget omission reporting, and allows diagnostic clients to filter nodes without inspecting labels or captured context. Prefer the overloads that accept a context factory. Workable invokes the factory only after admitting the node through the shared per-profile automatic instrumentation budget, avoiding parsing and allocations for omitted operations. The methods report `false` when the node was omitted. Workers resolved to `WorkProfileCaptureMode.Full` admit every automatic node.
+
+For operations that may still be active when worker execution ends, implement `IWorkProfilePendingInstrumentation` and register it when `context.Profiler` exposes `IWorkProfilePendingInstrumentationRegistry`. Registration and unregistration must use the registry's short entry/exit protocol, and every successful entry must be paired with an exit in a `finally` block. Workable waits for active registration windows through a drain signal, then calls `FinalizeForProfileSnapshot()` before materializing the immutable snapshot. This lets an integration mark the operation `Incomplete`, prevents a late provider callback from mutating published profile context, and avoids active spinning while publication waits for a concurrent registration.
+
+Use [Profiling](profiling.md) for the built-in HTTP client registration and the SQL Server integration as concrete examples.
+
 ## Lifecycle Observer
 
 `IWorkSystemLifecycleObserver` is the host-facing shutdown hook:
@@ -195,4 +221,4 @@ This is the seam between "the host knows who the caller is" and "Workable needs 
 
 These contracts matter because they keep advanced integrations on the supported public side of the package boundary.
 
-Use `Workable.Abstractions` as a pure consumer surface by default. Drop into these extension points only when you are deliberately extending one of Workable's hosting responsibilities: persistence, metrics, lifecycle, realtime capability, or authorization-group resolution.
+Use `Workable.Abstractions` as a pure consumer surface by default. Drop into these extension points only when you are deliberately extending one of Workable's hosting responsibilities: persistence, metrics, profiling instrumentation, lifecycle, realtime capability, or authorization-group resolution.

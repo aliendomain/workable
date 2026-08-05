@@ -313,6 +313,110 @@ test("hosted Workable token endpoint returns 200 with no token when no binding i
   });
 });
 
+test("hosted Workable token endpoint returns the access token's actual remaining lifetime", async () => {
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+    ]),
+  });
+  const originalNow = Date.now;
+  const now = 1_800_000_000_000;
+  Date.now = () => now;
+
+  try {
+    const cookieHeader = createEntraAuthenticatedCookieHeader(
+      env,
+      new Request("https://admin.example.com/"),
+      {
+        access_token: "hosted-api-access-token",
+        expires_in: 900,
+        refresh_token: "refresh-me",
+        token_type: "Bearer",
+      }
+    );
+    const response = await createEntraTargetAccessTokenResponse(
+      new Request("https://admin.example.com/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable", {
+        headers: { cookie: cookieHeader },
+      }),
+      env
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      accessToken: "hosted-api-access-token",
+      accessTokenExpiresInSeconds: 900,
+    });
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("hosted Workable token endpoint can force one refresh for a rejected realtime token", async () => {
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      {
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      },
+    ]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    {
+      access_token: "still-current-but-rejected-token",
+      expires_in: 3600,
+      refresh_token: "refresh-me",
+      token_type: "Bearer",
+    }
+  );
+  const requestedUrls: string[] = [];
+  const response = await createEntraTargetAccessTokenResponse(
+    new Request("https://admin.example.com/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable", {
+      headers: {
+        cookie: cookieHeader,
+        "x-workable-force-token-refresh": "true",
+      },
+    }),
+    env,
+    async (url) => {
+      requestedUrls.push(String(url));
+      if (String(url).includes(".well-known/openid-configuration")) {
+        return new Response(JSON.stringify({
+          token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({
+        access_token: "forced-replacement-token",
+        expires_in: 3600,
+        refresh_token: "next-refresh-token",
+        token_type: "Bearer",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    accessToken: string;
+    accessTokenExpiresInSeconds: number;
+  };
+  assert.equal(body.accessToken, "forced-replacement-token");
+  assert.ok(body.accessTokenExpiresInSeconds >= 3599);
+  assert.equal(requestedUrls.length, 2);
+  assert.ok(requestedUrls[0]?.includes(".well-known/openid-configuration"));
+  assert.ok(requestedUrls[1]?.endsWith("/oauth2/v2.0/token"));
+});
+
 test("authenticated proxy access does not require local operation-role configuration", () => {
   const authentication = authenticateAdminRequest(
     new Headers({ authorization: basic("admin", "correct horse battery staple") }),

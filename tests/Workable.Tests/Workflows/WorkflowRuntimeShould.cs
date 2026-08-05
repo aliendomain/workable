@@ -3120,16 +3120,22 @@ public sealed class WorkflowRuntimeShould
             "workflow.auto.settlement",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
-        await blockedWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(15));
         try
         {
+            await blockedWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(15));
             var blocked = system.WorkflowRuntime.Get(handle.RunId!.Value);
             Assert.Equal(WorkflowRunStatus.Blocked, blocked?.Status);
             var failedWorkerId = blocked!.Steps.Single(step => step.Name == "process").WorkerIds.Single();
             var failedWorker = await system.Query.Worker(failedWorkerId);
             Assert.Equal(WorkerState.Failed, failedWorker!.State);
 
-            var restarted = await system.Workers.Execute(failedWorker.Version, WorkAction.Start);
+            var restartTask = system.Workers.Execute(failedWorker.Version, WorkAction.Start);
+            await TestEventually.Until(
+                async () => (await system.Query.Worker(failedWorkerId))?.State == WorkerState.Completed,
+                "Expected the restarted workflow child to complete while workflow persistence remained blocked.",
+                timeout: TimeSpan.FromSeconds(15));
+
+            var restarted = await restartTask.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(restarted.IsAccepted);
             Assert.False(handle.WaitForCompletion().IsCompleted);
         }

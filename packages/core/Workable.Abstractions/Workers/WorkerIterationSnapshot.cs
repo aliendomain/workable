@@ -74,7 +74,8 @@ public sealed record WorkerIterationSnapshot(
     public IReadOnlyList<WorkerLogEntry> Logs { get; init; } = [];
 
     /// <summary>
-    /// Gets the retained execution profile for the iteration, when profiling was enabled.
+    /// Gets the retained execution profile for the iteration, when profiling was enabled and the
+    /// authorized session has diagnostics permission.
     /// </summary>
     public WorkProfileSnapshot? Profile { get; init; }
 }

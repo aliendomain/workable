@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Workable.Tests" />
+    <InternalsVisibleTo Include="Workable.PerformanceHarness" />
     <InternalsVisibleTo Include="Workable.HttpApi" />
     <InternalsVisibleTo Include="Workable.Mcp" />
     <InternalsVisibleTo Include="Workable.SignalR" />

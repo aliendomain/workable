@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Workable.SqlServer;
 
@@ -22,9 +23,8 @@ public static class WorkableSqlServerServiceCollectionExtensions
 
         services.AddSingleton<WorkableSqlServerProfilingRegistrationMarker>();
         services.AddSingleton<IWorkSystemCapabilityContributor, WorkableSqlServerProfilingCapabilityContributor>();
-        services.AddSingleton<WorkableSqlServerProfilingLifecycleObserver>();
-        services.AddSingleton<IWorkSystemLifecycleObserver>(serviceProvider =>
-            serviceProvider.GetRequiredService<WorkableSqlServerProfilingLifecycleObserver>());
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IWorkProfilingInstrumentationFactory, WorkableSqlServerProfilingInstrumentationFactory>());
         return services;
     }
 

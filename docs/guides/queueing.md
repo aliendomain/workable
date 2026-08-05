@@ -145,7 +145,7 @@ IWorkerHandle handle = await workSystem.Queue.Enqueue(
     cancellationToken: cancellationToken);
 ```
 
-When profiling is enabled, Workable captures an execution tree for each worker iteration. The tree includes Workable's executor call scope and any profile scopes, timings, or info entries added through `IWorkExecutionContext.Profile` or injected `IWorkProfiler` services during execution. The latest profile is exposed on `WorkerSnapshot.Profile`, and retained iteration profiles are exposed on `WorkerSnapshot.Iterations`.
+When profiling is enabled, Workable captures an execution tree for each worker iteration. The tree includes Workable's executor call scope and any profile scopes, timings, or info entries added through `IWorkExecutionContext.Profile` or injected `IWorkProfiler` services during execution. The latest profile is exposed on `WorkerSnapshot.Profile`, and retained iteration profiles are exposed on `WorkerSnapshot.Iterations`. For authorization-enabled systems, those profile fields are populated only for sessions with system-level diagnostics permission.
 
 Use `WorkerOptions.Configuration` for queue-time configuration overrides.
 

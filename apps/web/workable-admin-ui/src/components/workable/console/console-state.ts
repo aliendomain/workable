@@ -279,6 +279,7 @@ export function normalizeStoredSystem(
   system: WorkableSystemConnection
 ): WorkableSystemConnection {
   const legacySystem = system as WorkableSystemConnection & {
+    httpClientProfilingAvailable?: boolean;
     persistentCoordinationAvailable?: boolean;
     sqlProfilingAvailable?: boolean;
   };
@@ -291,6 +292,7 @@ export function normalizeStoredSystem(
     access: system.access ?? (hostId === "local-sample-host" ? createFullAccessSummary() : undefined),
     capabilities: normalizeWorkableHttpSystemCapabilities(
       legacySystem.capabilities ?? {
+        httpClientProfilingAvailable: legacySystem.httpClientProfilingAvailable,
         persistentCoordinationAvailable: legacySystem.persistentCoordinationAvailable,
         sqlProfilingAvailable: legacySystem.sqlProfilingAvailable,
       }
