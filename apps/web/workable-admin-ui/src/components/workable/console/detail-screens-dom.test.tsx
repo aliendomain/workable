@@ -4,6 +4,7 @@ import { ConsoleHeaderCapabilitiesProvider } from "@/components/features/console
 import {
   QueueDialog,
   WorkerConsoleView,
+  resolveIterationHttpClientProfilingAvailable,
   resolveIterationSqlProfilingAvailable,
 } from "@/components/workable/console/detail-screens";
 import { renderDom } from "@/test/dom";
@@ -23,6 +24,7 @@ test("iteration profile SQL availability prefers the live overview capability ov
   assert.equal(
     resolveIterationSqlProfilingAvailable({
       capabilities: {
+        httpClientProfilingAvailable: false,
         persistentCoordinationAvailable: false,
         sqlProfilingAvailable: true,
       },
@@ -32,6 +34,7 @@ test("iteration profile SQL availability prefers the live overview capability ov
   assert.equal(
     resolveIterationSqlProfilingAvailable({
       capabilities: {
+        httpClientProfilingAvailable: false,
         persistentCoordinationAvailable: false,
         sqlProfilingAvailable: false,
       },
@@ -39,6 +42,30 @@ test("iteration profile SQL availability prefers the live overview capability ov
     false
   );
   assert.equal(resolveIterationSqlProfilingAvailable(null, false), false);
+});
+
+test("iteration profile HTTP availability prefers the live overview capability over stored navigation state", () => {
+  assert.equal(
+    resolveIterationHttpClientProfilingAvailable({
+      capabilities: {
+        httpClientProfilingAvailable: true,
+        persistentCoordinationAvailable: false,
+        sqlProfilingAvailable: false,
+      },
+    }, false),
+    true
+  );
+  assert.equal(
+    resolveIterationHttpClientProfilingAvailable({
+      capabilities: {
+        httpClientProfilingAvailable: false,
+        persistentCoordinationAvailable: false,
+        sqlProfilingAvailable: false,
+      },
+    }, true),
+    false
+  );
+  assert.equal(resolveIterationHttpClientProfilingAvailable(null, false), false);
 });
 
 test("queue dialog applies schema defaults, submits edited input, and closes on Queue", async () => {
@@ -279,6 +306,7 @@ test("worker console exposes a view workflow action when the overview carries a 
   const result = await renderDom(
     <ConsoleHeaderCapabilitiesProvider>
       <WorkerConsoleView
+        canViewDiagnostics
         clearSystemNotification={() => undefined}
         connection={connection}
         onActiveRealtimeConnectionCountChange={() => undefined}

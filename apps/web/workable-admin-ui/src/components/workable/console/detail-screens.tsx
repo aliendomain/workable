@@ -534,6 +534,7 @@ export function DefinitionsView({
 }
 
 export function DefinitionView({
+  canViewDiagnostics,
   connection,
   definitionId,
   onDefinitionResolved,
@@ -541,6 +542,7 @@ export function DefinitionView({
   onReady,
   refreshToken,
 }: {
+  canViewDiagnostics: boolean;
   connection: WorkableConnection;
   definitionId: string;
   onDefinitionResolved: (definitionName: string | null) => void;
@@ -720,6 +722,7 @@ export function DefinitionView({
             </CardContent>
           </Card>
           <ProfilingCaptureRulesCard
+            canViewDiagnostics={canViewDiagnostics}
             connection={connection}
             definitionName={definition.name}
           />
@@ -777,6 +780,7 @@ export function DefinitionView({
 }
 
 export function WorkerConsoleView({
+  canViewDiagnostics,
   clearSystemNotification,
   connection,
   initialUiState,
@@ -795,6 +799,7 @@ export function WorkerConsoleView({
   realtimePayloadOpen,
   workerId,
 }: {
+  canViewDiagnostics: boolean;
   clearSystemNotification: (notificationId: string) => void;
   connection: WorkableConnection;
   initialUiState?: WorkerConsoleViewUiStateSnapshot | null;
@@ -2254,6 +2259,7 @@ export function WorkerConsoleView({
                 </div>
                 <ProfilingCaptureRulesCard
                   actorId={worker.origin.actor?.id}
+                  canViewDiagnostics={canViewDiagnostics}
                   connection={connection}
                   definitionName={worker.definitionName}
                 />
@@ -2444,6 +2450,7 @@ export function WorkerConsoleView({
 
 export function IterationConsoleView({
   connection,
+  httpClientProfilingAvailable = true,
   onOpenDefinition,
   refreshToken,
   sequence,
@@ -2451,6 +2458,7 @@ export function IterationConsoleView({
   workerId,
 }: {
   connection: WorkableConnection;
+  httpClientProfilingAvailable?: boolean;
   onNavigateBack: () => void;
   onOpenDefinition: (definitionName: string, definitionLabel?: string | null) => void;
   refreshToken: number;
@@ -2500,6 +2508,10 @@ export function IterationConsoleView({
   const landing = iterationOverview.data;
   const activeIteration = landing?.iteration;
   const effectiveSqlProfilingAvailable = resolveIterationSqlProfilingAvailable(landing, sqlProfilingAvailable);
+  const effectiveHttpClientProfilingAvailable = resolveIterationHttpClientProfilingAvailable(
+    landing,
+    httpClientProfilingAvailable
+  );
   const iterationLogQueryKey = useMemo(
     () => `${iterationLogSortDirection}|${normalizedSelectedIterationLogLevels.join(",")}`,
     [iterationLogSortDirection, normalizedSelectedIterationLogLevels]
@@ -2750,6 +2762,7 @@ export function IterationConsoleView({
             ) : null}
             {!hiddenPanelIds.has("iterationProfile") ? (
               <WorkProfilePanel
+                httpClientProfilingAvailable={effectiveHttpClientProfilingAvailable}
                 iterationIsFinal={activeIteration.isFinal}
                 iterationStatus={activeIteration.status}
                 onClose={() => setIterationPanelVisible("iterationProfile", false)}
@@ -2823,6 +2836,13 @@ export function resolveIterationSqlProfilingAvailable(
   fallback: boolean
 ): boolean {
   return landing?.capabilities?.sqlProfilingAvailable ?? fallback;
+}
+
+export function resolveIterationHttpClientProfilingAvailable(
+  landing: Pick<WorkWorkerIterationOverviewComponent, "capabilities"> | null | undefined,
+  fallback: boolean
+): boolean {
+  return landing?.capabilities?.httpClientProfilingAvailable ?? fallback;
 }
 
 export function QueueDialog({

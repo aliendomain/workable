@@ -32,6 +32,7 @@ public sealed record WorkableHttpQueueRequestDescriptor(
                 Field("description", "Description", "Optional request context stored on the worker origin so callers can attach human-readable intent or audit notes."),
                 Field("completion", "Completion", "Choose whether the HTTP response returns as soon as the worker is accepted or waits for final worker completion."),
                 Field("options.profilingEnabled", "Profiling", "Capture a per-worker execution profile for diagnostics."),
+                Field("options.profilingCaptureMode", "Profiling capture", "Keep automatic instrumentation bounded, or request full capture when the caller also has diagnostics permission."),
                 Field("subjectId.type", "Subject type", "Optional subject namespace to attach to this queued worker, such as user, tenant, account, or order."),
                 Field("subjectId.value", "Subject value", "Optional subject identifier to attach to this queued worker. Idempotency, querying, and subject-scoped concurrency can use it."),
             ]),

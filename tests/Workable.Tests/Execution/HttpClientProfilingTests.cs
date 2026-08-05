@@ -719,6 +719,59 @@ public sealed class HttpClientProfilingTests
     }
 
     [Fact]
+    public void ThrowingStringTagValuesCannotEscapeTheHttpDiagnosticsCallbacks()
+    {
+        var systemId = WorkSystemId.New();
+        var profile = new WorkProfile("root");
+        using var activities = new ActivitySource(ActivitySourceName);
+        using var observer = new WorkableHttpClientProfilingObserver(systemId, new WorkProfilingContextAccessor());
+
+        using (WorkProfilerContext.Begin(systemId, profile))
+        {
+            var activity = activities.StartActivity(
+                RequestActivityName,
+                ActivityKind.Client,
+                default(ActivityContext),
+                [
+                    new KeyValuePair<string, object?>("http.request.method", new ThrowingStringTag()),
+                    new KeyValuePair<string, object?>("url.full", "https://example.test/safe"),
+                ]);
+            Assert.NotNull(activity);
+            activity.SetTag("error.type", new ThrowingStringTag());
+            activity.Dispose();
+        }
+
+        var node = Assert.Single(Flatten(profile.ToSnapshot().Root), candidate => candidate.Label == "HTTP Request");
+        var contextJson = JsonSerializer.Serialize(node.Context);
+        Assert.Contains("\"Method\":null", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"ExceptionType\":null", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"Outcome\":\"Completed\"", contextJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ThrowingConvertibleStatusTagCannotEscapeTheHttpDiagnosticsCallbacks()
+    {
+        var systemId = WorkSystemId.New();
+        var profile = new WorkProfile("root");
+        using var activities = new ActivitySource(ActivitySourceName);
+        using var observer = new WorkableHttpClientProfilingObserver(systemId, new WorkProfilingContextAccessor());
+
+        using (WorkProfilerContext.Begin(systemId, profile))
+        {
+            using var activity = StartRequiredRequestActivity(
+                activities,
+                "GET",
+                "https://example.test/safe");
+            activity.SetTag("http.response.status_code", new ThrowingConvertibleTag());
+        }
+
+        var node = Assert.Single(Flatten(profile.ToSnapshot().Root), candidate => candidate.Label == "HTTP Request");
+        var contextJson = JsonSerializer.Serialize(node.Context);
+        Assert.Contains("\"StatusCode\":null", contextJson, StringComparison.Ordinal);
+        Assert.Contains("\"Outcome\":\"Completed\"", contextJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LegacyParentIdsAndSparseTelemetryAreCapturedSafely()
     {
         var systemId = WorkSystemId.New();
@@ -877,5 +930,51 @@ public sealed class HttpClientProfilingTests
         public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
 
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    private sealed class ThrowingStringTag
+    {
+        public override string ToString()
+            => throw new InvalidOperationException("Instrumentation must not invoke arbitrary tag formatting.");
+    }
+
+    private sealed class ThrowingConvertibleTag : IConvertible
+    {
+        public TypeCode GetTypeCode() => TypeCode.Object;
+
+        public bool ToBoolean(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public byte ToByte(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public char ToChar(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public DateTime ToDateTime(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public decimal ToDecimal(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public double ToDouble(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public short ToInt16(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public int ToInt32(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public long ToInt64(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public sbyte ToSByte(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public float ToSingle(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public string ToString(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public object ToType(Type conversionType, IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public ushort ToUInt16(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public uint ToUInt32(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        public ulong ToUInt64(IFormatProvider? provider) => throw UnexpectedConversion();
+
+        private static InvalidOperationException UnexpectedConversion()
+            => new("Instrumentation must not invoke arbitrary tag conversion.");
     }
 }

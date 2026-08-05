@@ -246,7 +246,7 @@ internal sealed class WorkProfile :
             return true;
         }
 
-        Interlocked.Decrement(ref this.pendingInstrumentationRegistrations);
+        this.CompletePendingInstrumentationRegistration();
         return false;
     }
 
@@ -255,6 +255,9 @@ internal sealed class WorkProfile :
         => this.pendingInstrumentation.TryAdd(instrumentation, 0);
 
     void IWorkProfilePendingInstrumentationRegistry.ExitPendingInstrumentationRegistration()
+        => this.CompletePendingInstrumentationRegistration();
+
+    private void CompletePendingInstrumentationRegistration()
     {
         if (Interlocked.Decrement(ref this.pendingInstrumentationRegistrations) == 0 &&
             Volatile.Read(ref this.finalizing) != 0)

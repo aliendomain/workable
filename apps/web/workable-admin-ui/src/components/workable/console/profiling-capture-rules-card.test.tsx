@@ -39,6 +39,7 @@ test("profiling capture card creates work and user rules and removes active rule
   const result = await renderDom(
     <ProfilingCaptureRulesCard
       actorId="user-123"
+      canViewDiagnostics
       connection={{ apiUrl: "https://console.example.com/workable", systemName: "Ops" }}
       definitionName="orders.run"
     />
@@ -63,6 +64,33 @@ test("profiling capture card creates work and user rules and removes active rule
     assert.ok(remove instanceof result.dom.window.HTMLElement);
     await result.click(remove);
     await result.waitFor(() => assert.ok(requests.some((request) => request.method === "DELETE")));
+  } finally {
+    globalThis.fetch = previousFetch;
+    await result.restore();
+  }
+});
+
+test("profiling capture card does not request or render diagnostics controls without permission", async () => {
+  const previousFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = (async () => {
+    fetchCount += 1;
+    return Response.json({ maximumAutomaticInstrumentationNodes: 500, rules: [] });
+  }) as typeof fetch;
+
+  const result = await renderDom(
+    <ProfilingCaptureRulesCard
+      actorId="user-123"
+      canViewDiagnostics={false}
+      connection={{ apiUrl: "https://console.example.com/workable", systemName: "Ops" }}
+      definitionName="orders.run"
+    />
+  );
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(fetchCount, 0);
+    assert.equal(result.container.textContent, "");
   } finally {
     globalThis.fetch = previousFetch;
     await result.restore();

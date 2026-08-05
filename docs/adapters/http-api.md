@@ -524,7 +524,7 @@ Queue requests can include HTTP worker options and input identity metadata.
 }
 ```
 
-HTTP queue options use `WorkableHttpWorkerOptions`. Its `configuration` shape includes start behavior, coordination, recurrence, transient retry, failed-worker handling, logging, and retention. Coordination selects local or persistent coordination state, then enables duplicate protection, capacity limits, durable queueing, and durable completion under that mode. Retention includes `purgeInterval` and the asynchronously enforced `maximumFinalWorkers` target. Invocation channels are not part of the HTTP queue request because they are definition-level configuration, not per-request overrides.
+HTTP queue options use `WorkableHttpWorkerOptions`. Alongside `profilingEnabled`, `profilingCaptureMode` accepts `Bounded` or `Full`; an explicit `Full` request requires diagnostics permission in addition to normal queue permission. Its `configuration` shape includes start behavior, coordination, recurrence, transient retry, failed-worker handling, logging, and retention. Coordination selects local or persistent coordination state, then enables duplicate protection, capacity limits, durable queueing, and durable completion under that mode. Retention includes `purgeInterval` and the asynchronously enforced `maximumFinalWorkers` target. Invocation channels are not part of the HTTP queue request because they are definition-level configuration, not per-request overrides.
 
 The accepted worker remains owned by Workable and can be queried, observed, or controlled through Workable.
 

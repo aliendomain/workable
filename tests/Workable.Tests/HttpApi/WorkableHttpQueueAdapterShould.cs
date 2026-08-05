@@ -21,7 +21,10 @@ public sealed class WorkableHttpQueueAdapterShould
             WorkRequestContext.Create(WorkInvocationChannel.HttpApi),
             new WorkableHttpWorkRequest(
                 input.RootElement,
-                Options: new WorkableHttpWorkerOptions(ProfilingEnabled: true),
+                Options: new WorkableHttpWorkerOptions(ProfilingEnabled: true)
+                {
+                    ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+                },
                 SubjectId: subject,
                 ConcurrencyKey: concurrency,
                 Identifiers: new HashSet<WorkIdentifier> { identifier }));
@@ -33,6 +36,8 @@ public sealed class WorkableHttpQueueAdapterShould
         Assert.Equal(concurrency, commands.Input?.ConcurrencyKey);
         Assert.Contains(identifier, commands.Input?.Identifiers ?? new HashSet<WorkIdentifier>());
         Assert.True(commands.Options?.WorkerOptions?.ProfilingEnabled);
+        Assert.Equal(WorkProfileCaptureMode.Full, commands.Options?.WorkerOptions?.ProfilingCaptureMode);
+        Assert.True(commands.Options?.WorkerOptions?.HasExplicitProfilingCaptureMode);
     }
 
     [Fact]
@@ -76,6 +81,7 @@ public sealed class WorkableHttpQueueAdapterShould
         Assert.NotNull(commands.Options.WorkerOptions);
         var workerOptions = commands.Options.WorkerOptions!;
         Assert.False(workerOptions.HasExplicitProfilingEnabled);
+        Assert.False(workerOptions.HasExplicitProfilingCaptureMode);
         Assert.Equal(WorkStartPolicy.DoNotStart, workerOptions.Configuration?.Start.Policy);
     }
 

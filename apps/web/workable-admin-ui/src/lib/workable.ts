@@ -60,12 +60,14 @@ export type WorkableHttpHostCapabilities = {
 };
 
 export type WorkableHttpSystemCapabilities = {
+  httpClientProfilingAvailable: boolean;
   persistentCoordinationAvailable: boolean;
   sqlProfilingAvailable: boolean;
 };
 
 export function createDefaultWorkableHttpSystemCapabilities(): WorkableHttpSystemCapabilities {
   return {
+    httpClientProfilingAvailable: false,
     persistentCoordinationAvailable: false,
     sqlProfilingAvailable: false,
   };
@@ -75,6 +77,7 @@ export function normalizeWorkableHttpSystemCapabilities(
   value?: Partial<WorkableHttpSystemCapabilities> | null
 ): WorkableHttpSystemCapabilities {
   return {
+    httpClientProfilingAvailable: Boolean(value?.httpClientProfilingAvailable),
     persistentCoordinationAvailable: Boolean(value?.persistentCoordinationAvailable),
     sqlProfilingAvailable: Boolean(value?.sqlProfilingAvailable),
   };

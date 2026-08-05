@@ -396,6 +396,37 @@ public sealed class WorkProfileShould
     }
 
     [Fact]
+    public async Task ConcurrentRegistrationRejectionCannotStrandSnapshotFinalization()
+    {
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            var profile = new WorkProfile("root");
+            var registry = (IWorkProfilePendingInstrumentationRegistry)profile;
+            using var start = new ManualResetEventSlim(initialState: false);
+            var registrations = Enumerable.Range(0, 16)
+                .Select(_ => Task.Run(() =>
+                {
+                    start.Wait();
+                    if (registry.TryEnterPendingInstrumentationRegistration())
+                    {
+                        registry.ExitPendingInstrumentationRegistration();
+                    }
+                }))
+                .ToArray();
+            var snapshot = Task.Run(() =>
+            {
+                start.Wait();
+                return profile.ToSnapshot();
+            });
+
+            start.Set();
+            await Task.WhenAll(registrations.Append(snapshot)).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal("root", (await snapshot).Root.Label);
+        }
+    }
+
+    [Fact]
     public void RejectInvalidAutomaticInstrumentationLimit()
     {
         var exception = Assert.Throws<ArgumentOutOfRangeException>(() => new WorkProfile("root", 0));

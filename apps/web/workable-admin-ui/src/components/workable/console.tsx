@@ -2326,6 +2326,7 @@ export function WorkableConsole() {
                         {mountedViews.has("definition") && selectedDefinitionId && (
                           <ConsoleViewMount active={visibleView === "definition"}>
                             <DefinitionView
+                              canViewDiagnostics={activeSystem?.access?.canViewDiagnostics ?? false}
                               connection={hydratedConnection}
                               definitionId={selectedDefinitionId}
                               onDefinitionResolved={setSelectedDefinitionName}
@@ -2463,6 +2464,7 @@ export function WorkableConsole() {
                         {view === "worker" && selectedWorkerId && (
                           <ConsoleViewMount active={true}>
                             <WorkerConsoleView
+                              canViewDiagnostics={activeSystem?.access?.canViewDiagnostics ?? false}
                               clearSystemNotification={clearSystemIssueNotification}
                               connection={hydratedConnection}
                               initialUiState={restoredWorkerUiState}
@@ -2513,6 +2515,7 @@ export function WorkableConsole() {
                           <ConsoleViewMount active={true}>
                             <IterationConsoleView
                               connection={hydratedConnection}
+                              httpClientProfilingAvailable={activeSystem?.capabilities.httpClientProfilingAvailable ?? false}
                               key={`${selectedIterationWorkerId}:${selectedIterationSequence}`}
                               onNavigateBack={navigateBack}
                               onOpenDefinition={(definitionId, definitionName) =>

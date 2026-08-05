@@ -93,7 +93,10 @@ public sealed class WorkableHttpApiTests
             DirectRequestContext(),
             new WorkableHttpWorkRequest(
                 input.RootElement,
-                Options: new WorkableHttpWorkerOptions(ProfilingEnabled: true),
+                Options: new WorkableHttpWorkerOptions(ProfilingEnabled: true)
+                {
+                    ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+                },
                 SubjectId: new WorkSubjectId("user", "123"),
                 ConcurrencyKey: new WorkConcurrencyKey("tenant", "abc"),
                 Identifiers: new HashSet<WorkIdentifier> { new("invoice", "456") }));
@@ -102,6 +105,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
         Assert.NotNull(worker);
         Assert.True(worker.Options.ProfilingEnabled);
+        Assert.Equal(WorkProfileCaptureMode.Full, worker.Options.ProfilingCaptureMode);
         Assert.Equal(new WorkSubjectId("user", "123"), worker.SubjectId);
         Assert.Equal(new WorkConcurrencyKey("tenant", "abc"), worker.ConcurrencyKey);
         Assert.Contains(new WorkIdentifier("invoice", "456"), worker.Identifiers);

@@ -90,6 +90,7 @@ type WorkProfileSqlBatchMode = "replayable" | "original";
 const sqlBatchUnavailableMessage = "SQL batch is unavailable for this profile because it does not contain captured SQL commands.";
 const sqlBatchOpenTooltip = "Open the SQL batch viewer for any captured SQL commands in this profile.";
 const sqlProfilingUnavailableTooltip = "SQL profiling is not available for this system. Enable it by calling AddWorkableSqlServerProfiling() in the host's Workable SQL Server configuration.";
+const httpClientProfilingUnavailableTooltip = "HTTP client profiling is not available for this system. Enable it by calling AddWorkableHttpClientProfiling() in the host's Workable configuration.";
 
 type WorkProfileMethodScopeOption = {
   label: string;
@@ -383,6 +384,7 @@ export function findWorkProfileHotspots(
 }
 
 export function WorkProfilePanel({
+  httpClientProfilingAvailable = true,
   iterationIsFinal,
   iterationStatus,
   onClose,
@@ -392,6 +394,7 @@ export function WorkProfilePanel({
   sqlProfilingAvailable = true,
   viewState,
 }: {
+  httpClientProfilingAvailable?: boolean;
   iterationIsFinal?: boolean;
   iterationStatus?: WorkCompletionStatus | null;
   onClose: () => void;
@@ -459,6 +462,7 @@ export function WorkProfilePanel({
     () => new Set(createDefaultExpandedWorkProfileNodeIds(profile))
   );
   const expandedNodeIdsRef = useRef(expandedNodeIds);
+  const httpActionsDisabled = !httpClientProfilingAvailable;
   const sqlActionsDisabled = !sqlProfilingAvailable;
   const hotspotActive = hotspotMode !== "off";
   const methodScopeActive = selectedMethodScopeIdentity.length > 0;
@@ -487,12 +491,16 @@ export function WorkProfilePanel({
   const sqlBatchTooltip = sqlActionsDisabled
     ? sqlProfilingUnavailableTooltip
     : sqlBatchOpenTooltip;
-  const httpOnlyTooltip = httpOnly
-    ? "HTTP-only filter is enabled. The profile tree is currently limited to captured System.Net.Http request nodes."
-    : "Filter the profile tree down to captured System.Net.Http request nodes.";
-  const httpOnlyTitle = httpOnly
-    ? "HTTP-only filter is on. The profile tree is limited to captured HTTP request nodes."
-    : "HTTP-only filter is off. Show only captured HTTP request nodes.";
+  const httpOnlyTooltip = httpActionsDisabled
+    ? httpClientProfilingUnavailableTooltip
+    : httpOnly
+      ? "HTTP-only filter is enabled. The profile tree is currently limited to captured System.Net.Http request nodes."
+      : "Filter the profile tree down to captured System.Net.Http request nodes.";
+  const httpOnlyTitle = httpActionsDisabled
+    ? httpClientProfilingUnavailableTooltip
+    : httpOnly
+      ? "HTTP-only filter is on. The profile tree is limited to captured HTTP request nodes."
+      : "HTTP-only filter is off. Show only captured HTTP request nodes.";
 
   useEffect(() => {
     expandedNodeIdsRef.current = expandedNodeIds;
@@ -568,6 +576,14 @@ export function WorkProfilePanel({
       setSqlBatchOpen(false);
     }
   }, [sqlProfilingAvailable]);
+
+  useEffect(() => {
+    if (!httpClientProfilingAvailable) {
+      queueMicrotask(() => {
+        setInstrumentationFilter((current) => current === "http" ? "all" : current);
+      });
+    }
+  }, [httpClientProfilingAvailable]);
 
   const expandAll = useCallback(() => {
     setExpandedNodeIds(new Set(filterResult?.expandableNodeIds ?? expandableNodeIds));
@@ -756,17 +772,33 @@ export function WorkProfilePanel({
                         </Tooltip>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <Button
-                              aria-label="HTTP request nodes only"
-                              aria-pressed={httpOnly}
-                              onClick={() => setInstrumentationFilter(httpOnly ? "all" : "http")}
-                              size="icon-sm"
-                              title={httpOnlyTitle}
-                              type="button"
-                              variant={httpOnly ? "secondary" : "outline"}
-                            >
-                              <Globe2 className="size-3.5" />
-                            </Button>
+                            {httpActionsDisabled ? (
+                              <span className="inline-flex" tabIndex={0}>
+                                <Button
+                                  aria-label="HTTP request nodes only"
+                                  aria-pressed={false}
+                                  disabled
+                                  size="icon-sm"
+                                  title={httpOnlyTitle}
+                                  type="button"
+                                  variant="outline"
+                                >
+                                  <Globe2 className="size-3.5" />
+                                </Button>
+                              </span>
+                            ) : (
+                              <Button
+                                aria-label="HTTP request nodes only"
+                                aria-pressed={httpOnly}
+                                onClick={() => setInstrumentationFilter(httpOnly ? "all" : "http")}
+                                size="icon-sm"
+                                title={httpOnlyTitle}
+                                type="button"
+                                variant={httpOnly ? "secondary" : "outline"}
+                              >
+                                <Globe2 className="size-3.5" />
+                              </Button>
+                            )}
                           </TooltipTrigger>
                           <TooltipContent sideOffset={6}>
                             {httpOnlyTooltip}

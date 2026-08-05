@@ -304,12 +304,7 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
         => activity.GetTagItem(currentName) ?? activity.GetTagItem(legacyName);
 
     private static string? GetStringTag(Activity activity, string currentName, string legacyName)
-    {
-        var value = GetTag(activity, currentName, legacyName);
-        return value is null
-            ? null
-            : Convert.ToString(value, CultureInfo.InvariantCulture);
-    }
+        => GetTag(activity, currentName, legacyName) as string;
 
     private static string? GetStringTag(Activity activity, string name)
         => GetStringTag(activity, name, name);
@@ -319,23 +314,22 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
         var value = GetTag(activity, currentName, legacyName);
         return value switch
         {
+            byte number => number,
+            sbyte number => number,
+            short number => number,
+            ushort number => number,
             int number => number,
+            uint number when number <= int.MaxValue => (int)number,
+            long number when number is >= int.MinValue and <= int.MaxValue => (int)number,
+            ulong number when number <= int.MaxValue => (int)number,
             HttpStatusCode statusCode => (int)statusCode,
-            IConvertible convertible => TryConvertInt32(convertible),
+            string text when int.TryParse(
+                text,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var number) => number,
             _ => null,
         };
-    }
-
-    private static int? TryConvertInt32(IConvertible value)
-    {
-        try
-        {
-            return value.ToInt32(CultureInfo.InvariantCulture);
-        }
-        catch (Exception exception) when (exception is FormatException or InvalidCastException or OverflowException)
-        {
-            return null;
-        }
     }
 
     private static CapturedUri CaptureUri(string? uriValue)

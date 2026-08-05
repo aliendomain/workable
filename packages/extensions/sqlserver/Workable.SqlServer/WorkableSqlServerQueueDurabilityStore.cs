@@ -1654,6 +1654,7 @@ VALUES
             ? null
             : Serialize(new PersistedWorkerOptions(
                 options.HasExplicitProfilingEnabled ? options.ProfilingEnabled : null,
+                options.HasExplicitProfilingCaptureMode ? options.ProfilingCaptureMode : null,
                 options.Configuration));
 
     private static string SerializeEnqueueRequests(IReadOnlyList<PendingEnqueue> batch)
@@ -1836,12 +1837,18 @@ VALUES
 
     private sealed record PersistedWorkerOptions(
         bool? ProfilingEnabled,
+        WorkProfileCaptureMode? ProfilingCaptureMode,
         WorkConfiguration? Configuration)
     {
         public WorkerOptions ToWorkerOptions()
-            => this.ProfilingEnabled is { } profilingEnabled
+        {
+            var options = this.ProfilingEnabled is { } profilingEnabled
                 ? new WorkerOptions(profilingEnabled, this.Configuration)
                 : new WorkerOptions(this.Configuration);
+            return this.ProfilingCaptureMode is { } profilingCaptureMode
+                ? options with { ProfilingCaptureMode = profilingCaptureMode }
+                : options;
+        }
     }
 
     private sealed class IReadOnlySetJsonConverterFactory : JsonConverterFactory

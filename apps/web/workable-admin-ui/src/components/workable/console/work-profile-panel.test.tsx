@@ -986,6 +986,36 @@ test("work profile panel disables SQL actions and explains how to enable them wh
   }
 });
 
+test("work profile panel disables the HTTP filter and explains how to enable profiling when unavailable", async () => {
+  const result = await renderDom(
+    <WorkProfilePanel
+      httpClientProfilingAvailable={false}
+      onClose={() => undefined}
+      onViewStateChange={() => undefined}
+      profile={profileSnapshot()}
+      viewState="standard"
+    />
+  );
+
+  try {
+    const httpOnlyButton = result.getByRole("button", { name: "HTTP request nodes only" });
+    assert.equal(httpOnlyButton.hasAttribute("disabled"), true);
+    assert.equal(
+      httpOnlyButton.getAttribute("title"),
+      "HTTP client profiling is not available for this system. Enable it by calling AddWorkableHttpClientProfiling() in the host's Workable configuration."
+    );
+
+    const httpOnlyTrigger = httpOnlyButton.parentElement;
+    assert.ok(httpOnlyTrigger instanceof result.dom.window.HTMLElement);
+    await result.focus(httpOnlyTrigger);
+    await result.waitFor(() => result.getByText(
+      "HTTP client profiling is not available for this system. Enable it by calling AddWorkableHttpClientProfiling() in the host's Workable configuration."
+    ));
+  } finally {
+    await result.restore();
+  }
+});
+
 test("work profile panel opens an informational SQL batch dialog when the profile has no captured SQL commands", async () => {
   const result = await renderDom(
     <WorkProfilePanel

@@ -23,6 +23,30 @@ type CaptureTarget = {
 
 export function ProfilingCaptureRulesCard({
   actorId,
+  canViewDiagnostics,
+  connection,
+  definitionName,
+}: {
+  actorId?: string | null;
+  canViewDiagnostics: boolean;
+  connection: WorkableConnection;
+  definitionName?: string | null;
+}) {
+  if (!canViewDiagnostics) {
+    return null;
+  }
+
+  return (
+    <AuthorizedProfilingCaptureRulesCard
+      actorId={actorId}
+      connection={connection}
+      definitionName={definitionName}
+    />
+  );
+}
+
+function AuthorizedProfilingCaptureRulesCard({
+  actorId,
   connection,
   definitionName,
 }: {
@@ -65,7 +89,8 @@ export function ProfilingCaptureRulesCard({
   }, [connection]);
 
   useEffect(() => {
-    void load();
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   const createRule = async (target: CaptureTarget) => {

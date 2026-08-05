@@ -980,6 +980,66 @@ FROM workable.WorkflowRuns;
     }
 
     [Fact]
+    public async Task DurableQueueRoundTripsExplicitProfilingCaptureModes()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var systemName = $"profiling-capture-mode-{Guid.NewGuid():N}";
+        const string fullDefinitionName = "profiling-capture-mode-full";
+        const string boundedDefinitionName = "profiling-capture-mode-bounded";
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var systemId = WorkSystemId.New();
+        var fullWorkerId = WorkerId.New();
+        var boundedWorkerId = WorkerId.New();
+
+        await store.Enqueue(CreateDurableEnqueueRequest(
+            systemId,
+            systemName,
+            fullWorkerId,
+            fullDefinitionName,
+            "profiling-full",
+            transaction: null,
+            enableIdempotency: false,
+            options: new WorkerOptions
+            {
+                ProfilingEnabled = true,
+                ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+            }));
+        await store.Enqueue(CreateDurableEnqueueRequest(
+            systemId,
+            systemName,
+            boundedWorkerId,
+            boundedDefinitionName,
+            "profiling-bounded",
+            transaction: null,
+            enableIdempotency: false,
+            options: new WorkerOptions
+            {
+                ProfilingEnabled = true,
+                ProfilingCaptureMode = WorkProfileCaptureMode.Bounded,
+            }));
+
+        var claimed = await ClaimReady(
+            store,
+            "profiling-consumer",
+            batchSize: 10,
+            workSystemName: systemName);
+        var byWorkerId = claimed.ToDictionary(entry => entry.Lease.WorkerId);
+
+        Assert.Equal(WorkProfileCaptureMode.Full, byWorkerId[fullWorkerId].Options.ProfilingCaptureMode);
+        Assert.True(byWorkerId[fullWorkerId].Options.HasExplicitProfilingCaptureMode);
+        Assert.Equal(WorkProfileCaptureMode.Bounded, byWorkerId[boundedWorkerId].Options.ProfilingCaptureMode);
+        Assert.True(byWorkerId[boundedWorkerId].Options.HasExplicitProfilingCaptureMode);
+    }
+
+    [Fact]
     public async Task WorkflowTransactionRollbackDiscardsWorkflowRunsAndDurableWorkersTogether()
     {
         if (this.SkipIfUnavailable())
@@ -3571,12 +3631,13 @@ WHERE entries.SubjectValue = @SubjectValue;
     private static async Task<IReadOnlyList<WorkQueueDurabilityEntry>> ClaimReady(
         IWorkPersistenceStore store,
         string ownerId,
-        int batchSize)
+        int batchSize,
+        string? workSystemName = null)
     {
         var entries = new List<WorkQueueDurabilityEntry>();
         await foreach (var entry in store.ClaimReady(
             new WorkQueueDurabilityClaimRequest(
-                WorkSystemName: null,
+                WorkSystemName: workSystemName,
                 OwnerId: ownerId,
                 BatchSize: batchSize,
                 LeaseDuration: TimeSpan.FromMinutes(1))))
@@ -4065,14 +4126,15 @@ WHERE WorkerId = @WorkerId;
         string definitionName,
         string subjectValue,
         IWorkQueueDurabilityTransaction? transaction,
-        bool enableIdempotency = true)
+        bool enableIdempotency = true,
+        WorkerOptions? options = null)
         => new(
             systemId,
             systemName,
             workerId,
             WorkDefinition.Create(definitionName),
             WorkInput.Empty.WithSubject(new WorkSubjectId("order", subjectValue)),
-            WorkerOptions.Default,
+            options ?? WorkerOptions.Default,
             DurablePersistenceConcurrencyConfiguration(enableIdempotency: enableIdempotency),
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             DateTimeOffset.UtcNow,

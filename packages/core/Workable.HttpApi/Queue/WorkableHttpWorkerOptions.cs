@@ -43,14 +43,26 @@ public sealed record WorkableHttpWorkerOptions
     public bool? ProfilingEnabled { get; init; }
 
     /// <summary>
+    /// Gets or sets whether automatic instrumentation is bounded or fully captured. Leave
+    /// <see langword="null"/> to inherit the work definition's capture mode.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WorkProfileCaptureMode? ProfilingCaptureMode { get; init; }
+
+    /// <summary>
     /// Gets or sets optional per-request runtime configuration overrides for the queued worker.
     /// </summary>
     public WorkableHttpWorkConfiguration? Configuration { get; init; }
 
     internal WorkerOptions ToWorkerOptions()
-        => this.ProfilingEnabled is { } profilingEnabled
+    {
+        var options = this.ProfilingEnabled is { } profilingEnabled
             ? new WorkerOptions(
                 profilingEnabled,
                 this.Configuration?.ToWorkConfiguration())
             : new WorkerOptions(this.Configuration?.ToWorkConfiguration());
+        return this.ProfilingCaptureMode is { } profilingCaptureMode
+            ? options with { ProfilingCaptureMode = profilingCaptureMode }
+            : options;
+    }
 }

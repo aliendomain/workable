@@ -138,7 +138,7 @@ To capture work for a user or actor:
 
 The worker detail page uses that worker's stable actor id only as a selector. It does not recapture or change the existing worker. The rule applies to future accepted workers. Definition names match case-insensitively; actor ids match exactly.
 
-The UI needs access to the built-in Workable HTTP surface and diagnostics access to list, create, or delete rules. A system administrator has diagnostics permission by default. Rule creation is separate from queueing, and the UI does not elevate queue rights.
+The UI needs access to the built-in Workable HTTP surface and diagnostics access to list, create, or delete rules. Full-capture controls are not rendered when the selected system reports that the caller lacks diagnostics access. A system administrator has diagnostics permission by default. Rule creation is separate from queueing, and the UI does not elevate queue rights.
 
 ## Profile From Work
 
@@ -235,6 +235,8 @@ The registration makes the HTTP instrumentation available to every Workable syst
 HTTP timing uses the built-in `System.Net.Http` activity source, so application code does not need to wrap `HttpClient`, add a delegating handler, or use `IHttpClientFactory`. One timing starts with the outbound request and is completed with the response returned by that request. Each captured timing contains the HTTP method, a sanitized request URI, protocol version, response status, outcome, and transport error type when available.
 
 Every captured HTTP timing is marked with `Instrumentation = "http.client"`. Consumers should use that identity to select HTTP timings rather than matching the `HTTP Request` label or inspecting `Provider` in the context.
+
+The admin UI enables its HTTP-only profile filter only when the selected system advertises `httpClientProfilingAvailable`. Otherwise the filter is disabled and explains that the host must register `AddWorkableHttpClientProfiling()`.
 
 This instruments outbound dependency calls made through `HttpClient`; it does not profile inbound ASP.NET Core server requests. The returned response for an outbound call is part of the same outbound timing rather than a separate inbound-request profile.
 

@@ -45,7 +45,7 @@ Choose how many matching workers to capture and how soon the rule expires. One r
 
 A matching rule enables profiling and sets the worker's capture mode to `Full`. This bypasses only the automatic instrumentation node-count limit. It does not bypass queue authorization, invocation-channel restrictions, HTTP privacy exclusions, SQL parameter redaction, or worker/iteration retention.
 
-The UI needs access to the built-in Workable HTTP surface and diagnostics access to list, create, or delete the rules. A system administrator has diagnostics permission by default but still cannot queue work unless separately authorized for that work definition. Rule creation and queueing are intentionally separate operations.
+The UI needs access to the built-in Workable HTTP surface and diagnostics access to list, create, or delete the rules. The capture card is hidden when the selected system reports that the caller lacks diagnostics access. A system administrator has diagnostics permission by default but still cannot queue work unless separately authorized for that work definition. Rule creation and queueing are intentionally separate operations.
 
 ## Admin UI Security Defaults
 
