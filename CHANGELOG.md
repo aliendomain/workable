@@ -1,4 +1,5 @@
 # Changelog
+- [1.1.080526.1](releases/1.1.080526.1.md) - Automatic outbound HTTP profiling, targeted full-capture rules, shared bounded instrumentation, diagnostics-protected profile access, profile filtering, and realtime token renewal
 - [1.1.071926.1](releases/1.1.071926.1.md) - Configurable DispatchEach cancellation, reason-bearing worker actions and executor cancellation context, typed chained fan-out outputs, documentation refresh, core coverage above 95 percent
 - [1.1.070926.1](releases/1.1.070926.1.md) - Workflow branch syntax and runtime support, branch-aware admin workflow graph, sample multi-branch workflows, worker selection restoration, profile and SQL profiling UI fixes
 - [1.1.070626.2](releases/1.1.070626.2.md) - Workflow-run input binding for workflow starts, HTTP and MCP input support, durable workflow input persistence, expanded input-binding regression coverage
