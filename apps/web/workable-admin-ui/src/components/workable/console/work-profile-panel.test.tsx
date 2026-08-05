@@ -832,6 +832,44 @@ test("work profile sql batch helper understands camelCase SQL command context", 
   assert.match(batch?.replayableBatch ?? "", /DefinitionName LIKE @DefinitionPattern;/);
 });
 
+test("work profile sql batch helper keeps omitted binary Variant values non-replayable", () => {
+  const batch = createWorkProfileSqlBatch({
+    capturedAt: "2026-06-10T18:05:00.000Z",
+    root: {
+      children: [],
+      context: {
+        CommandType: "Text",
+        Operation: "ExecuteNonQuery",
+        Parameters: [
+          {
+            Direction: "Input",
+            IsBinaryOmitted: true,
+            IsRedacted: false,
+            Name: "@Payload",
+            Type: "Variant",
+            Value: "<binary omitted>",
+          },
+        ],
+        Provider: "Microsoft.Data.SqlClient",
+        Statement: "SELECT @Payload;",
+        StatementKind: "SELECT",
+      },
+      label: "SQL ExecuteNonQuery",
+      instrumentation: "sql.client",
+      metricType: "Timing",
+      nodeMilliseconds: 4,
+      treeMilliseconds: 4,
+    },
+    startedAt: "2026-06-10T18:04:58.000Z",
+  });
+
+  assert.match(
+    batch?.replayableBatch ?? "",
+    /DECLARE @Payload nvarchar\(max\) = NULL \/\* binary parameter value was omitted from profile \*\//
+  );
+  assert.doesNotMatch(batch?.replayableBatch ?? "", /N'<binary omitted>'/);
+});
+
 test("work profile panel can filter directly to SQL nodes and optionally keep ancestor context", async () => {
   const result = await renderDom(
     <WorkProfilePanel
