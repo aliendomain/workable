@@ -685,19 +685,15 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
 
             try
             {
-                completeContext();
+                using (scope)
+                {
+                    completeContext();
+                }
             }
             finally
             {
-                try
-                {
-                    scope.Dispose();
-                }
-                finally
-                {
-                    Volatile.Write(ref this.completionState, 2);
-                    pendingRegistry?.UnregisterPendingInstrumentation(this);
-                }
+                Volatile.Write(ref this.completionState, 2);
+                pendingRegistry?.UnregisterPendingInstrumentation(this);
             }
         }
     }

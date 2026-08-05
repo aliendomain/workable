@@ -428,15 +428,15 @@ internal sealed class InMemoryWorkSystem :
             return await this.StopCore(requestContext, cancellationToken);
         }
 
-        var authorization = this.ResolveAuthorization(requestContext);
-        if (!authorization.CanControlSystem())
+        var resolvedAuthorization = this.ResolveAuthorization(requestContext);
+        if (!resolvedAuthorization.CanControlSystem())
         {
             throw new WorkSystemAccessDeniedException(WorkSystemPermission.ControlSystem, this.Id, this.Name);
         }
 
         return WorkProfileAccessFilter.Apply(
             await this.StopCore(requestContext, cancellationToken),
-            authorization.CanViewDiagnostics());
+            resolvedAuthorization.CanViewDiagnostics());
     }
 
     private async Task<WorkSystemStopResult> StopCore(
