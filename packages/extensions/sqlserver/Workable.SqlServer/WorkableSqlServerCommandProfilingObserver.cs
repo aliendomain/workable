@@ -13,7 +13,7 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
     IObserver<KeyValuePair<string, object?>>,
     IDisposable
 {
-    private const string InstrumentationName = "sql.client";
+    private const string InstrumentationName = WorkProfileInstrumentation.SqlClient;
     private const int MaximumStatementLength = 8_192;
     private const int MaximumParameterTextLength = 1_024;
     private const int MaximumBinaryPreviewBytes = 256;

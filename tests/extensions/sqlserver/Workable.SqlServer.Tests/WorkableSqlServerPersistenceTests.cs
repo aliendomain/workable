@@ -1233,6 +1233,7 @@ WHERE RunId = '{runId.Value:D}';
                 node.Label.StartsWith("SQL ", StringComparison.Ordinal));
         var contextJson = JsonSerializer.Serialize(sqlNode.Context);
 
+        Assert.Equal("sql.client", sqlNode.Instrumentation);
         Assert.Contains("Microsoft.Data.SqlClient", contextJson, StringComparison.Ordinal);
         Assert.Contains("ExecuteScalar", contextJson, StringComparison.Ordinal);
         Assert.Contains("\"Statement\":\"SELECT @Value;\"", contextJson, StringComparison.Ordinal);

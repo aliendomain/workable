@@ -27,6 +27,12 @@ Example response:
 }
 ```
 
+## Profile Viewer Filters
+
+The iteration profile viewer classifies nodes by the API's required `instrumentation` field. Use the compact database button to show only `sql.client` nodes or the globe button to show only `http.client` nodes. These two instrumentation filters are mutually exclusive; selecting one replaces the other.
+
+The text search, hotspot threshold, and method-scope filters can be combined with either instrumentation filter. **Ancestor context** controls whether matching SQL or HTTP nodes are shown alone or with their containing scopes. The SQL batch viewer also accepts only `sql.client` nodes before reading their captured command context. The UI does not infer SQL or HTTP identity from labels, provider names, or context payloads.
+
 ## Targeted Full Profile Capture
 
 The admin UI can temporarily bypass the bounded automatic SQL, HTTP, and extension instrumentation limit for selected future workers:

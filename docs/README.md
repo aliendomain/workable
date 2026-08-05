@@ -56,7 +56,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 - [Views](concepts/views.md): understand the shared component-view contract used by HTTP and SignalR, and how to use it directly for a custom UI.
 - [Observability](concepts/observability.md): subscribe to work events, filters, payloads, and buffered delivery behavior.
 - [Diagnostics](concepts/diagnostics.md): understand queue rejection, read-model lag, retention lag, and system warning signals.
-- [Profiling](concepts/profiling.md): capture per-iteration profile trees, automatically time SQL and outbound HTTP dependencies, bound automatic growth, and temporarily bypass that bound by work type or actor from the admin UI or HTTP API.
+- [Profiling](concepts/profiling.md): capture per-iteration profile trees with required instrumentation identities, automatically time SQL and outbound HTTP dependencies, filter those sources in the admin UI, bound automatic growth, and temporarily bypass that bound by work type or actor from the admin UI or HTTP API.
 
 ## Package Docs
 

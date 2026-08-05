@@ -330,6 +330,9 @@ public sealed class WorkableHttpApiTests
 
         if (canViewDiagnostics)
         {
+            Assert.Equal(
+                "application",
+                completionProfile?["root"]?["instrumentation"]?.GetValue<string>());
             var authoritative = await Direct(host.Services.GetRequiredService<IWorkSystemRegistry>().Default)
                 .Query.Worker(new WorkerId(workerId));
             Assert.NotNull(authoritative?.Profile);
@@ -1244,6 +1247,7 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(1, json["iteration"]?["attemptCount"]?.GetValue<int>());
         Assert.Equal("Completed", json["iteration"]?["status"]?.GetValue<string>());
         Assert.NotNull(json["iteration"]?["profile"]?["root"]?["label"]?.GetValue<string>());
+        Assert.Equal("application", json["iteration"]?["profile"]?["root"]?["instrumentation"]?.GetValue<string>());
         Assert.Equal(2, json["messages"]?["summary"]?["total"]?.GetValue<int>());
         Assert.Equal(1, json["messages"]?["summary"]?["warning"]?.GetValue<int>());
         Assert.Equal(1, json["messages"]?["summary"]?["information"]?.GetValue<int>());

@@ -34,6 +34,7 @@ public sealed class WorkProfileShould
 
         Assert.Equal(WorkProfileMetricType.Scope, root.MetricType);
         Assert.Equal("root", root.Label);
+        Assert.Equal("application", root.Instrumentation);
         Assert.Contains(root.Children, child => child is { MetricType: WorkProfileMetricType.Metric, Label: "root info" });
         Assert.Equal(WorkProfileMetricType.Scope, outerScope.MetricType);
         Assert.Equal("batch", outerScope.Context);
@@ -79,9 +80,16 @@ public sealed class WorkProfileShould
         var summaryJson = System.Text.Json.JsonSerializer.Serialize(summary.Context);
 
         Assert.Null(omitted);
-        Assert.Contains(snapshot.Root.Children, node => node.Label == "HTTP Request");
-        Assert.Contains(snapshot.Root.Children, node => node.Label == "SQL Error");
-        Assert.Contains(snapshot.Root.Children, node => node.Label == "Explicit application node");
+        Assert.Equal(
+            "http.client",
+            Assert.Single(snapshot.Root.Children, node => node.Label == "HTTP Request").Instrumentation);
+        Assert.Equal(
+            "sql.client",
+            Assert.Single(snapshot.Root.Children, node => node.Label == "SQL Error").Instrumentation);
+        Assert.Equal(
+            "application",
+            Assert.Single(snapshot.Root.Children, node => node.Label == "Explicit application node").Instrumentation);
+        Assert.Equal("workable.profiling", summary.Instrumentation);
         Assert.Contains("http.client", summaryJson, StringComparison.Ordinal);
         Assert.Contains("sql.client", summaryJson, StringComparison.Ordinal);
         Assert.Contains("\"other\":1", summaryJson, StringComparison.Ordinal);
@@ -224,6 +232,7 @@ public sealed class WorkProfileShould
         Assert.True(samplingGate.TryReserveAutomaticNodeForSampling("http.client"));
 
         Assert.Throws<InvalidOperationException>(() => samplingGate.TryStartReservedAutomaticTiming<object>(
+            "http.client",
             "HTTP Request",
             () => throw new InvalidOperationException("context failed"),
             out _,

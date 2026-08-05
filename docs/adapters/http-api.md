@@ -245,6 +245,30 @@ An authorized definition-reconfiguration request that explicitly sets `profiling
 
 Returning retained profile data also requires diagnostics access. Without it, worker and iteration query responses, wait-for-completion results, worker-action outcomes, and system-stop worker snapshots retain their normal authorized fields but expose no latest or per-iteration profile. Work read or operate permission by itself is not sufficient to retrieve profile telemetry.
 
+Every returned profile node includes a required `instrumentation` key. Explicit application profiling uses `application`, Workable's truncation summary uses `workable.profiling`, and the built-in SQL and outbound HTTP integrations use `sql.client` and `http.client`. Clients should classify and filter profile nodes by this field rather than inferring a source from labels or context payloads.
+
+For example, an outbound HTTP timing is serialized with both its generic metric shape and its specific instrumentation identity:
+
+```json
+{
+  "metricType": "Timing",
+  "treeMilliseconds": 42,
+  "nodeMilliseconds": 42,
+  "label": "HTTP Request",
+  "context": {
+    "provider": "System.Net.Http",
+    "method": "GET",
+    "uri": "https://example.test/orders",
+    "statusCode": 200,
+    "outcome": "Completed"
+  },
+  "children": [],
+  "instrumentation": "http.client"
+}
+```
+
+`metricType` describes whether the node is a method scope, logical scope, timing, or metric. `instrumentation` identifies who produced it. The latter is the stable filtering contract and is required on every node.
+
 The Workable admin UI exposes the same operations:
 
 - For a work type, select the system, open **Catalog**, select the definition, and use **Full profile capture**.

@@ -88,10 +88,15 @@ internal static class SampleFakeAuth
         new(
             "work-admin",
             "Work Admin",
-            "Work administrator across both systems, but without diagnostics or system control permissions.",
-            "Discovery should show both systems. Work should be fully visible and operable, but diagnostics and lifecycle control should still be denied.",
+            "Work administrator across both systems with diagnostics access, but without system control permissions.",
+            "Discovery should show both systems. Work should be fully visible and operable and diagnostics should be available, while lifecycle control remains denied.",
             IsAuthenticated: true,
-            Groups: [WorkAdministratorGroup]),
+            Groups:
+            [
+                WorkAdministratorGroup,
+                OperationsDiagnosticsGroup,
+                FulfillmentDiagnosticsGroup,
+            ]),
         new(
             "custom",
             "Custom Rights",

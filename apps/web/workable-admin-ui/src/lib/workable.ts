@@ -498,6 +498,7 @@ export type WorkProfileMetricType = "MethodScope" | "Scope" | "Timing" | "Metric
 
 export type WorkProfileSnapshotNode = {
   metricType: WorkProfileMetricType;
+  instrumentation: string;
   treeMilliseconds: number;
   nodeMilliseconds: number;
   label: string;

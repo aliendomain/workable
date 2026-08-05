@@ -163,6 +163,7 @@ public sealed class HttpClientProfilingTests
             Flatten(snapshot.Root),
             node => node.Label == "Automatic instrumentation truncated");
         Assert.DoesNotContain("secret", capturedJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("http.client", captured.Instrumentation);
         Assert.True(capturedJson.Length < 2500);
         Assert.Contains(
             "http.client",

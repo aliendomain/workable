@@ -9,7 +9,7 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
 {
     private const string ActivitySourceName = "System.Net.Http";
     private const string RequestActivityName = "System.Net.Http.HttpRequestOut";
-    private const string InstrumentationName = "http.client";
+    private const string InstrumentationName = WorkProfileInstrumentation.HttpClient;
     private const string SamplingAdmissionTag = "workable.profiling.http-client.admission";
     private const int MaximumCapturedTextLength = 2048;
     private const int MaximumUriInspectionLength = MaximumCapturedTextLength * 2;
@@ -283,7 +283,12 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
                 return false;
             }
 
-            return samplingGate.TryStartReservedAutomaticTiming(name, contextFactory, out context, out scope);
+            return samplingGate.TryStartReservedAutomaticTiming(
+                InstrumentationName,
+                name,
+                contextFactory,
+                out context,
+                out scope);
         }
 
         public void Dispose()

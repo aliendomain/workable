@@ -87,7 +87,7 @@ internal sealed class WorkProfile :
                 return false;
             }
 
-            this.CurrentScope.AddInfo(name, context);
+            this.CurrentScope.AddInfo(name, context, instrumentation);
             return true;
         }
         finally
@@ -116,7 +116,7 @@ internal sealed class WorkProfile :
             }
 
             reserved = true;
-            this.CurrentScope.AddInfo(name, contextFactory());
+            this.CurrentScope.AddInfo(name, contextFactory(), instrumentation);
             return true;
         }
         catch
@@ -154,7 +154,7 @@ internal sealed class WorkProfile :
                 return false;
             }
 
-            scope = this.CurrentScope.StartTiming(name, context);
+            scope = this.CurrentScope.StartTiming(name, context, instrumentation);
             return true;
         }
         finally
@@ -189,7 +189,7 @@ internal sealed class WorkProfile :
 
             reserved = true;
             context = contextFactory();
-            scope = this.CurrentScope.StartTiming(name, context);
+            scope = this.CurrentScope.StartTiming(name, context, instrumentation);
             return true;
         }
         catch
@@ -271,6 +271,7 @@ internal sealed class WorkProfile :
         => this.TryReserveAutomaticNode(instrumentation);
 
     bool IWorkAutomaticProfileSamplingGate.TryStartReservedAutomaticTiming<TContext>(
+        string instrumentation,
         string name,
         Func<TContext> contextFactory,
         out TContext? context,
@@ -283,7 +284,7 @@ internal sealed class WorkProfile :
         try
         {
             context = contextFactory();
-            scope = this.CurrentScope.StartTiming(name, context);
+            scope = this.CurrentScope.StartTiming(name, context, instrumentation);
             return true;
         }
         catch
@@ -432,11 +433,14 @@ internal sealed class WorkProfile :
             omitted[OtherOmissionInstrumentationKey] = otherOmissions;
         }
 
-        this.root.AddInfo("Automatic instrumentation truncated", new
-        {
-            MaximumNodes = this.maximumAutomaticInstrumentationNodes,
-            OmittedByInstrumentation = omitted,
-        });
+        this.root.AddInfo(
+            "Automatic instrumentation truncated",
+            new
+            {
+                MaximumNodes = this.maximumAutomaticInstrumentationNodes,
+                OmittedByInstrumentation = omitted,
+            },
+            WorkProfileInstrumentation.WorkableProfiling);
     }
 
     private ProfileScopeRestorer PushScope(ProfileScope scope)
@@ -494,7 +498,8 @@ internal sealed class WorkProfile :
                     Math.Max(0, inclusiveMilliseconds - frame.NestedScopeMilliseconds),
                     frame.Scope.Label,
                     frame.Scope.Context,
-                    frame.Children);
+                    frame.Children,
+                    frame.Scope.Instrumentation);
                 frames[depth - 1] = default;
                 depth--;
                 if (depth == 0)
@@ -538,7 +543,8 @@ internal sealed class WorkProfile :
                 elapsedMilliseconds,
                 timing.Label,
                 timing.Context,
-                []);
+                [],
+                timing.Instrumentation);
         }
 
         return new WorkProfileSnapshotNode(
@@ -547,7 +553,8 @@ internal sealed class WorkProfile :
             0,
             metric.Label,
             metric.Context,
-            []);
+            [],
+            metric.Instrumentation);
     }
 
     private struct SnapshotFrame
@@ -593,21 +600,26 @@ internal sealed class WorkProfile :
         }
     }
 
-    private class ProfileMetric(string label, object? context)
+    private class ProfileMetric(string label, object? context, string instrumentation)
     {
         public string Label { get; } = context is string text ? $"{label} ({text})" : label;
 
         public object? Context { get; } = context;
+
+        public string Instrumentation { get; } = instrumentation;
     }
 
-    private sealed class ProfileInfo(string label, object? context) : ProfileMetric(label, context);
+    private sealed class ProfileInfo(string label, object? context, string instrumentation) :
+        ProfileMetric(label, context, instrumentation);
 
     private sealed class OmissionCounter
     {
         public int Count;
     }
 
-    private class ProfileTiming(string label, object? context) : ProfileMetric(label, context), IWorkProfileScope
+    private class ProfileTiming(string label, object? context, string instrumentation) :
+        ProfileMetric(label, context, instrumentation),
+        IWorkProfileScope
     {
         private readonly Stopwatch stopwatch = Stopwatch.StartNew();
         private bool disposed;
@@ -636,7 +648,7 @@ internal sealed class WorkProfile :
         ProfileScope? parent,
         WorkProfileMetricType metricType,
         string label,
-        object? context) : ProfileTiming(label, context)
+        object? context) : ProfileTiming(label, context, WorkProfileInstrumentation.Application)
     {
         private readonly ConcurrentQueue<ProfileMetric> entries = [];
 
@@ -650,12 +662,18 @@ internal sealed class WorkProfile :
 
         public IEnumerable<ProfileMetric> Entries => this.entries;
 
-        public void AddInfo(string name, object? context = null)
-            => this.entries.Enqueue(new ProfileInfo(name, context));
+        public void AddInfo(
+            string name,
+            object? context = null,
+            string instrumentation = WorkProfileInstrumentation.Application)
+            => this.entries.Enqueue(new ProfileInfo(name, context, instrumentation));
 
-        public ProfileTiming StartTiming(string name, object? context = null)
+        public ProfileTiming StartTiming(
+            string name,
+            object? context = null,
+            string instrumentation = WorkProfileInstrumentation.Application)
         {
-            var timing = new ProfileTiming(name, context);
+            var timing = new ProfileTiming(name, context, instrumentation);
             this.entries.Enqueue(timing);
             return timing;
         }

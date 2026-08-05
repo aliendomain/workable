@@ -13,6 +13,7 @@ When profiling is disabled, the profile API is still available and behaves as a 
 | Feature | Behavior |
 | --- | --- |
 | Profile shape | One execution tree per worker iteration, with the latest iteration also exposed on `WorkerSnapshot.Profile`. |
+| Instrumentation identity | Every profile node carries a required stable `Instrumentation` key. Explicit application nodes use `application`; built-in automatic nodes use keys such as `sql.client` and `http.client`. |
 | Development default | Profiling is enabled by default for definitions without explicit default options when the host environment is not Production. |
 | Explicit application profiling | Work code and injected services can add scopes, timings, method scopes, information, and results through `IWorkProfiler`. |
 | SQL client timing | Optional `Microsoft.Data.SqlClient` instrumentation records command timing and diagnostic context without changing application query code. |
@@ -22,6 +23,24 @@ When profiling is disabled, the profile API is still available and behaves as a 
 | Targeted bypass | Temporary rules can select future workers by work type, actor/user id, or both and resolve them to `Full` capture. |
 | Operator surfaces | Capture rules are available in the Workable admin UI and through the built-in HTTP API. |
 | Retention | Profiles follow worker-iteration retention and are stored in the same worker and iteration snapshots as explicit profile entries. |
+
+## Profile Node Identity
+
+Every `WorkProfileSnapshotNode` has two required classifications with different purposes:
+
+- `MetricType` describes the node's shape: `MethodScope`, `Scope`, `Timing`, or `Metric`.
+- `Instrumentation` identifies the stable source that produced the node. It is not inferred from the label or context payload.
+
+Workable reserves these instrumentation keys:
+
+| Key | Source |
+| --- | --- |
+| `application` | Explicit profiling through `IWorkProfiler`, including the built-in executor method scope and its application entries. |
+| `workable.profiling` | Profile diagnostics emitted by Workable, such as `Automatic instrumentation truncated`. |
+| `sql.client` | Automatic Microsoft.Data.SqlClient command timings. |
+| `http.client` | Automatic outbound `HttpClient` request/response timings. |
+
+Custom automatic integrations supply their own stable key to `TryStartAutomaticTiming(...)` or `TryAddAutomaticInfo(...)`, and that exact key is retained on the resulting snapshot node. Use a collision-resistant key and do not reuse Workable's reserved values. Diagnostic clients, including the admin UI, classify and filter automatic nodes by `Instrumentation`; context remains descriptive data rather than a type discriminator.
 
 On an authorization-enabled system, retained profile telemetry requires system-level diagnostics permission. A caller who can read or operate work but cannot view diagnostics still receives the authorized worker, iteration, completion, or action result, but `WorkerSnapshot.Profile` and every `WorkerIterationSnapshot.Profile` are removed from that result. This also applies to worker snapshots returned while stopping a system. The authoritative retained snapshots are not modified, so a diagnostics-authorized caller can retrieve the same profiles later.
 
@@ -215,6 +234,8 @@ The registration makes the HTTP instrumentation available to every Workable syst
 
 HTTP timing uses the built-in `System.Net.Http` activity source, so application code does not need to wrap `HttpClient`, add a delegating handler, or use `IHttpClientFactory`. One timing starts with the outbound request and is completed with the response returned by that request. Each captured timing contains the HTTP method, a sanitized request URI, protocol version, response status, outcome, and transport error type when available.
 
+Every captured HTTP timing is marked with `Instrumentation = "http.client"`. Consumers should use that identity to select HTTP timings rather than matching the `HTTP Request` label or inspecting `Provider` in the context.
+
 This instruments outbound dependency calls made through `HttpClient`; it does not profile inbound ASP.NET Core server requests. The returned response for an outbound call is part of the same outbound timing rather than a separate inbound-request profile.
 
 Workable installs one HTTP activity listener for all started Workable systems in the host and routes each request through the ambient profiling context. The listener requests local activity data without setting the distributed-tracing recorded flag, so enabling Workable HTTP profiling does not force downstream parent-based tracing systems to sample the request.
@@ -250,6 +271,8 @@ services.AddWorkableSqlServerProfiling();
 
 The integration observes SqlClient diagnostics, so application code does not need to wrap commands. One shared diagnostic observer serves all started Workable systems in the host and routes commands through the ambient system-owned profiling context. Command-start diagnostics are disabled when no registered Workable profile is active; completion diagnostics remain enabled only while a profiled command is outstanding or an eligible profile is active. This prevents process-wide SQL payload construction for unrelated commands. A SQL timing can include the operation, command type, statement kind and text, parameter metadata and values, database, and transaction presence. SQL failures set `Outcome` to `Faulted` and add the bounded exception type and message to that same timing node; they do not duplicate the statement and parameters in a second error node. Commands still running when the worker snapshot is published are finalized with an `Incomplete` outcome, and late provider events cannot mutate the published snapshot.
 
+Every captured SQL command timing is marked with `Instrumentation = "sql.client"`. Consumers should use that identity to select SQL timings; statement and provider context is payload for display, redaction, and SQL batch generation after the node has been classified.
+
 SQL payloads are bounded independently of the automatic-node count: statement inspection and retained text are limited to 8,192 characters; at most 32 parameters are retained; parameter context has an approximately 4,096-character aggregate budget; individual text values are limited to 1,024 characters; binary previews are limited to 256 bytes; exception messages are limited to 1,024 characters; and individual metadata fields are limited to 512 characters. The captured context reports statement, parameter, value, and exception-message truncation. Parameter names that look like passwords, secrets, tokens, API keys, access keys, private keys, or shared-access signatures have their values replaced with `<redacted>`. Values of unsupported application-defined parameter types are represented by a type placeholder such as `<CustomValue>`; profiling never invokes arbitrary application `ToString()` implementations.
 
 SQL statement text and parameter values that do not match the redaction rules can contain sensitive application data. Enable SQL profiling only where retaining that data is acceptable. `Full` capture bypasses the shared node-count limit but does not disable SQL parameter redaction.
@@ -260,7 +283,7 @@ Provider integrations can add other automatic instrumentation through `IWorkProf
 
 Instrumentation must check that the ambient profiling context belongs to the system supplied to the factory before contributing nodes. This preserves isolation when one dependency-injection container hosts multiple Workable systems. The built-in HTTP client capture and the SQL Server integration both use this shared lifecycle.
 
-Automatic extensions should contribute through `WorkProfilingContext.TryStartAutomaticTiming(...)` and `TryAddAutomaticInfo(...)`. Prefer their context-factory overloads so expensive context is created only after Workable admits the node. Those methods participate in the shared automatic-node budget and continue to work with custom `IWorkProfiler` implementations that predate automatic budgeting.
+Automatic extensions should contribute through `WorkProfilingContext.TryStartAutomaticTiming(...)` and `TryAddAutomaticInfo(...)`. The instrumentation argument is required, must not be empty or whitespace, and is retained unchanged on each admitted `WorkProfileSnapshotNode`. Choose one stable, collision-resistant key for each logical instrumentation source and do not reuse the reserved `application`, `workable.profiling`, `sql.client`, or `http.client` keys. Prefer the context-factory overloads so expensive context is created only after Workable admits the node. Those methods participate in the shared automatic-node budget and continue to work with custom `IWorkProfiler` implementations that predate automatic budgeting.
 
 Asynchronous instrumentation that can outlive worker execution can register an `IWorkProfilePendingInstrumentation` with `IWorkProfilePendingInstrumentationRegistry`. The profile finalizes registered operations before constructing its immutable snapshot; built-in HTTP and SQL instrumentation use this contract to publish stable `Incomplete` timings.
 

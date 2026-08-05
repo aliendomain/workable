@@ -9,10 +9,12 @@ namespace Workable;
 /// <param name="Label">The display label for the node.</param>
 /// <param name="Context">Optional structured context captured on the node.</param>
 /// <param name="Children">The nested child nodes.</param>
+/// <param name="Instrumentation">The stable source key that produced the node.</param>
 public sealed record WorkProfileSnapshotNode(
     WorkProfileMetricType MetricType,
     long TreeMilliseconds,
     long NodeMilliseconds,
     string Label,
     object? Context,
-    IReadOnlyList<WorkProfileSnapshotNode> Children);
+    IReadOnlyList<WorkProfileSnapshotNode> Children,
+    string Instrumentation);
