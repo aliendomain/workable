@@ -2217,6 +2217,13 @@ function normalizeWorkProfileSqlParameterName(value: unknown, index: number): st
 }
 
 function createWorkProfileContextDisplayValue(context: unknown): unknown {
+  if (typeof context === "string") {
+    const parsedJson = tryParseWorkProfileJsonString(context);
+    return parsedJson === undefined
+      ? context
+      : createWorkProfileContextDisplayValue(parsedJson);
+  }
+
   if (!context || typeof context !== "object") {
     return context;
   }
@@ -2233,6 +2240,15 @@ function createWorkProfileContextDisplayValue(context: unknown): unknown {
   return Object.fromEntries(
     Object.entries(record).map(([key, value]) => [key, createWorkProfileContextDisplayValue(value)])
   );
+}
+
+function tryParseWorkProfileJsonString(value: string): object | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed !== null && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isDirectWorkProfileSqlCommandContext(value: Record<string, unknown>): boolean {

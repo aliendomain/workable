@@ -1415,7 +1415,7 @@ WHERE RunId = '{runId.Value:D}';
     }
 
     [Fact]
-    public async Task SqlProfilingRetainsFullStatementsAndParameterValuesInWorkerProfile()
+    public async Task SqlProfilingOmitsBinaryParameterValuesFromWorkerProfile()
     {
         if (this.SkipIfUnavailable())
         {
@@ -1441,7 +1441,7 @@ WHERE RunId = '{runId.Value:D}';
             .AddWorkableSystem(builder => builder.AddWork(
                 WorkDefinition.Create(
                     workName,
-                    "Profiles Microsoft.Data.SqlClient command execution with full statement and parameter capture.",
+                    "Profiles Microsoft.Data.SqlClient command execution without retaining binary parameter values.",
                     defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
                 async (context, input, cancellationToken) =>
                 {
@@ -1477,11 +1477,12 @@ WHERE RunId = '{runId.Value:D}';
 
         Assert.Contains($"\"Statement\":{JsonSerializer.Serialize(statement)}", contextJson, StringComparison.Ordinal);
         Assert.Contains($"\"Value\":{JsonSerializer.Serialize(description)}", contextJson, StringComparison.Ordinal);
-        Assert.Contains($"\"Value\":{JsonSerializer.Serialize($"0x{Convert.ToHexString(payload)}")}", contextJson, StringComparison.Ordinal);
+        Assert.Contains($"\"Value\":{JsonSerializer.Serialize("<binary omitted>")}", contextJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(Convert.ToHexString(payload), contextJson, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task SqlProfilingBoundsLargeStatementsTextAndBinaryParameterPreviews()
+    public async Task SqlProfilingBoundsLargeStatementsAndOmitsBinaryParameterValues()
     {
         if (this.SkipIfUnavailable())
         {
@@ -1531,8 +1532,8 @@ WHERE RunId = '{runId.Value:D}';
         Assert.Equal(8_192, root.GetProperty("Statement").GetString()!.Length);
         Assert.True(textParameter.GetProperty("IsTruncated").GetBoolean());
         Assert.Equal(1_024, textParameter.GetProperty("Value").GetString()!.Length);
-        Assert.True(binaryParameter.GetProperty("IsTruncated").GetBoolean());
-        Assert.Equal(2 + (256 * 2), binaryParameter.GetProperty("Value").GetString()!.Length);
+        Assert.False(binaryParameter.GetProperty("IsTruncated").GetBoolean());
+        Assert.Equal("<binary omitted>", binaryParameter.GetProperty("Value").GetString());
     }
 
     [Fact]
