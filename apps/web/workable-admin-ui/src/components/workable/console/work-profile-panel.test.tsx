@@ -1123,6 +1123,46 @@ test("work profile panel inlines SQL parameter values in node context previews",
   }
 });
 
+test("work profile panel formats JSON strings nested in context", async () => {
+  const result = await renderDom(
+    <WorkProfilePanel
+      onClose={() => undefined}
+      onViewStateChange={() => undefined}
+      profile={{
+        capturedAt: "2026-06-10T18:05:00.000Z",
+        root: {
+          children: [],
+          context: {
+            json: JSON.stringify({
+              configuration: {
+                enabled: true,
+                name: "nested value",
+              },
+            }),
+          },
+          label: "Captured request",
+          instrumentation: "application",
+          metricType: "Metric",
+          nodeMilliseconds: 0,
+          treeMilliseconds: 0,
+        },
+        startedAt: "2026-06-10T18:04:58.000Z",
+      }}
+      viewState="detailed"
+    />
+  );
+
+  try {
+    const contextBlock = result.dom.window.document.querySelector("pre");
+    assert.ok(contextBlock);
+    assert.match(contextBlock.textContent ?? "", /"json": \{\n    "configuration": \{/);
+    assert.match(contextBlock.textContent ?? "", /"enabled": true/);
+    assert.equal((contextBlock.textContent ?? "").includes("\\\"configuration\\\""), false);
+  } finally {
+    await result.restore();
+  }
+});
+
 test("work profile panel comments output parameters inside SQL statement previews", async () => {
   const result = await renderDom(
     <WorkProfilePanel

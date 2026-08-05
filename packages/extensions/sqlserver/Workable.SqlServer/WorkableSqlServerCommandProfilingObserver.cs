@@ -16,7 +16,6 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
     private const string InstrumentationName = WorkProfileInstrumentation.SqlClient;
     private const int MaximumStatementLength = 8_192;
     private const int MaximumParameterTextLength = 1_024;
-    private const int MaximumBinaryPreviewBytes = 256;
     private const int MaximumCapturedParameters = 32;
     private const int MaximumParameterContextLength = 4_096;
     private const int MaximumExceptionMessageLength = 1_024;
@@ -528,7 +527,9 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
         var isRedacted = ShouldRedactParameter(originalName);
         var value = isRedacted
             ? new CapturedParameterValue("<redacted>", false)
-            : CaptureParameterValue(parameter.Value, Math.Min(MaximumParameterTextLength, maximumContextLength));
+            : IsBinaryParameter(parameter)
+                ? new CapturedParameterValue("<binary omitted>", false)
+                : CaptureParameterValue(parameter.Value, Math.Min(MaximumParameterTextLength, maximumContextLength));
 
         return new SqlCommandParameterContext(
             Name: Truncate(originalName, MaximumMetadataLength, out var nameTruncated),
@@ -580,6 +581,13 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
         return builder.ToString();
     }
 
+    private static bool IsBinaryParameter(Microsoft.Data.SqlClient.SqlParameter parameter)
+        => parameter.SqlDbType is System.Data.SqlDbType.Binary or
+            System.Data.SqlDbType.Image or
+            System.Data.SqlDbType.Timestamp or
+            System.Data.SqlDbType.VarBinary ||
+            parameter.Value is byte[];
+
     private static CapturedParameterValue CaptureParameterValue(object? value, int maximumTextLength)
         => value switch
         {
@@ -593,7 +601,7 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
             bool or byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal => new(value, false),
             Guid or DateTime or DateTimeOffset or DateOnly or TimeOnly or TimeSpan => new(value, false),
             Enum enumValue => new(enumValue.ToString(), false),
-            byte[] bytes => CaptureBinary(bytes, maximumTextLength),
+            byte[] => new("<binary omitted>", false),
             IEnumerable when value is not string => new($"<{value.GetType().Name}>", false),
             _ => new($"<{value.GetType().Name}>", false)
         };
@@ -605,15 +613,6 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
     {
         var captured = Truncate(value, Math.Max(0, maximumLength), out var truncated);
         return new(captured, alreadyTruncated || truncated);
-    }
-
-    private static CapturedParameterValue CaptureBinary(byte[] bytes, int maximumTextLength)
-    {
-        var maximumBytesForText = Math.Max(0, maximumTextLength - 2) / 2;
-        var capturedLength = Math.Min(bytes.Length, Math.Min(MaximumBinaryPreviewBytes, maximumBytesForText));
-        return new(
-            $"0x{Convert.ToHexString(bytes.AsSpan(0, capturedLength))}",
-            bytes.Length > capturedLength);
     }
 
     private static string Truncate(string value, int maximumLength, out bool truncated)
