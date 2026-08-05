@@ -106,6 +106,7 @@ internal sealed class WorkableHttpClientProfilingInstrumentationFactory :
             }
         }
 
+        using var stoppedObserver = stopped;
         try
         {
             current?.UnregisterSystem(systemId);
@@ -117,8 +118,6 @@ internal sealed class WorkableHttpClientProfilingInstrumentationFactory :
                 this.stoppingSystems.Remove(systemId);
                 Monitor.PulseAll(this.gate);
             }
-
-            stopped?.Dispose();
         }
     }
 

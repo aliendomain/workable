@@ -105,6 +105,7 @@ internal sealed class WorkableSqlServerProfilingInstrumentationFactory :
             }
         }
 
+        using var stoppedObserver = stopped;
         try
         {
             current?.UnregisterSystem(systemId);
@@ -116,8 +117,6 @@ internal sealed class WorkableSqlServerProfilingInstrumentationFactory :
                 this.stoppingSystems.Remove(systemId);
                 Monitor.PulseAll(this.gate);
             }
-
-            stopped?.Dispose();
         }
     }
 

@@ -1544,8 +1544,9 @@ WHERE RunId = '{runId.Value:D}';
         }
 
         const string workName = "sql-profiled-outstanding-command";
-        SqlConnection? pendingConnection = null;
-        SqlCommand? pendingCommand = null;
+        await using var pendingConnection = new SqlConnection(this.ConnectionString);
+        await using var pendingCommand = pendingConnection.CreateCommand();
+        pendingCommand.CommandText = "WAITFOR DELAY '00:00:01'; SELECT 1;";
         Task<object?>? pendingExecution = null;
         using var provider = new ServiceCollection()
             .AddWorkableSqlServerProfiling()
@@ -1556,10 +1557,7 @@ WHERE RunId = '{runId.Value:D}';
                     defaultOptions: new WorkerOptions(ProfilingEnabled: true)),
                 async (context, input, cancellationToken) =>
                 {
-                    pendingConnection = new SqlConnection(this.ConnectionString);
                     await pendingConnection.OpenAsync(cancellationToken);
-                    pendingCommand = pendingConnection.CreateCommand();
-                    pendingCommand.CommandText = "WAITFOR DELAY '00:00:01'; SELECT 1;";
                     pendingExecution = pendingCommand.ExecuteScalarAsync(CancellationToken.None);
                     return WorkExecutionResult.Success();
                 }))
@@ -1576,8 +1574,6 @@ WHERE RunId = '{runId.Value:D}';
 
         Assert.Contains("\"Outcome\":\"Incomplete\"", beforeCompletion, StringComparison.Ordinal);
         await (pendingExecution ?? throw new InvalidOperationException("Expected pending SQL execution."));
-        await (pendingCommand ?? throw new InvalidOperationException("Expected pending SQL command.")).DisposeAsync();
-        await (pendingConnection ?? throw new InvalidOperationException("Expected pending SQL connection.")).DisposeAsync();
         Assert.Equal(beforeCompletion, JsonSerializer.Serialize(sqlNode.Context));
     }
 

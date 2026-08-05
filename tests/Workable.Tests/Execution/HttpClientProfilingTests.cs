@@ -902,7 +902,7 @@ public sealed class HttpClientProfilingTests
 
     private static IPEndPoint ReserveUnusedLoopbackEndpoint()
     {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var endpoint = (IPEndPoint)listener.LocalEndpoint;
         listener.Stop();
