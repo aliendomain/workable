@@ -76,6 +76,23 @@ public sealed class WorkableSqlServerProfilingPerformanceShould
     }
 
     [Fact]
+    public void MarkByteArrayValuesAsOmittedWhenTheirDeclaredSqlTypeIsVariant()
+    {
+        using var command = new SqlCommand { CommandText = "SELECT @Payload;" };
+        command.Parameters.Add(new SqlParameter("@Payload", SqlDbType.Variant)
+        {
+            Value = new byte[] { 0x01, 0x02, 0x03 },
+        });
+
+        var json = JsonSerializer.Serialize(
+            WorkableSqlServerCommandProfilingObserver.CaptureCommandForBenchmark(command));
+
+        Assert.Contains("\"Type\":\"Variant\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"Value\":\"\\u003Cbinary omitted\\u003E\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"IsBinaryOmitted\":true", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AddFailureDetailsToTheTimingContextWithoutRecapturingTheCommand()
     {
         using var command = new SqlCommand { CommandText = "SELECT @Value;" };

@@ -2024,6 +2024,7 @@ type WorkProfileSqlCommandContext = {
 
 type WorkProfileSqlParameterContext = {
   Direction?: unknown;
+  IsBinaryOmitted?: unknown;
   IsRedacted?: unknown;
   Name?: unknown;
   Type?: unknown;
@@ -2044,6 +2045,7 @@ type NormalizedWorkProfileSqlCommand = {
 
 type NormalizedWorkProfileSqlParameter = {
   direction: string;
+  isBinaryOmitted: boolean;
   isRedacted: boolean;
   name: string;
   type: string;
@@ -2199,6 +2201,7 @@ function normalizeWorkProfileSqlParameter(
   const parameterValue = getWorkProfileObjectValue(parameter, "Value");
   return {
     direction: direction ?? "Input",
+    isBinaryOmitted: getWorkProfileObjectBoolean(parameter, "IsBinaryOmitted"),
     isRedacted: getWorkProfileObjectBoolean(parameter, "IsRedacted"),
     name: normalizeWorkProfileSqlParameterName(getWorkProfileObjectValue(parameter, "Name"), index),
     type: type ?? inferWorkProfileSqlParameterType(parameterValue),
@@ -2557,6 +2560,10 @@ function formatWorkProfileSqlLiteral(parameter: NormalizedWorkProfileSqlParamete
     return isWorkProfileSqlTextualType(parameter.type)
       ? "N'<redacted>' /* redacted in profile */"
       : "NULL /* redacted in profile */";
+  }
+
+  if (parameter.isBinaryOmitted) {
+    return "NULL /* binary parameter value was omitted from profile */";
   }
 
   if (parameter.value === null || parameter.value === undefined) {

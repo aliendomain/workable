@@ -525,9 +525,10 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
             ? "<unnamed>"
             : parameter.ParameterName;
         var isRedacted = ShouldRedactParameter(originalName);
+        var isBinaryOmitted = !isRedacted && IsBinaryParameter(parameter);
         var value = isRedacted
             ? new CapturedParameterValue("<redacted>", false)
-            : IsBinaryParameter(parameter)
+            : isBinaryOmitted
                 ? new CapturedParameterValue("<binary omitted>", false)
                 : CaptureParameterValue(parameter.Value, Math.Min(MaximumParameterTextLength, maximumContextLength));
 
@@ -537,6 +538,7 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
             Type: parameter.SqlDbType.ToString(),
             Direction: parameter.Direction.ToString(),
             IsRedacted: isRedacted,
+            IsBinaryOmitted: isBinaryOmitted,
             IsTruncated: nameTruncated || value.IsTruncated);
     }
 
@@ -758,6 +760,7 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
         string Type,
         string Direction,
         bool IsRedacted,
+        bool IsBinaryOmitted,
         bool IsTruncated);
 
     private readonly record struct CapturedParameterValue(object? Value, bool IsTruncated);
