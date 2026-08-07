@@ -82,7 +82,7 @@ Adapter packages reference `Workable.Views` when they need to expose the compone
 `packages/core/Workable.AspNetCore` contains ASP.NET Core integration that does not expose routes:
 
 - `IWorkActorFactory` and `IWorkRequestContextFactory`
-- default claims-based `IWorkAuthorizationGroupProvider`
+- default claims-based `IWorkAuthorizationGroupContextProvider`
 - `AddWorkableAspNetCoreAuthorization`
 
 ASP.NET Core applications reference `Workable.AspNetCore` when their own controllers, minimal API routes, or custom transports need authenticated `WorkRequestContext` values and default claims-based group resolution from `HttpContext`.

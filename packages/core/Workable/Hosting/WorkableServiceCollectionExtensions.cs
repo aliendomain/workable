@@ -28,6 +28,7 @@ public static class WorkableServiceCollectionExtensions
         configure(builder);
         services.AddSingleton(builder.Build());
         services.UseWorkableLogging();
+        services.UseWorkableAuthorizationGroups();
 
         return services;
     }
@@ -64,6 +65,7 @@ public static class WorkableServiceCollectionExtensions
         configure(builder);
 
         services.UseWorkableLogging();
+        services.UseWorkableAuthorizationGroups();
         services.AddSingleton(builder.BuildRegistration());
         services.AddSingleton<IWorkSystemRegistry, WorkSystemRegistry>();
         services.TryAddSingleton<IWorkCommandDispatcher, WorkCommandDispatcher>();
@@ -91,5 +93,12 @@ public static class WorkableServiceCollectionExtensions
             services.AddSingleton<IWorkSystemLifecycleObserver>(serviceProvider =>
                 serviceProvider.GetRequiredService<WorkProfilingInstrumentationLifecycleObserver>());
         }
+    }
+
+    private static void UseWorkableAuthorizationGroups(this IServiceCollection services)
+    {
+        services.TryAddSingleton<IWorkAuthorizationGroupProvider>(
+            _ => EmptyWorkAuthorizationGroupProvider.Instance);
+        services.TryAddSingleton<IWorkAuthorizationGroupResolver, WorkAuthorizationGroupResolver>();
     }
 }

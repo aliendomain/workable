@@ -82,7 +82,7 @@ internal sealed class WorkableRealtimeBroadcaster(
 
         foreach (var subscription in subscriptions)
         {
-            var session = CreateAuthorizedSession(
+            var session = await CreateAuthorizedSession(
                 system,
                 subscription.Authorization);
             await this.BroadcastDiagnosticsAlertView(
@@ -185,7 +185,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         WorkableRealtimeEventSubscriptions.EventSubscription subscription,
         CancellationToken cancellationToken)
     {
-        var session = CreateAuthorizedSession(
+        var session = await CreateAuthorizedSession(
             system,
             subscription.Authorization);
         await using var events = session.Events.Subscribe(
@@ -456,7 +456,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         WorkableRealtimeWorkerOverviewSubscription subscription,
         CancellationToken cancellationToken)
     {
-        var session = CreateAuthorizedSession(
+        var session = await CreateAuthorizedSession(
             system,
             subscription.Authorization);
         await using var changeSubscription = session.Changes.Subscribe(new WorkChangeSubscriptionOptions(
@@ -638,7 +638,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         IWorkSystem system,
         CancellationToken cancellationToken)
     {
-        var session = CreateRealtimeBroadcasterSession(system);
+        var session = await CreateRealtimeBroadcasterSession(system);
         await this.BroadcastViewsFromChanges(system, session.Changes, cancellationToken);
     }
 
@@ -897,7 +897,7 @@ internal sealed class WorkableRealtimeBroadcaster(
                 {
                     try
                     {
-                        var session = CreateAuthorizedSession(
+                        var session = await CreateAuthorizedSession(
                             system,
                             subscription.Authorization);
                         var alertState = CreateDiagnosticsAlertState(session, subscription);
@@ -953,7 +953,7 @@ internal sealed class WorkableRealtimeBroadcaster(
         WorkableRealtimeViewSubscription subscription,
         CancellationToken cancellationToken)
     {
-        var session = CreateAuthorizedSession(
+        var session = await CreateAuthorizedSession(
             system,
             subscription.Authorization);
         var view = WorkableRealtimeWorkflowViews.IsWorkflowView(subscription.ViewName)
@@ -1144,7 +1144,7 @@ internal sealed class WorkableRealtimeBroadcaster(
     private static bool IsDiagnosticsView(WorkableRealtimeViewSubscription subscription)
         => string.Equals(subscription.ViewName, "diagnostics", StringComparison.OrdinalIgnoreCase);
 
-    private static IWorkSystemSession CreateAuthorizedSession(
+    private static ValueTask<IWorkSystemSession> CreateAuthorizedSession(
         IWorkSystem system,
         WorkAuthorizationSnapshot authorization)
     {
@@ -1159,7 +1159,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             Authorization: authorization));
     }
 
-    private static IWorkSystemSession CreateRealtimeBroadcasterSession(IWorkSystem system)
+    private static ValueTask<IWorkSystemSession> CreateRealtimeBroadcasterSession(IWorkSystem system)
     {
         ArgumentNullException.ThrowIfNull(system);
 

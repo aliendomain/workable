@@ -33,7 +33,7 @@ internal static class WorkableHttpWorkerRoutes
                 return notFound;
             }
 
-            var session = WorkableHttpRequestContext.CreateSession(
+            var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
                 requestContexts,
@@ -68,7 +68,7 @@ internal static class WorkableHttpWorkerRoutes
                 return notFound;
             }
 
-            var session = WorkableHttpRequestContext.CreateSession(
+            var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
                 requestContexts);
@@ -90,7 +90,7 @@ internal static class WorkableHttpWorkerRoutes
                 return notFound;
             }
 
-            var session = WorkableHttpRequestContext.CreateSession(
+            var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
                 requestContexts,

@@ -22,7 +22,7 @@ public sealed class SessionWorkQueueServiceShould
             new WorkActor("session-queue-user", "Session Queue User"),
             "Queue through a session.",
             "https://workable.test/session");
-        var session = system.CreateSession(requestContext);
+        var session = await system.CreateSession(requestContext);
 
         var byNameUntyped = await session.Queue.Enqueue(
             definition.Name,

@@ -1,15 +1,39 @@
+using Microsoft.Extensions.Logging;
+
 namespace Workable;
 
 internal sealed class DurableWorkflowExecutor(
     string workSystemKey,
     Func<string, RegisteredWork?> getRegisteredWork,
-    Func<WorkRequestContext, IWorkSystemSession> createSession,
+    Func<WorkRequestContext, CancellationToken, ValueTask<IWorkSystemSession>> createSession,
     Func<WorkerId, IWorkerHandle> createWorkerHandle,
     WorkflowPersistenceCoordinator persistence,
     WorkflowEventPublisher? workflowEvents = null,
-    Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null)
+    Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null,
+    ILogger? logger = null)
 {
+    internal DurableWorkflowExecutor(
+        string workSystemKey,
+        Func<string, RegisteredWork?> getRegisteredWork,
+        Func<WorkRequestContext, IWorkSystemSession> createSession,
+        Func<WorkerId, IWorkerHandle> createWorkerHandle,
+        WorkflowPersistenceCoordinator persistence,
+        WorkflowEventPublisher? workflowEvents = null,
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null)
+        : this(
+            workSystemKey,
+            getRegisteredWork,
+            (requestContext, _) => ValueTask.FromResult(createSession(requestContext)),
+            createWorkerHandle,
+            persistence,
+            workflowEvents,
+            getAuthoritativeWorker)
+    {
+    }
+
     private static readonly TimeSpan WorkerObservationPollInterval = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan AuthorizationRetryInitialDelay = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan AuthorizationRetryMaximumDelay = TimeSpan.FromSeconds(5);
 
     public Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
@@ -23,7 +47,8 @@ internal sealed class DurableWorkflowExecutor(
         bool wasPaused,
         Func<bool>? isPauseRequested = null,
         Func<bool>? isCancelRequested = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        WorkAuthorizationSnapshot? initialAuthorization = null)
     {
         IWorkSystemSession? session = null;
         isPauseRequested ??= static () => false;
@@ -33,7 +58,7 @@ internal sealed class DurableWorkflowExecutor(
         try
         {
             run.MarkRunning();
-            session = createSession(run.RequestContext);
+            session = await this.CreateSession(run, initialAuthorization, cancellationToken);
             if (wasPaused)
             {
                 await WorkflowExecutionSupport.ResumeOutstandingChildren(run, session, getAuthoritativeWorker, cancellationToken);
@@ -106,6 +131,46 @@ internal sealed class DurableWorkflowExecutor(
                     exception.Message,
                     "workflow.execution")],
                 cancellationToken);
+        }
+    }
+
+    private async ValueTask<IWorkSystemSession> CreateSession(
+        WorkflowRunState run,
+        WorkAuthorizationSnapshot? initialAuthorization,
+        CancellationToken cancellationToken)
+    {
+        var delay = AuthorizationRetryInitialDelay;
+        long failureCount = 0;
+        while (true)
+        {
+            try
+            {
+                return await createSession(
+                    initialAuthorization is null
+                        ? run.RequestContext
+                        : run.RequestContext with { Authorization = initialAuthorization },
+                    cancellationToken);
+            }
+            catch (WorkAuthorizationGroupResolutionException exception)
+            {
+                failureCount++;
+                if ((failureCount & (failureCount - 1)) == 0)
+                {
+                    logger?.LogWarning(
+                        exception.InnerException ?? exception,
+                        "Authorization-group resolution failed for durable workflow run {WorkflowRunId} in work system {WorkSystem}; retrying after attempt {Attempt}.",
+                        run.Id.Value,
+                        workSystemKey,
+                        failureCount);
+                }
+
+                var retryDelay = TimeSpan.FromMilliseconds(
+                    delay.TotalMilliseconds * (0.5 + (Random.Shared.NextDouble() * 0.5)));
+                await Task.Delay(retryDelay, cancellationToken);
+                delay = TimeSpan.FromMilliseconds(Math.Min(
+                    delay.TotalMilliseconds * 2,
+                    AuthorizationRetryMaximumDelay.TotalMilliseconds));
+            }
         }
     }
 

@@ -75,20 +75,6 @@ internal static class WorkableHttpRouteResults
             : null;
         if (topology.TryResolveSystem(systemName, out var resolved))
         {
-            if (!string.IsNullOrWhiteSpace(systemName))
-            {
-                var requestAccess = httpContext.RequestServices.GetRequiredService<WorkableHttpRequestAccessContext>();
-                if (!requestAccess.HasAnySystemAccess(resolved))
-                {
-                    system = null!;
-                    notFound = AuthorizationDenied(new WorkSystemAccessDeniedException(
-                        WorkSystemPermission.AccessSystem,
-                        resolved.Id,
-                        resolved.Name));
-                    return false;
-                }
-            }
-
             system = resolved;
             notFound = Results.NotFound();
             return true;

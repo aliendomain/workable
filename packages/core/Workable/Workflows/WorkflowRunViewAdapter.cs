@@ -24,7 +24,11 @@ public sealed class WorkflowRunViewAdapter
         ArgumentNullException.ThrowIfNull(requestContext);
 
         var inMemory = ResolveSystem(system);
-        var runs = inMemory.WorkflowRuntime.ListVisibleStates(requestContext, includeFinal, definitionName);
+        var runs = await inMemory.WorkflowRuntime.ListVisibleStates(
+            requestContext,
+            includeFinal,
+            definitionName,
+            cancellationToken);
         if (runs.Count == 0)
         {
             return new WorkflowRunListView(DateTimeOffset.UtcNow, []);
@@ -55,7 +59,7 @@ public sealed class WorkflowRunViewAdapter
         ArgumentNullException.ThrowIfNull(requestContext);
 
         var inMemory = ResolveSystem(system);
-        var run = inMemory.WorkflowRuntime.GetVisibleState(runId, requestContext);
+        var run = await inMemory.WorkflowRuntime.GetVisibleState(runId, requestContext, cancellationToken);
         if (run is null)
         {
             return null;
@@ -91,7 +95,7 @@ public sealed class WorkflowRunViewAdapter
         ArgumentException.ThrowIfNullOrWhiteSpace(stepName);
 
         var inMemory = ResolveSystem(system);
-        var run = inMemory.WorkflowRuntime.GetVisibleState(runId, requestContext);
+        var run = await inMemory.WorkflowRuntime.GetVisibleState(runId, requestContext, cancellationToken);
         if (run is null)
         {
             return null;

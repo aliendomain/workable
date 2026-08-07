@@ -8,7 +8,7 @@ internal static class WorkableHttpProfilingRoutes
 {
     internal static void Map(RouteGroupBuilder group)
     {
-        group.MapGet("/profiling/capture-rules", (
+        group.MapGet("/profiling/capture-rules", async (
             HttpContext httpContext,
             WorkableHttpTopologyResolver topology,
             WorkableHttpRequestAccessContext requestAccess) =>
@@ -18,11 +18,11 @@ internal static class WorkableHttpProfilingRoutes
                 return notFound;
             }
 
-            EnsureDiagnosticsAccess(system, requestAccess);
+            await EnsureDiagnosticsAccess(system, requestAccess, httpContext.RequestAborted);
             return Results.Ok(CreateState(rules));
         });
 
-        group.MapPost("/profiling/capture-rules", (
+        group.MapPost("/profiling/capture-rules", async (
             WorkableHttpCreateProfilingCaptureRuleRequest request,
             HttpContext httpContext,
             WorkableHttpTopologyResolver topology,
@@ -34,10 +34,10 @@ internal static class WorkableHttpProfilingRoutes
                 return notFound;
             }
 
-            EnsureDiagnosticsAccess(system, requestAccess);
+            await EnsureDiagnosticsAccess(system, requestAccess, httpContext.RequestAborted);
             try
             {
-                var requestContext = WorkableHttpRequestContext.Create(
+                var requestContext = await WorkableHttpRequestContext.Create(
                     httpContext,
                     system,
                     requestContexts,
@@ -65,7 +65,7 @@ internal static class WorkableHttpProfilingRoutes
             }
         });
 
-        group.MapDelete("/profiling/capture-rules/{ruleId:guid}", (
+        group.MapDelete("/profiling/capture-rules/{ruleId:guid}", async (
             Guid ruleId,
             HttpContext httpContext,
             WorkableHttpTopologyResolver topology,
@@ -76,7 +76,7 @@ internal static class WorkableHttpProfilingRoutes
                 return notFound;
             }
 
-            EnsureDiagnosticsAccess(system, requestAccess);
+            await EnsureDiagnosticsAccess(system, requestAccess, httpContext.RequestAborted);
             return rules.DeleteProfileCaptureRule(ruleId)
                 ? Results.NoContent()
                 : Results.NotFound();
@@ -101,11 +101,12 @@ internal static class WorkableHttpProfilingRoutes
         return true;
     }
 
-    private static void EnsureDiagnosticsAccess(
+    private static async ValueTask EnsureDiagnosticsAccess(
         IWorkSystem system,
-        WorkableHttpRequestAccessContext requestAccess)
+        WorkableHttpRequestAccessContext requestAccess,
+        CancellationToken cancellationToken)
     {
-        if (!requestAccess.DescribeAccess(system).CanViewDiagnostics)
+        if (!(await requestAccess.DescribeAccess(system, cancellationToken)).CanViewDiagnostics)
         {
             throw new WorkSystemAccessDeniedException(
                 WorkSystemPermission.ViewDiagnostics,

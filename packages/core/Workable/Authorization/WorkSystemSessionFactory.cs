@@ -14,9 +14,12 @@ internal sealed class WorkSystemSessionFactory(
     WorkEventStream events,
     WorkChangeStream changes,
     WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
-    IWorkAuthorizationGroupProvider groupProvider)
+    IWorkAuthorizationGroupResolver groupResolver)
 {
-    public IWorkSystemSession CreateSession(WorkRequestContext requestContext, bool requiresAuthorization)
+    public async ValueTask<IWorkSystemSession> CreateSession(
+        WorkRequestContext requestContext,
+        bool requiresAuthorization,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
@@ -42,9 +45,7 @@ internal sealed class WorkSystemSessionFactory(
                 sessionChanges);
         }
 
-        var groups = requestContext.Authorization?.Groups
-            ?? groupProvider.GetGroups(requestContext.Actor, systemName)
-            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var groups = await groupResolver.GetGroups(requestContext, systemName, cancellationToken);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, groups);
         var canViewDiagnostics = systemAuthorization.CanViewDiagnostics();
         var authorization = new WorkAuthorizationEvaluator(

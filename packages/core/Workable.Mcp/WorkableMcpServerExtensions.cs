@@ -81,8 +81,8 @@ public static class WorkableMcpServerExtensions
         var router = services.GetRequiredService<WorkableMcpToolRouter>();
         var options = services.GetRequiredService<IOptions<WorkableMcpServerOptions>>().Value;
         var systemName = GetSystemName(services);
-        var requestContext = await GetRequestContext(services);
-        var tools = GetTools(router, requestContext, options, systemName)
+        var requestContext = await GetRequestContext(services, systemName, cancellationToken);
+        var tools = (await GetTools(router, requestContext, options, systemName, cancellationToken))
             .Select(descriptor =>
             {
                 var tool = new Tool
@@ -118,8 +118,9 @@ public static class WorkableMcpServerExtensions
             ? null
             : JsonSerializer.SerializeToElement(request.Params.Arguments);
         var toolName = request.Params?.Name ?? string.Empty;
-        var requestContext = await GetRequestContext(services);
-        var result = await router.CallTool(toolName, arguments, options, GetSystemName(services), requestContext, cancellationToken);
+        var systemName = GetSystemName(services);
+        var requestContext = await GetRequestContext(services, systemName, cancellationToken);
+        var result = await router.CallTool(toolName, arguments, options, systemName, requestContext, cancellationToken);
 
         return new CallToolResult
         {
@@ -143,15 +144,16 @@ public static class WorkableMcpServerExtensions
             .GetMetadata<WorkableMcpEndpointMetadata>()
             ?.SystemName;
 
-    private static IReadOnlyList<WorkableMcpServerToolDescriptor> GetTools(
+    private static async ValueTask<IReadOnlyList<WorkableMcpServerToolDescriptor>> GetTools(
         WorkableMcpToolRouter router,
         WorkRequestContext requestContext,
         WorkableMcpServerOptions options,
-        string? systemName)
+        string? systemName,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return router.GetTools(requestContext, options, systemName);
+            return await router.GetTools(requestContext, options, systemName, cancellationToken);
         }
         catch (WorkSystemAccessDeniedException)
         {
@@ -159,7 +161,10 @@ public static class WorkableMcpServerExtensions
         }
     }
 
-    private static async Task<WorkRequestContext> GetRequestContext(IServiceProvider services)
+    private static async Task<WorkRequestContext> GetRequestContext(
+        IServiceProvider services,
+        string? systemName,
+        CancellationToken cancellationToken)
     {
         var httpContext = services.GetService<IHttpContextAccessor>()?.HttpContext;
         if (httpContext is null)
@@ -172,9 +177,18 @@ public static class WorkableMcpServerExtensions
             throw new InvalidOperationException("Workable MCP requires an authenticated user.");
         }
 
-        return services.GetRequiredService<IWorkRequestContextFactory>()
+        var requestContext = services.GetRequiredService<IWorkRequestContextFactory>()
             .Create(httpContext, WorkInvocationChannel.Mcp)
             .WithSurface(WorkOriginSurface.WorkableAdapter);
+        var groups = await services.GetRequiredService<IWorkAuthorizationGroupResolver>()
+            .GetGroups(requestContext, systemName, cancellationToken);
+        return requestContext with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(
+                requestContext.Actor,
+                groups,
+                readableDefinitionIds: null),
+        };
     }
 
     private static void EnsureSystemRequiresAuthorization(

@@ -21,7 +21,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.missing",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -58,7 +58,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.secured",
             WorkRequestContext.Create(
                 WorkInvocationChannel.InProcess,
@@ -104,7 +104,7 @@ public sealed class WorkflowRuntimeShould
                 readableDefinitionIds: null),
         };
 
-        var handle = system.WorkflowRuntime.Start("workflow.secured.system-admin", requestContext);
+        var handle = await system.WorkflowRuntime.Start("workflow.secured.system-admin", requestContext);
         var completion = await handle.WaitForCompletion();
 
         Assert.True(handle.StartOutcome.IsAccepted);
@@ -136,7 +136,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.dispatch",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -176,7 +176,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
         var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
-        var handle = system.WorkflowRuntime.Start("workflow.control.transitions", requestContext);
+        var handle = await system.WorkflowRuntime.Start("workflow.control.transitions", requestContext);
         var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -246,19 +246,71 @@ public sealed class WorkflowRuntimeShould
         var outsiderContext = WorkRequestContext.Create(
             WorkInvocationChannel.InProcess,
             new WorkActor("workflow-outsider"));
-        var handle = system.WorkflowRuntime.Start("workflow.authorization.controls", operatorContext);
+        var handle = await system.WorkflowRuntime.Start("workflow.authorization.controls", operatorContext);
         var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var unauthorizedPause = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Pause, readerContext);
 
         Assert.Equal(WorkflowActionStatus.Unauthorized, unauthorizedPause.Status);
-        Assert.NotNull(system.WorkflowRuntime.GetVisible(runId, readerContext));
-        Assert.Single(system.WorkflowRuntime.ListVisible(readerContext));
-        Assert.Null(system.WorkflowRuntime.GetVisible(runId, outsiderContext));
-        Assert.Empty(system.WorkflowRuntime.ListVisible(outsiderContext));
+        Assert.NotNull(await system.WorkflowRuntime.GetVisible(runId, readerContext));
+        Assert.Single(await system.WorkflowRuntime.ListVisible(readerContext));
+        Assert.Null(await system.WorkflowRuntime.GetVisible(runId, outsiderContext));
+        Assert.Empty(await system.WorkflowRuntime.ListVisible(outsiderContext));
 
         var cancel = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Cancel, operatorContext);
+        Assert.True(cancel.IsAccepted);
+    }
+
+    [Fact]
+    public async Task WorkflowActionCancellationReachesAuthorizationGroupProvider()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var groups = new CancellableWorkflowGroupProvider("workflow-user", "workflow.ops");
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(groups);
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.authorization.cancellation.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configure: null,
+                authorize: authorization => authorization.AllowOperateToGroups("workflow.ops"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.authorization.cancellation"),
+                workflow => workflow.DispatchWork("child", Work("workflow.authorization.cancellation.child")),
+                authorize: authorization => authorization.AllowOperateToGroups("workflow.ops"));
+        });
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-user"));
+        var handle = await system.WorkflowRuntime.Start("workflow.authorization.cancellation", requestContext);
+        var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        groups.Block();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => system.WorkflowRuntime.Execute(
+            runId,
+            WorkflowAction.Pause,
+            requestContext,
+            cancellation.Token));
+        await groups.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        groups.Allow();
+        var cancel = await system.WorkflowRuntime.Execute(
+            runId,
+            WorkflowAction.Cancel,
+            requestContext);
         Assert.True(cancel.IsAccepted);
     }
 
@@ -286,7 +338,7 @@ public sealed class WorkflowRuntimeShould
         await using var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.profiled-child",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -343,7 +395,7 @@ public sealed class WorkflowRuntimeShould
                 readableDefinitionIds: null),
         };
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.dispatch.context",
             requestContext);
         var completion = await handle.WaitForCompletion();
@@ -404,7 +456,7 @@ public sealed class WorkflowRuntimeShould
             .FromValue(new WorkflowInputPayload("external-42"))
             .WithIdentifier(new WorkIdentifier("external-key", "external-42"));
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.input.bound",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             input);
@@ -451,7 +503,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.input.static",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkInput.FromValue(new WorkflowInputPayload("workflow")));
@@ -489,7 +541,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.input.empty",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -533,7 +585,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.input.parallel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             WorkInput.FromValue(new WorkflowInputPayload("parallel-42")));
@@ -580,7 +632,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.dispatch-each",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -633,7 +685,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.dispatch-each.typed",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -701,7 +753,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.dispatch-each.chained",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -785,7 +837,7 @@ public sealed class WorkflowRuntimeShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             $"workflow.dispatch-each.empty-chain.{durable}",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
@@ -837,7 +889,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.dispatch-each.root-array",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -965,7 +1017,7 @@ public sealed class WorkflowRuntimeShould
         await system.Start();
 
         var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
-        var handle = system.WorkflowRuntime.Start(workflowName, requestContext);
+        var handle = await system.WorkflowRuntime.Start(workflowName, requestContext);
         await TestEventually.Until(
             () => started.Count == 2,
             "Expected both dispatch-each children to start.",
@@ -1128,7 +1180,7 @@ public sealed class WorkflowRuntimeShould
         using var provider = services.BuildServiceProvider();
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.dispatch-each.cancel-after-block",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -1220,7 +1272,7 @@ public sealed class WorkflowRuntimeShould
         using var provider = services.BuildServiceProvider();
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.cancel-recursion",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var runningWorkerId = await startedWorker.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -1303,7 +1355,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.parallel.branches",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -1387,7 +1439,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.parallel.branch-bodies",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await alphaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1457,7 +1509,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.parallel.branch-local-join",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await betaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1513,7 +1565,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.parallel.join",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await slowStarted.Task.WaitAsync(CancellationToken.None);
@@ -1568,7 +1620,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.parallel.failure",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         WorkflowRunSnapshot? run = null;
@@ -1603,7 +1655,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.dispatch.missing-child",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -1638,7 +1690,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.trailing.failure",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         WorkflowRunSnapshot? run = null;
@@ -1681,7 +1733,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.invalid.durable-child",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -1718,7 +1770,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.invalid.branch-durable-child",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -1752,7 +1804,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -1793,7 +1845,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.dispatch",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -1866,7 +1918,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.parallel.branches",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -1960,7 +2012,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.parallel.branch-bodies",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await alphaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -2039,7 +2091,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.parallel.branch-local-join",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await betaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -2081,7 +2133,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.trailing.failure",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         WorkflowRunSnapshot? run = null;
@@ -2120,7 +2172,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.missing-child",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -2160,7 +2212,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.dispatch",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion();
@@ -2184,7 +2236,7 @@ public sealed class WorkflowRuntimeShould
         var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
         await firstSystem.Start();
 
-        var handle = firstSystem.WorkflowRuntime.Start(
+        var handle = await firstSystem.WorkflowRuntime.Start(
             "workflow.durable.parallel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -2253,6 +2305,127 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task RecoverDurableWorkflowGroupsAsynchronouslyFromPersistedActor()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var holdChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstGroups = new AsyncTrackingWorkflowGroupProvider("durable-user", "workflow.operators");
+        using var firstProvider = CreateAuthorizedDurableWorkflowProvider(
+            store,
+            firstGroups,
+            cancellationToken => holdChild.Task.WaitAsync(cancellationToken));
+        var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
+        await firstSystem.Start();
+
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("durable-user"),
+            isAuthenticated: true);
+        var handle = await firstSystem.WorkflowRuntime.Start(
+            "workflow.durable.authorized",
+            requestContext);
+
+        WorkerId workerId = default;
+        await TestEventually.Until(
+            () =>
+            {
+                var run = firstSystem.WorkflowRuntime.Get(handle.RunId!.Value);
+                var childIds = run?.Steps.Single(step => step.Name == "dispatch").WorkerIds;
+                if (childIds?.Count != 1)
+                {
+                    return false;
+                }
+
+                workerId = childIds.Single();
+                return true;
+            },
+            "Expected the authorized durable workflow to persist its child worker.");
+
+        var persisted = store.GetWorkflowRun(handle.RunId!.Value)
+            ?? throw new InvalidOperationException("Expected persisted workflow run.");
+        Assert.Null(persisted.RequestContext.Authorization);
+        Assert.Equal("durable-user", persisted.RequestContext.Actor.Id);
+
+        await StopWithTimeout(firstSystem, TimeSpan.FromSeconds(2));
+        store.Requeue(workerId);
+
+        var secondGroups = new AsyncTrackingWorkflowGroupProvider("durable-user", "workflow.operators");
+        using var secondProvider = CreateAuthorizedDurableWorkflowProvider(
+            store,
+            secondGroups,
+            _ => Task.CompletedTask);
+        var secondSystem = GetNamedSystem(secondProvider, "workflow-tests");
+        await secondSystem.Start();
+
+        await TestEventually.Until(
+            () => secondSystem.WorkflowRuntime.Get(handle.RunId!.Value)?.Status == WorkflowRunStatus.Completed,
+            "Expected background recovery to resolve the persisted actor's groups and complete.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        Assert.Contains(
+            secondGroups.Calls,
+            call => call.ActorId == "durable-user" && call.SystemName == "workflow-tests");
+        Assert.Single(firstGroups.Calls, call => call.ActorId == "durable-user");
+    }
+
+    [Fact]
+    public async Task RetryTransientAuthorizationFailureWhileRecoveringDurableWorkflow()
+    {
+        var store = new TestWorkflowPersistenceStore();
+        var holdChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var firstProvider = CreateAuthorizedDurableWorkflowProvider(
+            store,
+            new AsyncTrackingWorkflowGroupProvider("durable-user", "workflow.operators"),
+            cancellationToken => holdChild.Task.WaitAsync(cancellationToken));
+        var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
+        await firstSystem.Start();
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("durable-user"),
+            isAuthenticated: true);
+        var handle = await firstSystem.WorkflowRuntime.Start("workflow.durable.authorized", requestContext);
+        WorkerId workerId = default;
+        await TestEventually.Until(
+            () =>
+            {
+                var workerIds = firstSystem.WorkflowRuntime.Get(handle.RunId!.Value)?.Steps.Single().WorkerIds;
+                if (workerIds?.Count != 1)
+                {
+                    return false;
+                }
+
+                workerId = workerIds.Single();
+                return true;
+            },
+            "Expected the first durable workflow host to persist its child.");
+        await StopWithTimeout(firstSystem, TimeSpan.FromSeconds(2));
+        store.Requeue(workerId);
+
+        var transientGroups = new TransientWorkflowGroupProvider(
+            "durable-user",
+            "workflow.operators",
+            failuresBeforeSuccess: 2);
+        using var secondProvider = CreateAuthorizedDurableWorkflowProvider(
+            store,
+            transientGroups,
+            _ => Task.CompletedTask);
+        var secondSystem = GetNamedSystem(secondProvider, "workflow-tests");
+        await secondSystem.Start();
+
+        await TestEventually.Until(
+            () => secondSystem.WorkflowRuntime.Get(handle.RunId!.Value)?.Status == WorkflowRunStatus.Completed,
+            "Expected durable recovery to retry the transient authorization lookup.",
+            timeout: TimeSpan.FromSeconds(15));
+
+        var recovered = secondSystem.WorkflowRuntime.Get(handle.RunId!.Value);
+        Assert.NotNull(recovered);
+        Assert.True(transientGroups.CallCount >= 3);
+        Assert.DoesNotContain(
+            recovered.Messages,
+            message => message.Text.Contains(TransientWorkflowGroupProvider.SensitiveFailureText, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task StartDoesNotInitializeWorkflowPersistenceWhenOnlyNonDurableWorkflowsExist()
     {
         var store = new TestWorkflowPersistenceStore();
@@ -2289,7 +2462,7 @@ public sealed class WorkflowRuntimeShould
         var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
         await firstSystem.Start();
 
-        var handle = firstSystem.WorkflowRuntime.Start(
+        var handle = await firstSystem.WorkflowRuntime.Start(
             "workflow.durable.parallel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -2356,7 +2529,7 @@ public sealed class WorkflowRuntimeShould
         await firstSystem.Start();
         var input = WorkInput.FromValue(new WorkflowInputPayload("durable-recovered"));
 
-        var handle = firstSystem.WorkflowRuntime.Start(
+        var handle = await firstSystem.WorkflowRuntime.Start(
             "workflow.durable.workflow-input.recovery",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             input);
@@ -2417,7 +2590,7 @@ public sealed class WorkflowRuntimeShould
         var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
         await firstSystem.Start();
 
-        var handle = firstSystem.WorkflowRuntime.Start(
+        var handle = await firstSystem.WorkflowRuntime.Start(
             "workflow.durable.dispatch-each",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -2490,7 +2663,7 @@ public sealed class WorkflowRuntimeShould
         var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
         await firstSystem.Start();
 
-        var handle = firstSystem.WorkflowRuntime.Start(
+        var handle = await firstSystem.WorkflowRuntime.Start(
             "workflow.durable.parallel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -2567,7 +2740,7 @@ public sealed class WorkflowRuntimeShould
         var firstSystem = GetNamedSystem(firstProvider, "workflow-tests");
         await firstSystem.Start();
 
-        var handle = firstSystem.WorkflowRuntime.Start(
+        var handle = await firstSystem.WorkflowRuntime.Start(
             "workflow.durable.parallel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -2655,7 +2828,7 @@ public sealed class WorkflowRuntimeShould
         await system.Start();
 
         system.WorkflowRuntime.StartExecutionLifetime();
-        var slowHandle = system.WorkflowRuntime.Start(
+        var slowHandle = await system.WorkflowRuntime.Start(
             "workflow.slow",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await slowStarted.Task.WaitAsync(CancellationToken.None);
@@ -2667,7 +2840,7 @@ public sealed class WorkflowRuntimeShould
 
         system.WorkflowRuntime.StartExecutionLifetime();
         slowRelease.TrySetResult();
-        var fastHandle = system.WorkflowRuntime.Start(
+        var fastHandle = await system.WorkflowRuntime.Start(
             "workflow.fast",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completed = await fastHandle.WaitForCompletion();
@@ -2704,7 +2877,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.slow",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await slowStarted.Task.WaitAsync(CancellationToken.None);
@@ -2770,7 +2943,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.stop",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await slowStarted.Task.WaitAsync(CancellationToken.None);
@@ -2838,7 +3011,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.auto.resume",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         WorkflowRunSnapshot? blocked = null;
@@ -2985,7 +3158,7 @@ public sealed class WorkflowRuntimeShould
             : Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             workflowName,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await TestEventually.Until(
@@ -3116,7 +3289,7 @@ public sealed class WorkflowRuntimeShould
         using var provider = services.BuildServiceProvider();
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.auto.settlement",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -3192,7 +3365,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.auto.resume.filtered",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         WorkflowRunSnapshot? blocked = null;
@@ -3280,7 +3453,7 @@ public sealed class WorkflowRuntimeShould
         var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.lifecycle.in-memory",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await firstStepStarted.Task.WaitAsync(CancellationToken.None);
@@ -3420,7 +3593,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.auto.resume.durable",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         WorkflowRunSnapshot? blocked = null;
@@ -3524,7 +3697,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.auto.resume.durable.retained",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -3647,7 +3820,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.lifecycle.durable",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await firstStepStarted.Task.WaitAsync(CancellationToken.None);
@@ -3777,7 +3950,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.durable.cancel.requested",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await childStarted.Task.WaitAsync(CancellationToken.None);
@@ -3839,7 +4012,7 @@ public sealed class WorkflowRuntimeShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.parallel.purge-child",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -3922,7 +4095,7 @@ public sealed class WorkflowRuntimeShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.parallel.retained-child",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -3993,7 +4166,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.final.child-lifetime",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -4068,7 +4241,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.failed.child-lifetime",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
@@ -4166,7 +4339,7 @@ public sealed class WorkflowRuntimeShould
         var system = GetNamedSystem(provider, "workflow-tests");
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.completed.child-lifetime.retry",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
@@ -4264,6 +4437,38 @@ public sealed class WorkflowRuntimeShould
         return services.BuildServiceProvider();
     }
 
+    private static ServiceProvider CreateAuthorizedDurableWorkflowProvider(
+        TestWorkflowPersistenceStore store,
+        IWorkAuthorizationGroupProvider groupProvider,
+        Func<CancellationToken, Task> executeChild)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkPersistenceStore>(store);
+        services.AddSingleton(groupProvider);
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(groupProvider);
+        services.AddWorkableSystem("workflow-tests", builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                WorkDefinition.Create("sample.authorized.durable"),
+                async (_, _, cancellationToken) =>
+                {
+                    await executeChild(cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1)),
+                authorization => authorization.AllowOperateToGroups("workflow.operators"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.durable.authorized",
+                    coordination: WorkflowCoordinationConfiguration.Durable),
+                workflow => workflow.DispatchWork("dispatch", Work("sample.authorized.durable")),
+                authorization => authorization.AllowOperateToGroups("workflow.operators"));
+        });
+
+        return services.BuildServiceProvider();
+    }
+
     private static ServiceProvider CreateDurableWorkflowInputRecoveryProvider(
         TestWorkflowPersistenceStore store,
         Func<CancellationToken, Task> block,
@@ -4354,10 +4559,87 @@ public sealed class WorkflowRuntimeShould
     private sealed class TestWorkflowGroupProvider(IReadOnlyDictionary<string, IReadOnlySet<string>> groupsByActor)
         : IWorkAuthorizationGroupProvider
     {
-        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
-            => actor.Id is not null && groupsByActor.TryGetValue(actor.Id, out var groups)
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlySet<string>>(actor.Id is not null && groupsByActor.TryGetValue(actor.Id, out var groups)
                 ? groups
-                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private sealed class AsyncTrackingWorkflowGroupProvider(string actorId, string group)
+        : IWorkAuthorizationGroupProvider
+    {
+        private readonly ConcurrentQueue<(string? ActorId, string? SystemName)> calls = new();
+
+        public IReadOnlyCollection<(string? ActorId, string? SystemName)> Calls => [.. this.calls];
+
+        public async ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            this.calls.Enqueue((actor.Id, systemName));
+            return actor.Id == actorId
+                ? Groups(group)
+                : Groups();
+        }
+    }
+
+    private sealed class TransientWorkflowGroupProvider(
+        string actorId,
+        string group,
+        int failuresBeforeSuccess) : IWorkAuthorizationGroupProvider
+    {
+        internal const string SensitiveFailureText = "directory.internal.example:636 credential rejected";
+        private int callCount;
+
+        public int CallCount => Volatile.Read(ref this.callCount);
+
+        public async ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Interlocked.Increment(ref this.callCount) <= failuresBeforeSuccess)
+            {
+                throw new InvalidOperationException(SensitiveFailureText);
+            }
+
+            return actor.Id == actorId ? Groups(group) : Groups();
+        }
+    }
+
+    private sealed class CancellableWorkflowGroupProvider(string actorId, string group)
+        : IWorkAuthorizationGroupProvider
+    {
+        private int shouldBlock;
+
+        public TaskCompletionSource CancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Block() => Volatile.Write(ref this.shouldBlock, 1);
+
+        public void Allow() => Volatile.Write(ref this.shouldBlock, 0);
+
+        public async ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref this.shouldBlock) != 0)
+            {
+                using var registration = cancellationToken.Register(() => this.CancellationObserved.TrySetResult());
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return actor.Id == actorId ? Groups(group) : Groups();
+        }
     }
 
     private sealed class ThrowingLifecycleObserver : IWorkSystemLifecycleObserver

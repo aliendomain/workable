@@ -13,7 +13,7 @@ internal static class SampleHostWorkableAdmin
         SampleFakeAuth.WorkAdministratorGroup,
     ];
 
-    public static IWorkSystemSession CreateSession(
+    public static ValueTask<IWorkSystemSession> CreateSession(
         this IWorkSystem system,
         string description)
     {

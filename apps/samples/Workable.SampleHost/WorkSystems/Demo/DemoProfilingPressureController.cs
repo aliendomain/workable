@@ -299,7 +299,7 @@ public sealed class DemoProfilingPressureController(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var session = system.CreateSession("Cancel profiling-pressure sample work from the sample host.");
+            var session = await system.CreateSession("Cancel profiling-pressure sample work from the sample host.");
             var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
             if (worker is null)
             {
@@ -330,7 +330,7 @@ public sealed class DemoProfilingPressureController(
                 return;
             }
 
-            var session = system.CreateSession("Read profiling-pressure sample work from the sample host.");
+            var session = await system.CreateSession("Read profiling-pressure sample work from the sample host.");
             var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
             if (worker is null)
             {

@@ -11,7 +11,7 @@ namespace Workable;
 /// </remarks>
 public sealed class WorkableRealtimeHub(
     IWorkSystemRegistry registry,
-    IWorkAuthorizationGroupProvider groupProvider,
+    IWorkAuthorizationGroupResolver groupResolver,
     IWorkRequestContextFactory requestContexts,
     WorkableViewQueryAdapter views,
     WorkableRealtimeEventSubscriptions eventSubscriptions,
@@ -35,7 +35,7 @@ public sealed class WorkableRealtimeHub(
         WorkableRealtimeViewSubscription? subscription = null;
         try
         {
-            var authorization = CreateAuthorization(system, systemName, out var session);
+            var (authorization, session) = await CreateAuthorization(system, systemName);
             subscription = await viewSubscriptions.WatchView(
                 this.Context.ConnectionId,
                 this.Groups,
@@ -73,14 +73,14 @@ public sealed class WorkableRealtimeHub(
     /// </summary>
     /// <param name="subscriptionId">The subscription id originally passed to <see cref="WatchView"/>.</param>
     /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
-    public Task UnwatchView(string subscriptionId, string? systemName = null)
+    public async Task UnwatchView(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        EnsureCanAccessNamedSystem(
+        await EnsureCanAccessNamedSystem(
             system,
             systemName,
             CreateRequestContext());
-        return viewSubscriptions.UnwatchView(
+        await viewSubscriptions.UnwatchView(
             this.Context.ConnectionId,
             this.Groups,
             system,
@@ -105,7 +105,7 @@ public sealed class WorkableRealtimeHub(
         WorkableRealtimeWorkerOverviewSubscription? subscription = null;
         try
         {
-            var authorization = CreateAuthorization(system, systemName, out var session);
+            var (authorization, session) = await CreateAuthorization(system, systemName);
             subscription = await workerOverviewSubscriptions.Watch(
                 this.Context.ConnectionId,
                 this.Groups,
@@ -142,14 +142,14 @@ public sealed class WorkableRealtimeHub(
     /// </summary>
     /// <param name="subscriptionId">The subscription id originally passed to <see cref="WatchWorkerOverview"/>.</param>
     /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
-    public Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null)
+    public async Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        EnsureCanAccessNamedSystem(
+        await EnsureCanAccessNamedSystem(
             system,
             systemName,
             CreateRequestContext());
-        return workerOverviewSubscriptions.Unwatch(
+        await workerOverviewSubscriptions.Unwatch(
             this.Context.ConnectionId,
             this.Groups,
             system,
@@ -169,7 +169,7 @@ public sealed class WorkableRealtimeHub(
         var system = ResolveSystem(systemName);
         try
         {
-            var authorization = CreateAuthorization(system, systemName, out var session);
+            var (authorization, session) = await CreateAuthorization(system, systemName);
             await eventSubscriptions.WatchEvents(
                 this.Context.ConnectionId,
                 this.Groups,
@@ -195,9 +195,7 @@ public sealed class WorkableRealtimeHub(
         string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        var requestContext = CreateRequestContext();
-        EnsureCanAccessNamedSystem(system, systemName, requestContext);
-        var session = system.CreateSession(requestContext);
+        var (_, session) = await this.CreateAuthorization(system, systemName);
         await eventSubscriptions.UnwatchEvents(
             this.Context.ConnectionId,
             this.Groups,
@@ -269,26 +267,31 @@ public sealed class WorkableRealtimeHub(
             this.Context.ConnectionAborted);
     }
 
-    private WorkAuthorizationSnapshot CreateAuthorization(
+    private async ValueTask<(WorkAuthorizationSnapshot Authorization, IWorkSystemSession Session)> CreateAuthorization(
         IWorkSystem system,
-        string? systemName,
-        out IWorkSystemSession session)
+        string? systemName)
     {
         var requestContext = CreateRequestContext();
-        EnsureCanAccessNamedSystem(system, systemName, requestContext);
-        var groups = groupProvider.GetGroups(requestContext.Actor, system.Name);
-        session = system.CreateSession(requestContext with
+        var groups = await groupResolver.GetGroups(
+            requestContext,
+            system.Name,
+            this.Context.ConnectionAborted);
+        var authorizationContext = requestContext with
         {
             Authorization = WorkAuthorizationSnapshot.Create(
                 requestContext.Actor,
                 groups,
                 readableDefinitionIds: null),
-        });
+        };
+        await EnsureCanAccessNamedSystem(system, systemName, authorizationContext);
+        var session = await system.CreateSession(authorizationContext, this.Context.ConnectionAborted);
 
-        return WorkAuthorizationSnapshot.Create(
-            requestContext.Actor,
-            groups,
-            session.Catalog.Definitions.Select(static definition => definition.Id));
+        return (
+            WorkAuthorizationSnapshot.Create(
+                requestContext.Actor,
+                groups,
+                session.Catalog.Definitions.Select(static definition => definition.Id)),
+            session);
     }
 
     private WorkRequestContext CreateRequestContext()
@@ -297,12 +300,13 @@ public sealed class WorkableRealtimeHub(
             WorkInvocationChannel.SignalR)
             .WithSurface(WorkOriginSurface.WorkableAdapter);
 
-    private static void EnsureCanAccessNamedSystem(
+    private async ValueTask EnsureCanAccessNamedSystem(
         IWorkSystem system,
         string? systemName,
         WorkRequestContext requestContext)
     {
-        if (string.IsNullOrWhiteSpace(systemName) || system.DescribeAccess(requestContext).HasAnyAccess())
+        if (string.IsNullOrWhiteSpace(systemName) ||
+            (await system.DescribeAccess(requestContext, this.Context.ConnectionAborted)).HasAnyAccess())
         {
             return;
         }

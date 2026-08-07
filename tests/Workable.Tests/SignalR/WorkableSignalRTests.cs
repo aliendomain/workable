@@ -132,7 +132,7 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             null);
 
-        var session = Session(system);
+        var session = await Session(system);
         var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
         var handle = await session.Queue.Enqueue(definition.Name);
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -166,7 +166,7 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(),
             null);
 
-        var session = Session(system);
+        var session = await Session(system);
         var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
         var handle = await session.Queue.Enqueue(definition.Name);
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -195,7 +195,7 @@ public sealed class WorkableSignalRTests
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var eventSubscriptions = host.Services.GetRequiredService<WorkableRealtimeEventSubscriptions>();
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
-        var definition = Session(system).Catalog.Definitions.Single(work => work.Name == "signalr.view");
+        var definition = (await Session(system)).Catalog.Definitions.Single(work => work.Name == "signalr.view");
         var acceptedIdentifier = new WorkIdentifier("batch", "accepted");
         await using var connection = CreateConnection(host);
         var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
@@ -215,7 +215,7 @@ public sealed class WorkableSignalRTests
                 ]),
             null);
 
-        var session = Session(system);
+        var session = await Session(system);
         var accepted = await session.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(acceptedIdentifier));
         var ignored = await session.Queue.Enqueue("signalr.view", WorkInput.Empty.WithIdentifier(new WorkIdentifier("batch", "ignored")));
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -268,7 +268,7 @@ public sealed class WorkableSignalRTests
         var events = Channel.CreateUnbounded<WorkableRealtimeEvent>();
         CaptureRealtimeEvents(connection, events);
 
-        var workflowHandle = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime.Start(
+        var workflowHandle = await Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime.Start(
             "signalr.workflow",
             TransportAuthorizationTestSupport.CreateTransportRequestContext(
                 WorkInvocationChannel.InProcess,
@@ -325,7 +325,7 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             null);
 
-        var session = Session(system);
+        var session = await Session(system);
         var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
         var handles = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => session.Queue.Enqueue(definition.Name)));
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -376,7 +376,7 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(["worker.completed"]),
             null);
 
-        var session = Session(system);
+        var session = await Session(system);
         var definition = session.Catalog.Definitions.Single(work => work.Name == "signalr.view");
         var handles = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => session.Queue.Enqueue(definition.Name)));
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -437,7 +437,7 @@ public sealed class WorkableSignalRTests
         var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
         var initialWorkers = Assert.IsType<JsonElement>(initial.Components["workers"].Data);
 
-        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        var handle = await (await Session(system)).Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         var completion = await handle.WaitForCompletion();
@@ -502,7 +502,7 @@ public sealed class WorkableSignalRTests
 
         var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
 
-        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        var handle = await (await Session(system)).Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         var completion = await handle.WaitForCompletion();
@@ -561,7 +561,7 @@ public sealed class WorkableSignalRTests
             null);
 
         var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workers"));
-        var handle = await Session(system).Queue.Enqueue("signalr.view");
+        var handle = await (await Session(system)).Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
         var completion = await handle.WaitForCompletion();
@@ -589,7 +589,7 @@ public sealed class WorkableSignalRTests
             });
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var gate = host.Services.GetRequiredService<SignalRWorkGate>();
-        var session = Session(system);
+        var session = await Session(system);
         var target = await session.Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Release.SetResult();
@@ -727,10 +727,10 @@ public sealed class WorkableSignalRTests
         var initialRuns = Assert.IsType<JsonElement>(initial.Components["workflowRuns"].Data);
         Assert.Equal(0, initialRuns.GetProperty("runs").GetArrayLength());
 
-        var blocker = await Session(system).Queue.Enqueue("signalr.view");
+        var blocker = await (await Session(system)).Queue.Enqueue("signalr.view");
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var handle = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime.Start(
+        var handle = await Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime.Start(
             "signalr.workflow.capacity",
             TransportAuthorizationTestSupport.CreateTransportRequestContext(
                 WorkInvocationChannel.InProcess,
@@ -809,7 +809,7 @@ public sealed class WorkableSignalRTests
         var startContext = TransportAuthorizationTestSupport.CreateTransportRequestContext(
             WorkInvocationChannel.InProcess,
             description: "Start workflow for workflow detail realtime view test.");
-        var handle = system.WorkflowRuntime.Start("signalr.workflow.manual", startContext);
+        var handle = await system.WorkflowRuntime.Start("signalr.workflow.manual", startContext);
         var runId = handle.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
         await TestEventually.Until(() =>
         {
@@ -863,9 +863,9 @@ public sealed class WorkableSignalRTests
         var initialDetail = Assert.IsType<JsonElement>(initial.Components["workflowRun"].Data);
         Assert.Equal(nameof(WorkflowRunStatus.Running), initialDetail.GetProperty("status").GetString());
 
-        var worker = await Session(system).Query.Worker(childWorkerId)
+        var worker = await (await Session(system)).Query.Worker(childWorkerId)
             ?? throw new InvalidOperationException("Expected child worker.");
-        var start = await Session(system).Workers.Execute(worker.Version, WorkAction.Start);
+        var start = await (await Session(system)).Workers.Execute(worker.Version, WorkAction.Start);
         Assert.True(start.IsAccepted);
         await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -911,7 +911,7 @@ public sealed class WorkableSignalRTests
         CaptureWorkerOverviewUpdates(connection, subscriptionId, updates);
         await connection.StartAsync();
 
-        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var handle = await (await Session(system)).Queue.Enqueue("signalr.worker");
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
 
         await connection.InvokeAsync(
@@ -933,7 +933,7 @@ public sealed class WorkableSignalRTests
         Assert.Equal(WorkerState.Queued, initialWorker.State);
         Assert.Null(initial.LatestIteration);
 
-        var session = Session(system);
+        var session = await Session(system);
         var worker = await session.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected worker.");
 
@@ -1018,7 +1018,7 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var session = Session(system);
+        var session = await Session(system);
         await using var connection = CreateConnection(host);
         const string subscriptionId = "worker-overview-purge";
         var updates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
@@ -1056,7 +1056,7 @@ public sealed class WorkableSignalRTests
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         var viewSubscriptions = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
         var workerSubscriptions = host.Services.GetRequiredService<WorkableRealtimeWorkerOverviewSubscriptions>();
-        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var handle = await (await Session(system)).Queue.Enqueue("signalr.worker");
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
         await using var connection = CreateConnection(host);
         await connection.StartAsync();
@@ -1087,7 +1087,7 @@ public sealed class WorkableSignalRTests
         var events = host.Services.GetRequiredService<WorkableRealtimeEventSubscriptions>();
         var views = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
         var workers = host.Services.GetRequiredService<WorkableRealtimeWorkerOverviewSubscriptions>();
-        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var handle = await (await Session(system)).Queue.Enqueue("signalr.worker");
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
         await using var connection = CreateConnection(host);
         await connection.StartAsync();
@@ -1124,7 +1124,7 @@ public sealed class WorkableSignalRTests
         CaptureWorkerOverviewUpdates(connection, subscriptionId, updates);
         await connection.StartAsync();
 
-        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var handle = await (await Session(system)).Queue.Enqueue("signalr.worker");
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
 
         await connection.InvokeAsync(
@@ -1148,7 +1148,7 @@ public sealed class WorkableSignalRTests
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var session = Session(system);
+        var session = await Session(system);
         await using var connection = CreateConnection(host);
         const string subscriptionId = "worker-overview";
         var updates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
@@ -1211,7 +1211,7 @@ public sealed class WorkableSignalRTests
         CaptureWorkerOverviewUpdates(connection, secondSubscriptionId, secondUpdates);
         await connection.StartAsync();
 
-        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var handle = await (await Session(system)).Queue.Enqueue("signalr.worker");
         var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
         var criteria = new WorkWorkerOverviewRealtimeCriteria(
             WorkerControls: WorkComponentShapes.Standard,
@@ -1240,7 +1240,7 @@ public sealed class WorkableSignalRTests
             secondUpdates.Reader,
             update => update.Worker?.WorkerId == workerId);
 
-        var session = Session(system);
+        var session = await Session(system);
         var worker = await session.Query.Worker(workerId)
             ?? throw new InvalidOperationException("Expected worker.");
 
@@ -1530,7 +1530,7 @@ public sealed class WorkableSignalRTests
             views.Reader,
             view => view.Components.ContainsKey("queueDiagnostics"));
 
-        var session = Session(system);
+        var session = await Session(system);
         _ = await session.Queue.Enqueue("signalr.worker");
         var rejected = await session.Queue.Enqueue("signalr.worker");
         Assert.False(rejected.QueueOutcome.IsAccepted);
@@ -1592,7 +1592,7 @@ public sealed class WorkableSignalRTests
             view => view.Components.ContainsKey("readModelDiagnostics"));
 
         using var enqueueCancellation = new CancellationTokenSource();
-        var session = Session(system);
+        var session = await Session(system);
         var enqueuePressure = Enumerable.Range(0, 4)
             .Select(index => Task.Run(async () =>
             {
@@ -1676,7 +1676,7 @@ public sealed class WorkableSignalRTests
         Assert.Contains("diagnostics permission", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
 
-        var session = Session(system);
+        var session = await Session(system);
         _ = await session.Queue.Enqueue("signalr.worker");
         var rejected = await session.Queue.Enqueue("signalr.worker");
 
@@ -2064,7 +2064,7 @@ public sealed class WorkableSignalRTests
         return value;
     }
 
-    private static IWorkSystemSession Session(IWorkSystem system)
+    private static ValueTask<IWorkSystemSession> Session(IWorkSystem system)
         => TransportAuthorizationTestSupport.CreateTransportSession(
             system,
             WorkInvocationChannel.InProcess,

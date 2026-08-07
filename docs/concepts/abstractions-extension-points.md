@@ -204,18 +204,53 @@ Most applications will never implement this directly. It matters when you are bu
 ```csharp
 public interface IWorkAuthorizationGroupProvider
 {
-    IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName);
+    ValueTask<IReadOnlySet<string>> GetGroups(
+        WorkActor actor,
+        string? systemName,
+        CancellationToken cancellationToken = default);
 }
 ```
 
-ASP.NET Core integration supplies a default implementation based on claims. Hosts can replace it when Workable groups should come from:
+Hosts register this actor-based provider when Workable groups should come from:
 
 - database-backed permission resolution
 - tenant-aware group expansion
 - application-specific policy projection
 - a non-claims identity system
 
-This is the seam between "the host knows who the caller is" and "Workable needs normalized group names to evaluate."
+The lookup is asynchronous because these sources commonly require database, directory, or service calls. Workable calls it with the actor saved in the `WorkRequestContext`, so the same implementation works during durable queue and workflow rehydration when no HTTP request exists.
+
+Register the provider as a singleton. Workable systems are singleton services and can resolve groups concurrently for HTTP requests, background workers, and durable recovery. The implementation must therefore be thread-safe. If group resolution needs a scoped resource such as `DbContext`, inject `IDbContextFactory<TContext>` or another thread-safe scope factory rather than capturing a scoped service in the provider.
+
+The provider should honor `CancellationToken` and perform one lookup attempt per call. Workable retries transient provider failures with bounded exponential backoff while a durable workflow remains active; cancellation stops those retries and leaves the persisted run recoverable for the next host start.
+
+```csharp
+services.AddSingleton<IWorkAuthorizationGroupProvider, ApplicationWorkGroupProvider>();
+
+public sealed class ApplicationWorkGroupProvider(IApplicationPermissions permissions)
+    : IWorkAuthorizationGroupProvider
+{
+    public async ValueTask<IReadOnlySet<string>> GetGroups(
+        WorkActor actor,
+        string? systemName,
+        CancellationToken cancellationToken = default)
+    {
+        if (!actor.IsKnown)
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return await permissions.GetWorkableGroups(
+            actor.Id!,
+            systemName,
+            cancellationToken);
+    }
+}
+```
+
+ASP.NET Core integration additionally resolves groups from the current authenticated user's claims when that user matches the actor being evaluated. It does not replace the actor-based provider. When a durable operation is rehydrated outside HTTP, Workable falls back to the host's `IWorkAuthorizationGroupProvider`.
+
+This is the seam between "the host knows who the actor is" and "Workable needs normalized group names to evaluate."
 
 ## Choosing The Right Level
 

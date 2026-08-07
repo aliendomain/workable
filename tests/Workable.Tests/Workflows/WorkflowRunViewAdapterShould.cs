@@ -45,7 +45,7 @@ public sealed class WorkflowRunViewAdapterShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.operator.parallel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await Task.WhenAll(emailStarted.Task, invoiceStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
@@ -120,7 +120,7 @@ public sealed class WorkflowRunViewAdapterShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.operator.join.waiting",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await slowStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -200,7 +200,7 @@ public sealed class WorkflowRunViewAdapterShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.operator.branch",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await Task.WhenAll(collectStarted.Task, renderStarted.Task, publishStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
@@ -408,7 +408,7 @@ public sealed class WorkflowRunViewAdapterShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.operator.page.parallel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await Task.WhenAll(firstStarted.Task, secondStarted.Task).WaitAsync(TimeSpan.FromSeconds(5));
@@ -468,7 +468,7 @@ public sealed class WorkflowRunViewAdapterShould
         var startContext = CreateContext(actor, "workflow.ops", "workflow.read");
         var readContext = CreateContext(actor, "workflow.read");
         var hiddenContext = CreateContext(actor);
-        var handle = system.WorkflowRuntime.Start("workflow.operator.secured", startContext);
+        var handle = await system.WorkflowRuntime.Start("workflow.operator.secured", startContext);
         await TestEventually.Until(
             () => system.WorkflowRuntime.Get(handle.RunId!.Value)?.Steps.Single(step => step.Name == "dispatch").WorkerIds.Count == 1,
             "Expected the secured workflow to dispatch its child before querying visibility.",
@@ -515,7 +515,7 @@ public sealed class WorkflowRunViewAdapterShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var handle = system.WorkflowRuntime.Start(
+        var handle = await system.WorkflowRuntime.Start(
             "workflow.operator.purge",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await handle.WaitForCompletion();
@@ -562,9 +562,9 @@ public sealed class WorkflowRunViewAdapterShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
-        var runId = system.WorkflowRuntime.Start(
+        var runId = (await system.WorkflowRuntime.Start(
             "workflow.operator.actions",
-            WorkRequestContext.Create(WorkInvocationChannel.InProcess)).RunId!.Value;
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess))).RunId!.Value;
         await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var pausedOutcome = await system.WorkflowRuntime.Execute(
@@ -909,10 +909,13 @@ public sealed class WorkflowRunViewAdapterShould
     private sealed class TestGroupProvider(IReadOnlyDictionary<string, IReadOnlySet<string>> groupsByActor)
         : IWorkAuthorizationGroupProvider
     {
-        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
-            => groupsByActor.TryGetValue(actor.Id ?? string.Empty, out var groups)
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlySet<string>>(groupsByActor.TryGetValue(actor.Id ?? string.Empty, out var groups)
                 ? groups
-                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase));
     }
 
     private sealed record UnknownWorkflowStepDefinition()

@@ -81,8 +81,8 @@ public sealed class AspNetCoreOriginTests
                                 httpContext,
                                 WorkInvocationChannel.HttpApi,
                                 "Queue work 'direct.http' through custom HTTP endpoint.");
-                            var handle = await registry.Default
-                                .CreateSession(requestContext)
+                            var handle = await (await registry.Default
+                                .CreateSession(requestContext))
                                 .Queue
                                 .Enqueue("direct.http");
                             return handle.WorkerId?.Value ?? throw new InvalidOperationException("Expected worker.");

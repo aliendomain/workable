@@ -176,7 +176,7 @@ var requestContext = WorkRequestContext.Create(
     new WorkActor(Id: "current-user-id"),
     "Queue welcome email from application service.");
 
-var session = workSystem.CreateSession(requestContext);
+var session = await workSystem.CreateSession(requestContext, cancellationToken);
 
 IWorkerHandle handle = await session.Queue.Enqueue(
     "email.welcome.send",

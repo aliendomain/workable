@@ -11,21 +11,19 @@ internal static class WorkflowBenchmarkReflection
         WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
     {
-        var handle = StartHandle(system, workflowName, requestContext, cancellationToken);
+        var handle = await StartHandle(system, workflowName, requestContext, cancellationToken);
         var completion = await WaitForCompletion(handle, cancellationToken);
         return (WorkflowRunStatus)RequireProperty(completion, "Status");
     }
 
-    public static Guid Start(
+    public static async Task<Guid> Start(
         IWorkSystem system,
         string workflowName,
         WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
     {
         var runtime = GetWorkflowRuntime(system);
-        var handle = GetStartMethod(runtime)
-            .Invoke(runtime, [workflowName, requestContext, cancellationToken])
-            ?? throw new InvalidOperationException("Expected workflow runtime start handle.");
+        var handle = await InvokeStart(runtime, workflowName, requestContext, cancellationToken);
         EnsureAcceptedStart(workflowName, handle);
         var runId = RequireProperty(handle, "RunId");
         var value = RequireProperty(runId, "Value");
@@ -61,18 +59,29 @@ internal static class WorkflowBenchmarkReflection
         return $"Workflow status sample: {string.Join("; ", descriptions)}.";
     }
 
-    private static object StartHandle(
+    private static async Task<object> StartHandle(
         IWorkSystem system,
         string workflowName,
         WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
         var runtime = GetWorkflowRuntime(system);
-        var handle = GetStartMethod(runtime)
-            .Invoke(runtime, [workflowName, requestContext, cancellationToken])
-            ?? throw new InvalidOperationException("Expected workflow runtime start handle.");
+        var handle = await InvokeStart(runtime, workflowName, requestContext, cancellationToken);
         EnsureAcceptedStart(workflowName, handle);
         return handle;
+    }
+
+    private static async Task<object> InvokeStart(
+        object runtime,
+        string workflowName,
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
+    {
+        var task = (Task)(GetStartMethod(runtime)
+            .Invoke(runtime, [workflowName, requestContext, cancellationToken])
+            ?? throw new InvalidOperationException("Expected workflow runtime start task."));
+        await task.WaitAsync(cancellationToken);
+        return RequireProperty(task, "Result");
     }
 
     private static MethodInfo GetStartMethod(object runtime)

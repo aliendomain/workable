@@ -26,7 +26,7 @@ public sealed class WorkQueueServiceShould
             });
         await using var system = CreateSystem(definition);
         await system.Start();
-        var session = system.CreateSession(WorkRequestContext.Create(
+        var session = await system.CreateSession(WorkRequestContext.Create(
             WorkInvocationChannel.HttpApi,
             description: "Queue through HTTP."));
 

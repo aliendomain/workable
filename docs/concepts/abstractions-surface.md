@@ -66,7 +66,9 @@ var requestContext = new WorkRequestContext(
     url: "/workable/workers",
     isAuthenticated: true);
 
-IWorkSystemSession session = workSystem.CreateSession(requestContext);
+IWorkSystemSession session = await workSystem.CreateSession(
+    requestContext,
+    cancellationToken);
 
 WorkerQueryResult workers = await session.Query.Workers(cancellationToken: cancellationToken);
 ```
@@ -79,7 +81,7 @@ For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also par
 
 `DescribeAccess(...)` lets a host or custom adapter reason about access before creating a broader session experience.
 
-`DescribeAccess(...).HasAnyAccess()` is the simple yes-or-no check for "does this caller have enough real access for this system to be visible or selected by name through a transport-facing surface?"
+`(await DescribeAccess(...)).HasAnyAccess()` is the simple yes-or-no check for "does this caller have enough real access for this system to be visible or selected by name through a transport-facing surface?"
 
 `DescribeAccess(...)` returns a `WorkSystemAccessSummary`:
 

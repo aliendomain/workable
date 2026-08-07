@@ -78,7 +78,7 @@ public sealed class WorkflowCommandDispatcher(
             return systemNotFound;
         }
 
-        var handle = runtime.Start(workflowName, requestContext, input, cancellationToken);
+        var handle = await runtime.Start(workflowName, requestContext, input, cancellationToken);
         if (!handle.StartOutcome.IsAccepted)
         {
             return CreateResult(
@@ -141,7 +141,7 @@ public sealed class WorkflowCommandDispatcher(
             return systemNotFound;
         }
 
-        var outcome = await runtime.Execute(runId, ToWorkflowAction(action), requestContext);
+        var outcome = await runtime.Execute(runId, ToWorkflowAction(action), requestContext, cancellationToken);
         return CreateResult(
             ToCommandStatus(outcome.Status),
             outcome.RunId,

@@ -2,5 +2,7 @@ namespace Workable;
 
 internal interface IWorkSystemBuiltInHttpSurfaceAccess
 {
-    bool IsBuiltInHttpSurfaceAllowed(WorkRequestContext requestContext);
+    ValueTask<bool> IsBuiltInHttpSurfaceAllowed(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default);
 }

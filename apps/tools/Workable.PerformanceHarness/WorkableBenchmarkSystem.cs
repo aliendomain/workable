@@ -30,6 +30,8 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
 
     public IWorkSystemSession Session { get; }
 
+    public WorkRequestContext RequestContext => this.requestContext;
+
     public IReadOnlyList<WorkDefinition> Definitions { get; }
 
     public static async Task<WorkableBenchmarkSystem> CreateQueued(
@@ -83,7 +85,7 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         var requestContext = CreateRequestContext();
         await system.Start(requestContext, cancellationToken);
-        var session = system.CreateSession(requestContext);
+        var session = await system.CreateSession(requestContext);
 
         for (var index = 0; index < workerCount; index++)
         {

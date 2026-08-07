@@ -2,19 +2,20 @@ namespace Workable;
 
 internal static class WorkableHttpBuiltInSurfaceAccess
 {
-    internal static bool IsAllowed(
+    internal static async ValueTask<bool> IsAllowed(
         IWorkSystem system,
-        WorkRequestContext requestContext)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(requestContext);
 
         if (system is IWorkSystemBuiltInHttpSurfaceAccess fastPath)
         {
-            return fastPath.IsBuiltInHttpSurfaceAllowed(requestContext);
+            return await fastPath.IsBuiltInHttpSurfaceAllowed(requestContext, cancellationToken);
         }
 
-        return IsAllowed(system.DescribeAccess(requestContext));
+        return IsAllowed(await system.DescribeAccess(requestContext, cancellationToken));
     }
 
     internal static bool IsAllowed(WorkSystemAccessSummary access)

@@ -29,27 +29,40 @@ public sealed class WorkableHttpTopologyResolver(
     /// </summary>
     /// <param name="requestContext">The caller context used to determine system visibility and access summaries.</param>
     /// <returns>The host discovery payload for the caller.</returns>
-    public WorkableHttpHostDescriptor DescribeHost(WorkRequestContext requestContext)
+    public Task<WorkableHttpHostDescriptor> DescribeHost(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
         => this.DescribeHost(
-            system => system.DescribeAccess(requestContext),
-            static (_, access) => access.HasAnyAccess());
+            system => system.DescribeAccess(requestContext, cancellationToken),
+            static (_, access) => ValueTask.FromResult(access.HasAnyAccess()));
 
-    internal WorkableHttpHostDescriptor DescribeBuiltInSurfaceHost(WorkableHttpRequestAccessContext requestAccess)
+    internal Task<WorkableHttpHostDescriptor> DescribeBuiltInSurfaceHost(
+        WorkableHttpRequestAccessContext requestAccess,
+        CancellationToken cancellationToken = default)
         => this.DescribeHost(
-            requestAccess.DescribeAccess,
-            (system, access) => requestAccess.IsBuiltInSurfaceAllowed(system) && access.HasAnyAccess());
+            system => requestAccess.DescribeAccess(system, cancellationToken),
+            async (system, access) =>
+                await requestAccess.IsBuiltInSurfaceAllowed(system, cancellationToken) && access.HasAnyAccess());
 
-    private WorkableHttpHostDescriptor DescribeHost(
-        Func<IWorkSystem, WorkSystemAccessSummary> describeAccess,
-        Func<IWorkSystem, WorkSystemAccessSummary, bool> includeSystem)
+    private async Task<WorkableHttpHostDescriptor> DescribeHost(
+        Func<IWorkSystem, ValueTask<WorkSystemAccessSummary>> describeAccess,
+        Func<IWorkSystem, WorkSystemAccessSummary, ValueTask<bool>> includeSystem)
     {
         ArgumentNullException.ThrowIfNull(describeAccess);
         ArgumentNullException.ThrowIfNull(includeSystem);
 
         var defaultSystem = registry.Default;
-        var systems = registry.Systems
-            .Select(system => (System: system, Access: describeAccess(system)))
-            .Where(result => includeSystem(result.System, result.Access))
+        var visibleSystems = new List<(IWorkSystem System, WorkSystemAccessSummary Access)>();
+        foreach (var system in registry.Systems)
+        {
+            var access = await describeAccess(system);
+            if (await includeSystem(system, access))
+            {
+                visibleSystems.Add((system, access));
+            }
+        }
+
+        var systems = visibleSystems
             .OrderBy(result => result.System.Name is null ? 0 : 1)
             .ThenBy(result => result.System.Name, StringComparer.OrdinalIgnoreCase)
             .Select(result => new WorkableHttpSystemDescriptor(

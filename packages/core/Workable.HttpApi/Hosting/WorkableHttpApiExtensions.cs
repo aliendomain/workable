@@ -45,10 +45,11 @@ public static class WorkableHttpApiExtensions
             endpoints,
             prefix,
             requireBuiltInSurfaceAccess: false);
-        hostGroup.MapGet("/host", (
+        hostGroup.MapGet("/host", async (
             WorkableHttpTopologyResolver topology,
-            WorkableHttpRequestAccessContext requestAccess)
-            => Results.Ok(topology.DescribeBuiltInSurfaceHost(requestAccess)));
+            WorkableHttpRequestAccessContext requestAccess,
+            CancellationToken cancellationToken)
+            => Results.Ok(await topology.DescribeBuiltInSurfaceHost(requestAccess, cancellationToken)));
 
         var group = CreateProtectedGroup(
             endpoints,
@@ -181,7 +182,9 @@ public static class WorkableHttpApiExtensions
                 }
 
                 var requestAccess = httpContext.RequestServices.GetRequiredService<WorkableHttpRequestAccessContext>();
-                if (!requestAccess.HasAnyRequiredSurfaceGroup(requiredGroups))
+                if (!await requestAccess.HasAnyRequiredSurfaceGroup(
+                    requiredGroups,
+                    httpContext.RequestAborted))
                 {
                     await WorkableHttpRouteResults.SurfaceAccessDenied().ExecuteAsync(httpContext);
                     return;
@@ -213,9 +216,20 @@ public static class WorkableHttpApiExtensions
                 }
 
                 var requestAccess = httpContext.RequestServices.GetRequiredService<WorkableHttpRequestAccessContext>();
-                if (!requestAccess.IsBuiltInSurfaceAllowed(system))
+                if (!await requestAccess.IsBuiltInSurfaceAllowed(system, httpContext.RequestAborted))
                 {
                     await WorkableHttpRouteResults.SystemSurfaceAccessDenied(system.Name).ExecuteAsync(httpContext);
+                    return;
+                }
+
+                if (httpContext.Request.RouteValues.TryGetValue("systemName", out var routeValue) &&
+                    !string.IsNullOrWhiteSpace(Convert.ToString(routeValue)) &&
+                    !await requestAccess.HasAnySystemAccess(system, httpContext.RequestAborted))
+                {
+                    await WorkableHttpRouteResults.AuthorizationDenied(new WorkSystemAccessDeniedException(
+                        WorkSystemPermission.AccessSystem,
+                        system.Id,
+                        system.Name)).ExecuteAsync(httpContext);
                     return;
                 }
 

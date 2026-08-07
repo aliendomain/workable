@@ -118,10 +118,14 @@ public sealed class WorkableRealtimeWorkflowViewsShould
 
         public IWorkSystemDiagnostics Diagnostics => throw new NotSupportedException();
 
-        public WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext)
+        public ValueTask<WorkSystemAccessSummary> DescribeAccess(
+            WorkRequestContext requestContext,
+            CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
 
-        public IWorkSystemSession CreateSession(WorkRequestContext requestContext)
+        public ValueTask<IWorkSystemSession> CreateSession(
+            WorkRequestContext requestContext,
+            CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
 
         public Task Start(WorkRequestContext requestContext, CancellationToken cancellationToken = default)

@@ -160,7 +160,7 @@ public sealed class WorkEventPayloadTests
         await using var completedReader = completedSubscription.Read().GetAsyncEnumerator();
 
         var runtime = Assert.IsType<InMemoryWorkSystem>(system).WorkflowRuntime;
-        var handle = runtime.Start(
+        var handle = await runtime.Start(
             "events.workflow",
             WorkRequestContext.Create(
                 WorkInvocationChannel.InProcess,
@@ -840,7 +840,6 @@ public sealed class WorkEventPayloadTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
-
 
 
 

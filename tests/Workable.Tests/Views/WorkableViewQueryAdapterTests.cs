@@ -329,7 +329,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var provider = services.BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var session = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var adapter = new WorkableViewQueryAdapter();
         var workerId = WorkerId.New();
         var iteration = new WorkerIterationReference(workerId, 1);
@@ -352,7 +352,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(
+        var session = await CreateTransportSession(
             system,
             WorkInvocationChannel.HttpApi,
             new WorkActor("view-user", "View Tester"));
@@ -404,7 +404,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(
             definition.Name,
             options: new WorkerOptions(ProfilingEnabled: true));
@@ -456,7 +456,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
@@ -502,7 +502,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         var workerId = RequiredWorkerId(handle);
         try
@@ -562,7 +562,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         var workerId = RequiredWorkerId(handle);
         try
@@ -617,7 +617,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         await handle.WaitForCompletion();
 
@@ -676,7 +676,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         await handle.WaitForCompletion();
 
@@ -712,7 +712,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         var workerId = RequiredWorkerId(handle);
         await PushRecurringWorkerAfterFirstAttempt(system, workerId, attemptsByWorker);
@@ -753,7 +753,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         var workerId = RequiredWorkerId(handle);
         await PushRecurringWorkerAfterFirstAttempt(system, workerId, attemptsByWorker);
@@ -788,7 +788,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         await handle.WaitForCompletion();
         await WaitForReadModel(system);
@@ -854,7 +854,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         await handle.WaitForCompletion();
         await WaitForReadModel(system);
@@ -914,7 +914,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         await handle.WaitForCompletion();
         await WaitForReadModel(system);
@@ -965,7 +965,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(
+        var session = await CreateTransportSession(
             system,
             WorkInvocationChannel.HttpApi,
             new WorkActor("timeline-user", "Timeline Tester"));
@@ -1011,7 +1011,7 @@ public sealed class WorkableViewQueryAdapterTests
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
 
-        var session = CreateTransportSession(system);
+        var session = await CreateTransportSession(system);
         var handle = await session.Queue.Enqueue(definition.Name);
         await handle.WaitForCompletion();
         await WaitForReadModel(system);
@@ -1039,7 +1039,7 @@ public sealed class WorkableViewQueryAdapterTests
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Expected a structured work key kind."),
         };
 
-    private static IWorkSystemSession CreateTransportSession(
+    private static ValueTask<IWorkSystemSession> CreateTransportSession(
         IWorkSystem system,
         WorkInvocationChannel channel = WorkInvocationChannel.InProcess,
         WorkActor? actor = null)
