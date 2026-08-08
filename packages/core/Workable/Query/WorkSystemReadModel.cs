@@ -1151,7 +1151,8 @@ internal sealed record WorkerReadModelIteration(
 internal sealed record WorkerReadModelIterationUpdate(
     WorkerReadModelWorker Worker,
     WorkerReadModelIteration Iteration,
-    WorkerIterationSnapshot Snapshot);
+    WorkerIterationSnapshot Snapshot,
+    WorkOrigin? CancellationOrigin = null);
 
 internal sealed record WorkerReadModelKey(
     WorkKeyKind Kind,

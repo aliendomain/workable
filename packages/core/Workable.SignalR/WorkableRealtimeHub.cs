@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
@@ -30,7 +31,7 @@ public sealed class WorkableRealtimeHub(
         string viewName,
         WorkViewCriteria? criteria = null,
         string? systemName = null)
-        => WatchViewCore(subscriptionId, viewName, criteria, systemName);
+        => WatchViewCore(subscriptionId, viewName, criteria, systemName, currentActorOnly: false);
 
     /// <summary>
     /// Starts or replaces a live worker-list subscription for the current connection.
@@ -49,26 +50,55 @@ public sealed class WorkableRealtimeHub(
         string subscriptionId,
         WorkViewCriteria? criteria = null,
         string? systemName = null)
-        => WatchViewCore(subscriptionId, "workers", criteria, systemName);
+        => WatchViewCore(subscriptionId, "workers", criteria, systemName, currentActorOnly: false);
+
+    /// <summary>
+    /// Starts or replaces a worker-list subscription scoped to the authenticated originating actor.
+    /// </summary>
+    /// <param name="subscriptionId">The caller-defined logical handle for this live worker stream.</param>
+    /// <param name="criteria">Optional worker-grid scope, state, paging, and key filters.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
+    /// <remarks>
+    /// Any caller-supplied worker-grid actor id is replaced with the authenticated actor id. The call fails closed
+    /// when the authenticated principal does not resolve to a stable actor id.
+    /// </remarks>
+    public Task WatchMyWorkers(
+        string subscriptionId,
+        WorkViewCriteria? criteria = null,
+        string? systemName = null)
+        => WatchViewCore(subscriptionId, "workers", criteria, systemName, currentActorOnly: true);
 
     private async Task WatchViewCore(
         string subscriptionId,
         string viewName,
         WorkViewCriteria? criteria,
-        string? systemName)
+        string? systemName,
+        bool currentActorOnly)
     {
         var system = ResolveSystem(systemName);
         WorkableRealtimeViewSubscription? subscription = null;
         try
         {
             var authorization = CreateAuthorization(system, systemName, out var session);
+            WorkViewCriteria normalizedCriteria;
+            try
+            {
+                normalizedCriteria = currentActorOnly
+                    ? views.NormalizeActorWorkerViewCriteria(criteria, RequireActorId(authorization.Actor))
+                    : views.NormalizeViewCriteria(viewName, criteria);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new HubException(exception.Message);
+            }
+
             subscription = await viewSubscriptions.WatchView(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
                 subscriptionId,
                 viewName,
-                views.NormalizeViewCriteria(viewName, criteria),
+                normalizedCriteria,
                 authorization,
                 this.Context.ConnectionAborted);
 
@@ -129,6 +159,12 @@ public sealed class WorkableRealtimeHub(
     /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     public Task UnwatchWorkers(string subscriptionId, string? systemName = null)
         => UnwatchView(subscriptionId, systemName);
+
+    /// <summary>
+    /// Stops an authenticated-actor worker-list subscription for the current connection.
+    /// </summary>
+    public Task UnwatchMyWorkers(string subscriptionId, string? systemName = null)
+        => UnwatchWorkers(subscriptionId, systemName);
 
     /// <summary>
     /// Starts or replaces a worker-overview subscription for the current connection.
@@ -251,6 +287,89 @@ public sealed class WorkableRealtimeHub(
     }
 
     /// <summary>
+    /// Streams retained and live application-defined status messages for one work iteration in sequence order.
+    /// </summary>
+    /// <param name="workerId">The worker identifier as a string-form GUID.</param>
+    /// <param name="iterationSequence">The iteration sequence within the worker.</param>
+    /// <param name="afterSequence">The last status sequence already received, or zero to replay from the beginning.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
+    /// <param name="cancellationToken">Cancels the streaming invocation.</param>
+    /// <returns>Status items followed by a terminal retained iteration result, or one terminal typed gap message.</returns>
+    public IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamIterationStatus(
+        string workerId,
+        long iterationSequence,
+        long afterSequence = 0,
+        string? systemName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateIterationStatusArguments(iterationSequence, afterSequence);
+        var system = ResolveSystem(systemName);
+        _ = CreateAuthorization(system, systemName, out var session);
+        var iteration = new WorkerIterationReference(ParseWorkerId(workerId), iterationSequence);
+        return StreamIterationStatusCore(
+            session,
+            iteration,
+            afterSequence,
+            requiredActorId: null,
+            this.Context.ConnectionAborted,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Streams retained and live status messages for one iteration owned by the authenticated originating actor.
+    /// </summary>
+    /// <param name="workerId">The worker identifier as a string-form GUID.</param>
+    /// <param name="iterationSequence">The iteration sequence within the worker.</param>
+    /// <param name="afterSequence">The last status sequence already received, or zero to replay from the beginning.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
+    /// <param name="cancellationToken">Cancels the streaming invocation.</param>
+    /// <returns>Status items followed by a terminal retained iteration snapshot, or one terminal replay gap.</returns>
+    public IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamMyIterationStatus(
+        string workerId,
+        long iterationSequence,
+        long afterSequence = 0,
+        string? systemName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateIterationStatusArguments(iterationSequence, afterSequence);
+        var system = ResolveSystem(systemName);
+        var authorization = CreateAuthorization(system, systemName, out var session);
+        var iteration = new WorkerIterationReference(ParseWorkerId(workerId), iterationSequence);
+        return StreamIterationStatusCore(
+            session,
+            iteration,
+            afterSequence,
+            RequireActorId(authorization.Actor),
+            this.Context.ConnectionAborted,
+            cancellationToken);
+    }
+
+    internal static IWorkIterationStatusSubscription SubscribeIterationStatus(
+        IWorkIterationStatusStream stream,
+        WorkerIterationReference iteration,
+        long afterSequence)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        try
+        {
+            return stream.Subscribe(iteration, afterSequence);
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new HubException(exception.Message);
+        }
+        catch (KeyNotFoundException)
+        {
+            throw new HubException(
+                $"Worker '{iteration.WorkerId}' iteration {iteration.Sequence} does not have an available status stream.");
+        }
+        catch (WorkIterationStatusSubscriptionLimitException exception)
+        {
+            throw new HubException(exception.Message);
+        }
+    }
+
+    /// <summary>
     /// Removes all active subscriptions for the connection that is disconnecting.
     /// </summary>
     /// <param name="exception">The disconnect exception, if one caused the disconnect.</param>
@@ -286,6 +405,162 @@ public sealed class WorkableRealtimeHub(
                 subscription.ViewName,
                 result),
             this.Context.ConnectionAborted);
+    }
+
+    internal static async IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> ReadIterationStatus(
+        IWorkIterationStatusStream stream,
+        WorkerIterationReference iteration,
+        long afterSequence,
+        CancellationToken connectionAborted,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        IWorkIterationStatusSubscription? subscription = null;
+        WorkIterationStatusGapException? gap = null;
+        try
+        {
+            subscription = SubscribeIterationStatus(stream, iteration, afterSequence);
+        }
+        catch (WorkIterationStatusGapException exception)
+        {
+            gap = exception;
+        }
+
+        if (gap is not null)
+        {
+            yield return WorkableRealtimeIterationStatusMessage.From(gap);
+            yield break;
+        }
+
+        await foreach (var message in ReadIterationStatus(
+            subscription!,
+            connectionAborted,
+            cancellationToken))
+        {
+            yield return message;
+        }
+    }
+
+    internal static async IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamIterationStatusCore(
+        IWorkSystemSession session,
+        WorkerIterationReference iteration,
+        long afterSequence,
+        string? requiredActorId,
+        CancellationToken connectionAborted,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            connectionAborted,
+            cancellationToken);
+        var worker = await session.Query.Worker(iteration.WorkerId, linkedCancellation.Token);
+        if (worker is null ||
+            (requiredActorId is not null && !ActorIdsMatch(worker.RequestContext.Actor.Id, requiredActorId)))
+        {
+            yield break;
+        }
+
+        IWorkIterationStatusSubscription? subscription = null;
+        WorkIterationStatusGapException? replayGap = null;
+        try
+        {
+            subscription = SubscribeIterationStatus(session.IterationStatuses, iteration, afterSequence);
+        }
+        catch (WorkIterationStatusGapException gap)
+        {
+            replayGap = gap;
+        }
+
+        if (replayGap is not null)
+        {
+            yield return WorkableRealtimeIterationStatusMessage.From(replayGap);
+            yield break;
+        }
+
+        var activeSubscription = subscription!;
+        WorkIterationStatusCompletion? completion = null;
+        await using (activeSubscription)
+        await using (var reader = activeSubscription
+            .Read(linkedCancellation.Token)
+            .GetAsyncEnumerator(linkedCancellation.Token))
+        {
+            while (true)
+            {
+                bool hasNext;
+                WorkIterationStatusGapException? liveGap = null;
+                try
+                {
+                    hasNext = await reader.MoveNextAsync();
+                }
+                catch (WorkIterationStatusGapException gap)
+                {
+                    hasNext = false;
+                    liveGap = gap;
+                }
+
+                if (liveGap is not null)
+                {
+                    yield return WorkableRealtimeIterationStatusMessage.From(liveGap);
+                    yield break;
+                }
+
+                if (!hasNext)
+                {
+                    completion = activeSubscription.Completion;
+                    break;
+                }
+
+                yield return WorkableRealtimeIterationStatusMessage.From(reader.Current);
+            }
+        }
+
+        if (completion is null)
+        {
+            yield break;
+        }
+
+        yield return WorkableRealtimeIterationStatusMessage.From(completion);
+    }
+
+    internal static async IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> ReadIterationStatus(
+        IWorkIterationStatusSubscription subscription,
+        CancellationToken connectionAborted,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await using (subscription)
+        using (var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            connectionAborted,
+            cancellationToken))
+        await using (var reader = subscription
+            .Read(linkedCancellation.Token)
+            .GetAsyncEnumerator(linkedCancellation.Token))
+        {
+            while (true)
+            {
+                bool hasNext;
+                WorkIterationStatusGapException? gap = null;
+                try
+                {
+                    hasNext = await reader.MoveNextAsync();
+                }
+                catch (WorkIterationStatusGapException exception)
+                {
+                    hasNext = false;
+                    gap = exception;
+                }
+
+                if (gap is not null)
+                {
+                    yield return WorkableRealtimeIterationStatusMessage.From(gap);
+                    yield break;
+                }
+
+                if (!hasNext)
+                {
+                    yield break;
+                }
+
+                yield return WorkableRealtimeIterationStatusMessage.From(reader.Current);
+            }
+        }
     }
 
     private async Task<bool> SendWorkerOverview(
@@ -333,6 +608,34 @@ public sealed class WorkableRealtimeHub(
             requestContext.Actor,
             groups,
             session.Catalog.Definitions.Select(static definition => definition.Id));
+    }
+
+    private static string RequireActorId(WorkActor actor)
+    {
+        if (string.IsNullOrWhiteSpace(actor.Id))
+        {
+            throw new HubException(
+                "The authenticated caller does not have a stable actor id required by this operation.");
+        }
+
+        return actor.Id.Trim();
+    }
+
+    private static bool ActorIdsMatch(string? actual, string expected)
+        => !string.IsNullOrWhiteSpace(actual) &&
+            string.Equals(actual.Trim(), expected, StringComparison.Ordinal);
+
+    private static void ValidateIterationStatusArguments(long iterationSequence, long afterSequence)
+    {
+        if (iterationSequence <= 0)
+        {
+            throw new HubException("The iteration sequence must be greater than zero.");
+        }
+
+        if (afterSequence < 0)
+        {
+            throw new HubException("The iteration status sequence cursor cannot be negative.");
+        }
     }
 
     private WorkRequestContext CreateRequestContext()

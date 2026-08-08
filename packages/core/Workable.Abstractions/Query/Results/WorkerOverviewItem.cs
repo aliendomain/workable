@@ -50,6 +50,11 @@ public sealed record WorkerOverviewItem(
     public DateTimeOffset? NextRunAt { get; init; }
 
     /// <summary>
+    /// Gets the sequence number of the currently executing iteration, when one exists.
+    /// </summary>
+    public long? CurrentIterationSequence { get; init; }
+
+    /// <summary>
     /// Creates a compact overview row from a fuller worker summary.
     /// </summary>
     /// <param name="worker">The worker summary to project.</param>

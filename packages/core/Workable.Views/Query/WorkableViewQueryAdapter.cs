@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 
@@ -572,6 +573,30 @@ public class WorkableViewQueryAdapter
         return requests is null
             ? query
             : new WorkViewCriteria(query.Scope, [.. requests.Select(NormalizeComponentRequest)]);
+    }
+
+    /// <summary>
+    /// Normalizes the built-in workers view and forces every worker-grid component to one originating actor.
+    /// </summary>
+    public WorkViewCriteria NormalizeActorWorkerViewCriteria(
+        WorkViewCriteria? criteria,
+        string actorId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actorId);
+        var normalized = this.NormalizeViewCriteria("workers", criteria);
+        var components = normalized.Components ?? [];
+        if (components.Any(request =>
+            !string.Equals(request.Type, "workerGrid", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException(
+                "Actor-scoped worker watches support only workerGrid components.",
+                nameof(criteria));
+        }
+
+        return normalized with
+        {
+            Components = [.. components.Select(request => ScopeWorkerGridToActor(request, actorId.Trim()))],
+        };
     }
 
     /// <summary>
@@ -1870,7 +1895,8 @@ public class WorkableViewQueryAdapter
             worker.UpdatedAt,
             worker.TotalExecutionDuration,
             worker.SubjectId,
-            worker.Identifiers);
+            worker.Identifiers,
+            worker.CurrentIterationSequence);
 
     private static WorkViewIterationGridDetailed CreateIterationGridDetailed(WorkerIterationOverviewItem iteration)
         => new(
@@ -2010,6 +2036,43 @@ public class WorkableViewQueryAdapter
         }
 
         return request with { Shape = shape };
+    }
+
+    private static WorkComponentRequest ScopeWorkerGridToActor(
+        WorkComponentRequest request,
+        string actorId)
+    {
+        JsonObject options;
+        if (request.Options is null)
+        {
+            options = [];
+        }
+        else if (request.Options.Value.ValueKind == JsonValueKind.Object &&
+            JsonNode.Parse(request.Options.Value.GetRawText()) is JsonObject parsed)
+        {
+            options = parsed;
+        }
+        else
+        {
+            throw new ArgumentException(
+                "Actor-scoped worker-grid options must be a JSON object.",
+                nameof(request));
+        }
+
+        var suppliedActorProperties = options
+            .Select(static property => property.Key)
+            .Where(key => string.Equals(key, "actorId", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        foreach (var suppliedActorProperty in suppliedActorProperties)
+        {
+            options.Remove(suppliedActorProperty);
+        }
+
+        options["actorId"] = actorId;
+        return request with
+        {
+            Options = JsonSerializer.SerializeToElement(options, ComponentOptionsJson),
+        };
     }
 
     private static bool ComponentRequiresIntervalPublish(WorkComponentRequest request)

@@ -26,7 +26,7 @@ Use raw events when the consumer needs the event envelope, payload, event type, 
 
 Use `IWorkChangeStream` when the consumer only needs to know that state changed and should be queried again. Each `IWorkSystem` exposes it through `workSystem.Changes`, and authorized sessions expose the caller-scoped equivalent through `session.Changes`. The change stream publishes compact keys such as worker, definition, subject, concurrency, identifier, originating actor, diagnostics, and system changes. Repeated changes for the same key coalesce while a reader is behind, which makes it the preferred primitive for UI refresh, worker overview updates, and view invalidation.
 
-SignalR follows the same split: `WatchWorkers`, `WatchWorkerOverview`, and generic view subscriptions use change-stream semantics, while `WatchEvents` is the raw-event surface for diagnostics and low-level consumers. Prefer `WatchWorkers` for a live worker collection, optionally filtered by originating actor; use `WatchView` for advanced component and workflow views.
+SignalR follows the same split: `WatchMyWorkers`, `WatchWorkers`, `WatchWorkerOverview`, and generic view subscriptions use change-stream semantics, while `WatchEvents` is the raw-event surface for diagnostics and low-level consumers. Prefer `WatchMyWorkers` for the authenticated user's live collection, `WatchWorkers` for an operator-selected actor, and `WatchView` for advanced component and workflow views.
 
 ## Subscription Contract
 

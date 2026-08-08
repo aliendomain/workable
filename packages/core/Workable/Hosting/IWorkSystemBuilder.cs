@@ -338,6 +338,35 @@ public interface IWorkSystemBuilder
     IWorkSystemBuilder ConfigureCapacity(int? maximumWorkers = null);
 
     /// <summary>
+    /// Replaces the system-wide transient iteration status settings.
+    /// </summary>
+    /// <param name="configuration">The iteration status configuration to apply to the system.</param>
+    /// <returns>The same builder so additional system configuration can be chained.</returns>
+    IWorkSystemBuilder UseIterationStatuses(WorkSystemIterationStatusConfiguration configuration);
+
+    /// <summary>
+    /// Configures transient iteration status replay, publication, and subscription limits.
+    /// </summary>
+    /// <param name="replayItemCapacity">The number of recent status items retained per iteration.</param>
+    /// <param name="replayPayloadByteCapacity">The combined UTF-8 type and JSON payload bytes retained per iteration.</param>
+    /// <param name="systemReplayItemCapacity">The number of status items retained across the system.</param>
+    /// <param name="systemReplayByteCapacity">The combined type and JSON payload bytes retained across the system.</param>
+    /// <param name="maximumPayloadBytes">The maximum UTF-8 JSON payload size accepted per status item.</param>
+    /// <param name="maximumTypeBytes">The maximum UTF-8 type size accepted per status item.</param>
+    /// <param name="maximumSubscriptions">The number of active status subscriptions allowed across the system.</param>
+    /// <param name="maximumSubscriptionsPerIteration">The active status subscriptions allowed for one iteration.</param>
+    /// <returns>The same builder so additional system configuration can be chained.</returns>
+    IWorkSystemBuilder ConfigureIterationStatuses(
+        int? replayItemCapacity = null,
+        int? replayPayloadByteCapacity = null,
+        int? systemReplayItemCapacity = null,
+        int? systemReplayByteCapacity = null,
+        int? maximumPayloadBytes = null,
+        int? maximumTypeBytes = null,
+        int? maximumSubscriptions = null,
+        int? maximumSubscriptionsPerIteration = null);
+
+    /// <summary>
     /// Replaces the system-wide profiling settings.
     /// </summary>
     /// <param name="profiling">The profiling configuration to apply to the system.</param>

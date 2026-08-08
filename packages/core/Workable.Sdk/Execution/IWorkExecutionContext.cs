@@ -70,6 +70,15 @@ public interface IWorkExecutionContext
     IServiceProvider Services { get; }
 
     /// <summary>
+    /// Gets the publisher for the current iteration's ordered status stream.
+    /// </summary>
+    /// <remarks>
+    /// Status items are transient progress signals. They are not worker lifecycle transitions and are not part of the
+    /// retained execution output.
+    /// </remarks>
+    IWorkIterationStatusPublisher Status => EmptyWorkIterationStatusPublisher.Instance;
+
+    /// <summary>
     /// Adds a discovered identifier to the worker.
     /// </summary>
     /// <param name="identifier">The identifier to attach.</param>

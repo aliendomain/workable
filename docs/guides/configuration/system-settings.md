@@ -24,6 +24,23 @@ The node limit is not a byte limit, so each integration must also bound its reta
 
 A temporary `Full` capture rule bypasses this node-count limit only. It does not bypass queue authorization, security redaction, or retention. See [Work Profiling](../../concepts/profiling.md#temporary-full-capture) for the API and admin UI workflow.
 
+## Iteration Status Replay Limits
+
+Iteration status streams retain published application progress in memory even when no consumer is currently listening. That replay-first behavior lets clients connect after an iteration begins without losing its initial status items.
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `WorkSystemIterationStatusConfiguration.ReplayItemCapacity` | `4_096` | Maximum recent status items retained for replay per iteration. Older items are evicted and an older cursor produces an explicit replay gap. Must be greater than zero. |
+| `WorkSystemIterationStatusConfiguration.ReplayPayloadByteCapacity` | `4_194_304` | Maximum combined UTF-8 type and serialized JSON payload bytes retained per iteration. Oldest items are evicted until both per-iteration limits are satisfied. Must accommodate `MaximumTypeBytes + MaximumPayloadBytes`. |
+| `WorkSystemIterationStatusConfiguration.SystemReplayItemCapacity` | `65_536` | Maximum status items retained across the system. When exceeded, Workable evicts the oldest status item across iteration heads and reports replay gaps to affected readers. Must be at least `ReplayItemCapacity`. |
+| `WorkSystemIterationStatusConfiguration.SystemReplayByteCapacity` | `67_108_864` | Maximum combined UTF-8 type and JSON payload bytes retained across the system. Must be at least `ReplayPayloadByteCapacity`. This bounds accounted content, not exact CLR object overhead. |
+| `WorkSystemIterationStatusConfiguration.MaximumPayloadBytes` | `32_768` | Maximum serialized UTF-8 JSON payload size for one status item. This default keeps payload measurement below the large-object-heap threshold. Oversized publications throw `WorkIterationStatusPayloadTooLargeException`. |
+| `WorkSystemIterationStatusConfiguration.MaximumTypeBytes` | `256` | Maximum UTF-8 status type size. Oversized types throw `WorkIterationStatusTypeTooLargeException`, and accepted type bytes count toward both replay byte budgets. |
+| `WorkSystemIterationStatusConfiguration.MaximumSubscriptions` | `4_096` | Maximum active iteration-status subscriptions across the system. |
+| `WorkSystemIterationStatusConfiguration.MaximumSubscriptionsPerIteration` | `64` | Maximum active subscriptions to one iteration. Must not exceed `MaximumSubscriptions`. |
+
+These are startup-only system memory and fanout guardrails, not worker retention settings. Existing worker and iteration retention controls lifetime: purging a worker or forgetting an iteration removes its status replay buffer. Status replay is transient and is not written to the configured persistence store.
+
 ## System Final Worker Cap
 
 Workable also has a separate system-wide retained final-worker cap. This is not admission capacity for non-final workers, but it is the other main system-level limit that affects how much worker history the system keeps.
@@ -55,6 +72,15 @@ services.AddWorkableSystem(builder =>
 {
     builder.ConfigureCapacity(maximumWorkers: 1_000_000);
     builder.ConfigureRetention(maximumFinalWorkers: 10_000);
+    builder.ConfigureIterationStatuses(
+        replayItemCapacity: 4_096,
+        replayPayloadByteCapacity: 4 * 1_024 * 1_024,
+        systemReplayItemCapacity: 65_536,
+        systemReplayByteCapacity: 64 * 1_024 * 1_024,
+        maximumPayloadBytes: 32 * 1_024,
+        maximumTypeBytes: 256,
+        maximumSubscriptions: 4_096,
+        maximumSubscriptionsPerIteration: 64);
     builder.ConfigureProfiling(maximumAutomaticInstrumentationNodes: 500);
     builder.UseShutdownGracePeriodRatio(0.8);
 

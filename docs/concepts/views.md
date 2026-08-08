@@ -292,7 +292,7 @@ That approach keeps the stringly-typed surface manageable and gives you room to 
 `Workable.HttpApi` and `Workable.SignalR` both reuse this package's view model rather than inventing transport-specific dashboard contracts.
 
 - See [HTTP API](../adapters/http-api.md#views-and-components) for the HTTP route shape.
-- See [Realtime](../adapters/realtime.md#actor-scoped-worker-updates) for the dedicated `WatchWorkers` convenience method over the `workers` named view.
+- See [Realtime](../adapters/realtime.md#actor-scoped-worker-updates) for the dedicated `WatchMyWorkers` user-facing method and `WatchWorkers` operator method over the same `workers` named view.
 - See [Realtime](../adapters/realtime.md#component-view-updates) for live pushed named-view updates over SignalR.
 - See [Realtime](../adapters/realtime.md#worker-overview-updates) for the dedicated worker-overview stream.
 

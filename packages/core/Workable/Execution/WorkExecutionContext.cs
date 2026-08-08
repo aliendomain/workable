@@ -11,6 +11,7 @@ internal sealed class WorkExecutionContext(
     Func<WorkInterruptionReason?> InterruptionReasonCallback,
     IWorkProfiler Profile,
     IServiceProvider Services,
+    IWorkIterationStatusPublisher Status,
     Func<WorkIdentifier, bool> AddIdentifierCallback,
     Action<FailedWorkerAutoCancelOverride> ConfigureFailedWorkerAutoCancelCallback,
     Func<IWorkQueueDurabilityTransaction, CancellationToken, Task> CompleteDurablyCallback) : IWorkExecutionContext
@@ -43,6 +44,8 @@ internal sealed class WorkExecutionContext(
     public IWorkProfiler Profile { get; } = Profile;
 
     public IServiceProvider Services { get; } = Services;
+
+    public IWorkIterationStatusPublisher Status { get; } = Status;
 
     public bool AddIdentifier(WorkIdentifier identifier)
         => AddIdentifierCallback(identifier);

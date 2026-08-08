@@ -141,10 +141,10 @@ When `Workable.SignalR` is not registered:
 
 ## Actor-Scoped Worker Updates
 
-Use `WatchWorkers` to keep a browser synchronized with all workers originated by one actor. It is a discoverable convenience method over the existing `workers` named view, so it retains the same initial-snapshot and change-stream guarantees without introducing a separate subscription implementation. Set `actorId` on the `workerGrid` component options; actor ids use exact ordinal matching after surrounding whitespace is removed.
+Use `WatchMyWorkers` to keep a user-facing browser synchronized with every worker originated by its authenticated actor. It is a discoverable convenience method over the existing `workers` named view, so it retains the same initial-snapshot and change-stream guarantees without introducing a separate subscription implementation. The server derives the actor id from the SignalR request context, replaces any caller-supplied `actorId`, and fails closed when the principal has no stable actor id.
 
 ```javascript
-const subscriptionId = `user-work:${userId}`;
+const subscriptionId = "my-work";
 
 connection.on("workable.view", envelope => {
   if (envelope.subscriptionId !== subscriptionId) {
@@ -157,7 +157,7 @@ connection.on("workable.view", envelope => {
 
 await connection.start();
 await connection.invoke(
-  "WatchWorkers",
+  "WatchMyWorkers",
   subscriptionId,
   {
     components: [
@@ -166,7 +166,6 @@ await connection.invoke(
         type: "workerGrid",
         shape: "detailed",
         options: {
-          actorId: userId,
           take: 50
         }
       }
@@ -180,9 +179,52 @@ Subscription establishment always sends the current worker-grid snapshot, includ
 
 If the shared view change stream stops and restarts, the broadcaster re-queries every active state-based view group before consuming new changes. This closes changes that may have occurred while the stream was unavailable without requiring clients to recreate their watches.
 
+Each detailed worker row includes `currentIterationSequence`. It is populated only while an iteration is active, which lets a client start `StreamMyIterationStatus` without placing iteration output or message history into every republished grid row.
+
 The scope follows the actor stored on the worker's original request context. Actions later performed by that actor on somebody else's worker do not move that worker into this view. Normal read authorization still applies, so the grid contains only definitions visible to the SignalR caller.
 
-Stop the subscription with `UnwatchWorkers(subscriptionId, systemName)`.
+`WatchWorkers` remains available for trusted operator screens that intentionally supply another actor's exact id in the `workerGrid` options. Actor ids use ordinal matching after surrounding whitespace is removed. Do not use that client-controlled form for an end-user page.
+
+Stop the user-facing subscription with `UnwatchMyWorkers(subscriptionId, systemName)`.
+
+## Iteration Status Streams
+
+Executors can publish ordered application-defined progress through `IWorkExecutionContext.Status`. SignalR clients consume one exact worker iteration with a streaming hub invocation:
+
+```csharp
+var stream = connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+    "StreamMyIterationStatus",
+    [workerId.ToString("D"), iterationSequence, afterSequence, systemName],
+    cancellationToken);
+
+await foreach (var message in stream.WithCancellation(cancellationToken))
+{
+    if (message.Gap is { } gap)
+    {
+        // Reload application state; the missing status range cannot be replayed.
+        break;
+    }
+
+    if (message.Completed is { } completed)
+    {
+        // Apply completed.Status, completed.Output, completed.Messages, and
+        // completed.CancellationOrigin as the authoritative terminal result.
+        break;
+    }
+
+    var item = message.Status!;
+    afterSequence = item.Sequence;
+    // Apply item.Type and item.Data.
+}
+```
+
+The server replays retained items after the exclusive `afterSequence` cursor, then continues live until the iteration status stream completes or the caller cancels the invocation. A successful stream ends with one `completed` message containing generic Workable terminal data: status, retained `WorkOutput`, messages, timing, attempt count, worker revision/state, and cancellation origin. This completion is attached atomically when the iteration stream closes, so a subscriber cannot miss the terminal result between its last status item and a follow-up query.
+
+`StreamMyIterationStatus` additionally requires the worker's originating actor to match the authenticated SignalR actor, and returns an empty stream for another actor's or an unknown worker. `StreamIterationStatus` remains the definition-authorized operator form. Both retain the same cursor and gap behavior.
+
+Iteration status items are delivered individually and are not routed through raw-event batching. If a cursor has fallen behind the retained replay window, SignalR emits one terminal `gap` message containing the requested, first-available, and last-available sequences, then completes the stream normally. The available range is null when system-wide retention evicted the iteration's complete replay window. Core configuration also caps active subscriptions per iteration and per system; reaching either limit returns a client-safe hub error.
+
+See [Iteration Status Streams](../guides/iteration-status-streams.md) for publishing, JavaScript consumption, cursor recovery, current retention and persistence limits, and the SampleHost assistant stream.
 
 ## Worker Overview Updates
 
@@ -285,7 +327,7 @@ await connection.InvokeAsync(
 
 Raw event subscriptions are for event viewers, diagnostics, and consumers that want low-level `WorkEvent` envelopes rather than worker-overview state updates.
 
-Worker-list pages should prefer `WatchWorkers`, and worker detail pages should generally prefer `WatchWorkerOverview`, over raw event handling. Dashboards and other state-oriented UI should prefer these methods, `WatchView`, or another change-stream-backed surface. Use `WatchEvents` only when the client needs raw event payloads, event types, or event-by-event diagnostic output.
+User-facing worker-list pages should prefer `WatchMyWorkers`; trusted operator lists can use `WatchWorkers`. Worker detail pages should generally prefer `WatchWorkerOverview` over raw event handling. Dashboards and other state-oriented UI should prefer these methods, `WatchView`, or another change-stream-backed surface. Use `WatchEvents` only when the client needs raw event payloads, event types, or event-by-event diagnostic output.
 
 Worker messages are delivered through `workable.event` for single events and `workable.events` for batches.
 
@@ -419,7 +461,7 @@ Use the optional `connectionId` filter when you need to match one browser tab or
 
 ## Component View Updates
 
-Overview-style clients can subscribe to the same component-view request shape used by the HTTP API. Use `WatchWorkers` for the common live worker-list case; use the generic `WatchView` method for overview dashboards, workflow views, diagnostics, and custom named views.
+Overview-style clients can subscribe to the same component-view request shape used by the HTTP API. Use `WatchMyWorkers` for a user's own live worker list, `WatchWorkers` for operator-selected actors, and the generic `WatchView` method for overview dashboards, workflow views, diagnostics, and custom named views.
 
 ```csharp
 const string OverviewSubscriptionId = "overview-main";
@@ -603,8 +645,22 @@ Task WatchView(string subscriptionId, string viewName, WorkViewCriteria? criteri
 Task UnwatchView(string subscriptionId, string? systemName = null);
 Task WatchWorkers(string subscriptionId, WorkViewCriteria? criteria = null, string? systemName = null);
 Task UnwatchWorkers(string subscriptionId, string? systemName = null);
+Task WatchMyWorkers(string subscriptionId, WorkViewCriteria? criteria = null, string? systemName = null);
+Task UnwatchMyWorkers(string subscriptionId, string? systemName = null);
 Task WatchWorkerOverview(string subscriptionId, string workerId, WorkWorkerOverviewRealtimeCriteria? criteria = null, string? systemName = null);
 Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null);
 Task WatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task UnwatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
+IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamIterationStatus(
+    string workerId,
+    long iterationSequence,
+    long afterSequence = 0,
+    string? systemName = null,
+    CancellationToken cancellationToken = default);
+IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamMyIterationStatus(
+    string workerId,
+    long iterationSequence,
+    long afterSequence = 0,
+    string? systemName = null,
+    CancellationToken cancellationToken = default);
 ```
