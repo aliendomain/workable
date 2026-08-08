@@ -386,6 +386,74 @@ public sealed class WorkIterationStatusStreamTests
     }
 
     [Fact]
+    public async Task RetentionIndexCompactsEntriesRemovedByPerIterationLimits()
+    {
+        await using var stream = new WorkIterationStatusStream(
+            WorkSystemId.New(),
+            workSystemName: null,
+            retainedItemCapacity: 1,
+            systemReplayItemCapacity: 512);
+        var iteration = new WorkerIterationReference(WorkerId.New(), 1);
+        stream.Begin(iteration, "status.retention-index-compaction");
+
+        for (var index = 0; index < 1_000; index++)
+        {
+            stream.Publish(
+                iteration,
+                "status.retention-index-compaction",
+                new WorkIterationStatusUpdate("progress", Data: null));
+        }
+
+        Assert.Equal(1, stream.RetainedItemCount);
+        Assert.InRange(stream.RetentionIndexCount, 1, 258);
+
+        stream.Forget(iteration);
+
+        Assert.Equal(0, stream.RetainedItemCount);
+        Assert.Equal(0, stream.RetentionIndexCount);
+    }
+
+    [Fact]
+    public async Task ConcurrentPublicationSettlesAtTheSystemRetentionLimit()
+    {
+        const int iterationCount = 8;
+        const int statusesPerIteration = 256;
+        const int systemCapacity = 64;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            await using var stream = new WorkIterationStatusStream(
+                WorkSystemId.New(),
+                workSystemName: null,
+                retainedItemCapacity: systemCapacity,
+                systemReplayItemCapacity: systemCapacity);
+            var iterations = Enumerable.Range(0, iterationCount)
+                .Select(_ => new WorkerIterationReference(WorkerId.New(), 1))
+                .ToArray();
+            foreach (var iteration in iterations)
+            {
+                stream.Begin(iteration, "status.concurrent-system-retention");
+            }
+
+            Parallel.ForEach(iterations, iteration =>
+            {
+                for (var index = 0; index < statusesPerIteration; index++)
+                {
+                    stream.Publish(
+                        iteration,
+                        "status.concurrent-system-retention",
+                        new WorkIterationStatusUpdate("progress", Data: null));
+                }
+            });
+
+            Assert.Equal(systemCapacity, stream.RetainedItemCount);
+            Assert.InRange(
+                stream.RetentionIndexCount,
+                systemCapacity,
+                (systemCapacity * 2) + 256);
+        }
+    }
+
+    [Fact]
     public async Task SubscriptionLimitsApplyPerIterationAndAcrossTheSystemAndReleaseOnDispose()
     {
         await using var stream = new WorkIterationStatusStream(

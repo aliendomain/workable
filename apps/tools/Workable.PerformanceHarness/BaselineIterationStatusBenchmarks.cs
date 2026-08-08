@@ -284,6 +284,57 @@ public class BaselineIterationStatusConcurrencyBenchmarks
 }
 
 /// <summary>
+/// Measures steady-state publication while the system-wide replay limit is full across many iterations.
+/// </summary>
+[MemoryDiagnoser]
+[ShortRunJob]
+public class BaselineIterationStatusSystemRetentionBenchmarks
+{
+    private WorkIterationStatusStream stream = null!;
+    private WorkerIterationReference[] iterations = null!;
+    private WorkIterationStatusUpdate update = null!;
+    private int nextIteration;
+
+    [Params(4_096, 16_384, 65_536)]
+    public int IterationCount { get; set; }
+
+    [GlobalSetup]
+    public void GlobalSetup()
+    {
+        this.stream = new WorkIterationStatusStream(
+            WorkSystemId.New(),
+            "system-retention-benchmark",
+            systemReplayItemCapacity: this.IterationCount);
+        this.iterations = new WorkerIterationReference[this.IterationCount];
+        this.update = new WorkIterationStatusUpdate("benchmark.progress", Data: null);
+        for (var index = 0; index < this.iterations.Length; index++)
+        {
+            var iteration = new WorkerIterationReference(WorkerId.New(), 1);
+            this.iterations[index] = iteration;
+            this.stream.Begin(iteration, "benchmark.iteration-status.system-retention");
+            this.stream.Publish(iteration, "benchmark.iteration-status.system-retention", this.update);
+        }
+    }
+
+    [Benchmark]
+    public void PublishAtSystemRetentionCapacity()
+    {
+        var iteration = this.iterations[this.nextIteration];
+        this.nextIteration++;
+        if (this.nextIteration == this.iterations.Length)
+        {
+            this.nextIteration = 0;
+        }
+
+        this.stream.Publish(iteration, "benchmark.iteration-status.system-retention", this.update);
+    }
+
+    [GlobalCleanup]
+    public void GlobalCleanup()
+        => this.stream.DisposeAsync().AsTask().GetAwaiter().GetResult();
+}
+
+/// <summary>
 /// Measures completed-stream replay through the public subscription reader.
 /// </summary>
 [MemoryDiagnoser]

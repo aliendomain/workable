@@ -15,6 +15,7 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
     private const int DefaultMaximumTypeBytes = 256;
     private const int DefaultMaximumSubscriptions = 4_096;
     private const int DefaultMaximumSubscriptionsPerIteration = 64;
+    private const int RetentionIndexCompactionSlack = 256;
 
     private readonly WorkSystemId workSystemId;
     private readonly string? workSystemName;
@@ -29,6 +30,9 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
     private readonly Lock registrySync = new();
     private readonly object systemRetentionSync = new();
     private readonly ConcurrentDictionary<WorkerIterationReference, IterationBuffer> buffers = [];
+    private readonly PriorityQueue<RetentionEntry, long> retentionIndex = new();
+    private readonly HashSet<long> pendingRetentionOrders = [];
+    private long nextRetentionOrder;
     private long retainedBytes;
     private int retainedItems;
     private int subscriptionCount;
@@ -210,38 +214,44 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
 
         var retainedBytes = checked(typeBytes + payloadBytes);
         var buffer = this.GetOrCreate(iteration, workDefinitionName);
+        var retention = this.BeginRetention(iteration);
+        BufferedStatusItem buffered;
         WorkIterationStatusSubscription[] subscriptions;
-        lock (buffer.Sync)
+        try
         {
-            ObjectDisposedException.ThrowIf(this.IsDisposed, this);
-            ValidateDefinition(buffer, workDefinitionName);
-            if (buffer.IsCompleted)
+            lock (buffer.Sync)
             {
-                throw new InvalidOperationException(
-                    $"Worker '{iteration.WorkerId}' iteration {iteration.Sequence} has already completed its status stream.");
-            }
+                ObjectDisposedException.ThrowIf(this.IsDisposed, this);
+                ValidateDefinition(buffer, workDefinitionName);
+                if (buffer.IsCompleted)
+                {
+                    throw new InvalidOperationException(
+                        $"Worker '{iteration.WorkerId}' iteration {iteration.Sequence} has already completed its status stream.");
+                }
 
-            var sequence = ++buffer.LastSequence;
-            var item = new WorkIterationStatusItem(
-                DateTimeOffset.UtcNow,
-                this.workSystemId,
-                this.workSystemName,
-                iteration,
-                sequence,
-                buffer.WorkDefinitionName,
-                type,
-                update.Data?.Clone());
-            var buffered = new BufferedStatusItem(
-                item,
-                retainedBytes);
-            buffer.Append(buffered);
-            Interlocked.Increment(ref this.retainedItems);
-            Interlocked.Add(ref this.retainedBytes, retainedBytes);
-            buffer.Trim(this.retainedItemCapacity, this.replayPayloadByteCapacity);
-            subscriptions = [.. buffer.Subscriptions];
+                var sequence = ++buffer.LastSequence;
+                var item = new WorkIterationStatusItem(
+                    DateTimeOffset.UtcNow,
+                    this.workSystemId,
+                    this.workSystemName,
+                    iteration,
+                    sequence,
+                    buffer.WorkDefinitionName,
+                    type,
+                    update.Data?.Clone());
+                buffered = new BufferedStatusItem(item, retainedBytes, retention);
+                buffer.Append(buffered);
+                Interlocked.Increment(ref this.retainedItems);
+                Interlocked.Add(ref this.retainedBytes, retainedBytes);
+                buffer.Trim(this.retainedItemCapacity, this.replayPayloadByteCapacity);
+                subscriptions = [.. buffer.Subscriptions];
+            }
+        }
+        finally
+        {
+            this.CompleteRetention(retention);
         }
 
-        this.MaintainSystemRetention();
         Pulse(subscriptions);
     }
 
@@ -293,6 +303,7 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
         }
 
         var subscriptions = this.Forget(buffer);
+        this.CompactRetentionIndex();
         Pulse(subscriptions);
     }
 
@@ -307,6 +318,7 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
             }
         }
 
+        this.CompactRetentionIndex();
         Pulse(subscriptions);
     }
 
@@ -354,11 +366,30 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
             }
         }
 
+        lock (this.systemRetentionSync)
+        {
+            this.retentionIndex.Clear();
+            this.pendingRetentionOrders.Clear();
+        }
+
         Pulse(subscriptions);
         return ValueTask.CompletedTask;
     }
 
     private bool IsDisposed => Volatile.Read(ref this.isDisposed) != 0;
+
+    internal int RetentionIndexCount
+    {
+        get
+        {
+            lock (this.systemRetentionSync)
+            {
+                return this.retentionIndex.Count;
+            }
+        }
+    }
+
+    internal int RetainedItemCount => Volatile.Read(ref this.retainedItems);
 
     private IterationBuffer GetOrCreate(WorkerIterationReference iteration, string workDefinitionName)
     {
@@ -437,6 +468,7 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
     private void Remove(WorkIterationStatusSubscription subscription)
     {
         var buffer = subscription.Buffer;
+        var clearedRetained = false;
         lock (buffer.Sync)
         {
             if (!buffer.Subscriptions.Remove(subscription))
@@ -449,68 +481,102 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
             {
                 buffer.ClearRetained();
                 this.buffers.TryRemove(buffer.Iteration, out _);
+                clearedRetained = true;
             }
         }
 
+        if (clearedRetained)
+        {
+            this.CompactRetentionIndex();
+        }
     }
 
-    private void MaintainSystemRetention()
+    private RetentionEntry BeginRetention(WorkerIterationReference iteration)
     {
-        if (!this.IsOverSystemRetentionCapacity())
+        lock (this.systemRetentionSync)
+        {
+            // Index the publication before taking the iteration lock so later publishers cannot overtake an
+            // earlier item during system-wide eviction. A pending head pauses eviction until its append settles.
+            var retention = new RetentionEntry(iteration, ++this.nextRetentionOrder);
+            this.retentionIndex.Enqueue(retention, retention.Order);
+            this.pendingRetentionOrders.Add(retention.Order);
+            return retention;
+        }
+    }
+
+    private void CompleteRetention(RetentionEntry retention)
+    {
+        lock (this.systemRetentionSync)
+        {
+            this.pendingRetentionOrders.Remove(retention.Order);
+            this.MaintainSystemRetentionLocked();
+            this.CompactRetentionIndexIfNeededLocked();
+        }
+    }
+
+    private void MaintainSystemRetentionLocked()
+    {
+        while (this.IsOverSystemRetentionCapacity())
+        {
+            if (!this.retentionIndex.TryPeek(out var oldest, out _) ||
+                this.pendingRetentionOrders.Contains(oldest.Order))
+            {
+                // The publisher that owns this ordered head will resume retention maintenance in its finally path.
+                return;
+            }
+
+            this.retentionIndex.Dequeue();
+            if (!this.buffers.TryGetValue(oldest.Iteration, out var buffer))
+            {
+                continue;
+            }
+
+            if (!buffer.TryEvictFirst(oldest))
+            {
+                continue;
+            }
+        }
+    }
+
+    private void CompactRetentionIndex()
+    {
+        lock (this.systemRetentionSync)
+        {
+            this.CompactRetentionIndexIfNeededLocked();
+        }
+    }
+
+    private void CompactRetentionIndexIfNeededLocked()
+    {
+        var retained = Volatile.Read(ref this.retainedItems);
+        var maximumIndexCount = retained == 0
+            ? 0
+            : checked((retained * 2) + RetentionIndexCompactionSlack);
+        if (this.retentionIndex.Count <= maximumIndexCount)
         {
             return;
         }
 
-        lock (this.systemRetentionSync)
+        var active = this.retentionIndex.UnorderedItems
+            .Where(entry =>
+                this.pendingRetentionOrders.Contains(entry.Element.Order) ||
+                this.IsRetentionActive(entry.Element))
+            .Select(static entry => entry.Element)
+            .ToArray();
+        this.retentionIndex.Clear();
+        foreach (var item in active)
         {
-            while (this.IsOverSystemRetentionCapacity())
-            {
-                IterationBuffer? oldest = null;
-                WorkIterationStatusItem? oldestItem = null;
-                foreach (var buffer in this.buffers.Values)
-                {
-                    if (buffer.TryGetFirst(out var firstItem) &&
-                        (oldestItem is null || CompareRetentionOrder(firstItem, oldestItem) < 0))
-                    {
-                        oldest = buffer;
-                        oldestItem = firstItem;
-                    }
-                }
-
-                if (oldest is null)
-                {
-                    return;
-                }
-
-                if (!oldest.TryEvictFirst(oldestItem!.Sequence))
-                {
-                    continue;
-                }
-            }
+            this.retentionIndex.Enqueue(item, item.Order);
         }
     }
+
+    private bool IsRetentionActive(RetentionEntry retention)
+        => this.buffers.TryGetValue(retention.Iteration, out var buffer) &&
+            buffer.ContainsRetention(retention.Order);
 
     private bool IsOverSystemRetentionCapacity()
         => Volatile.Read(ref this.retainedItems) > this.systemReplayItemCapacity ||
             Volatile.Read(ref this.retainedBytes) > this.systemReplayByteCapacity;
-
-    private static int CompareRetentionOrder(WorkIterationStatusItem left, WorkIterationStatusItem right)
-    {
-        var occurredAt = left.OccurredAt.CompareTo(right.OccurredAt);
-        if (occurredAt != 0)
-        {
-            return occurredAt;
-        }
-
-        var worker = left.Iteration.WorkerId.Value.CompareTo(right.Iteration.WorkerId.Value);
-        if (worker != 0)
-        {
-            return worker;
-        }
-
-        var iteration = left.Iteration.Sequence.CompareTo(right.Iteration.Sequence);
-        return iteration != 0 ? iteration : left.Sequence.CompareTo(right.Sequence);
-    }
 
     private void Release(int retainedBytes)
     {
@@ -619,27 +685,12 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
             this.CompactIfNeeded();
         }
 
-        public bool TryGetFirst([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out WorkIterationStatusItem? item)
-        {
-            lock (this.Sync)
-            {
-                if (this.RetainedCount == 0)
-                {
-                    item = null;
-                    return false;
-                }
-
-                item = this.items[this.firstIndex]!.Value.Item;
-                return true;
-            }
-        }
-
-        public bool TryEvictFirst(long expectedStatusSequence)
+        public bool TryEvictFirst(RetentionEntry expected)
         {
             lock (this.Sync)
             {
                 if (this.RetainedCount == 0 ||
-                    this.items[this.firstIndex]!.Value.Item.Sequence != expectedStatusSequence)
+                    this.items[this.firstIndex]!.Value.Retention.Order != expected.Order)
                 {
                     return false;
                 }
@@ -647,6 +698,21 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
                 this.RemoveFirst();
                 this.CompactIfNeeded();
                 return true;
+            }
+        }
+
+        public bool ContainsRetention(long order)
+        {
+            lock (this.Sync)
+            {
+                if (this.RetainedCount == 0)
+                {
+                    return false;
+                }
+
+                // Iteration buffers only remove a retained prefix, so the active orders form one contiguous range.
+                return order >= this.items[this.firstIndex]!.Value.Retention.Order &&
+                    order <= this.items[^1]!.Value.Retention.Order;
             }
         }
 
@@ -688,7 +754,12 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
 
     private readonly record struct BufferedStatusItem(
         WorkIterationStatusItem Item,
-        int RetainedBytes);
+        int RetainedBytes,
+        RetentionEntry Retention);
+
+    private readonly record struct RetentionEntry(
+        WorkerIterationReference Iteration,
+        long Order);
 
     private readonly record struct ReadResult(WorkIterationStatusItem? Item, bool IsCompleted)
     {

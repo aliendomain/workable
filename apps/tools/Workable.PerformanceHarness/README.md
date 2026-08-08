@@ -162,6 +162,7 @@ Current benchmark groups:
 - `BaselineIterationStatusReplayBufferBenchmarks` compares the original front-removal replay buffer with indexed eviction and isolates aggregate payload-byte accounting overhead.
 - `BaselineIterationStatusPublishBenchmarks` measures actual publication across payload sizes and subscriber counts.
 - `BaselineIterationStatusConcurrencyBenchmarks` measures parallel publication through one system stream and independent system streams.
+- `BaselineIterationStatusSystemRetentionBenchmarks` measures steady-state publication at the full system replay limit across 4,096 to 65,536 iteration buffers.
 - `BaselineIterationStatusReplayBenchmarks` measures completed-stream replay for short resume windows and the full default buffer.
 - `StressMillionWorkerQueryBenchmarks` measures broad and indexed first-page queries over 1,000,000 queued workers. This benchmark is intentionally excluded from the default filter.
 
