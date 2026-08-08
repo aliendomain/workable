@@ -9,6 +9,7 @@ public sealed record WorkChangeKey
     private const string WorkerType = "worker";
     private const string DefinitionType = "definition";
     private const string DiagnosticsType = "diagnostics";
+    private const string ActorType = "actor";
 
     /// <summary>
     /// Creates a change key.
@@ -95,6 +96,14 @@ public sealed record WorkChangeKey
     /// <returns>The identifier change key.</returns>
     public static WorkChangeKey Identifier(WorkIdentifier identifier)
         => new(WorkChangeKind.Identifier, identifier.Type, identifier.Value);
+
+    /// <summary>
+    /// Creates a change key for work originated by one actor.
+    /// </summary>
+    /// <param name="actorId">The stable actor identifier.</param>
+    /// <returns>The actor-scoped change key.</returns>
+    public static WorkChangeKey Actor(string actorId)
+        => new(WorkChangeKind.Actor, ActorType, Normalize(actorId));
 
     private static string Normalize(string value)
     {

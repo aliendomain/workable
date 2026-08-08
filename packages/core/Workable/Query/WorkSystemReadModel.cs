@@ -419,6 +419,11 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         {
             keys.Add(WorkChangeKey.Identifier(identifier));
         }
+
+        if (worker.OriginActorId is { } actorId)
+        {
+            keys.Add(WorkChangeKey.Actor(actorId));
+        }
     }
 
     private bool ShouldPublishSnapshot(bool queueDrained, DateTimeOffset lastPublishedAt)
@@ -557,6 +562,7 @@ internal sealed class WorkSystemReadModelState
     private readonly Dictionary<WorkConcurrencyKey, HashSet<WorkerReadModelWorker>> workersByConcurrencyKey = [];
     private readonly Dictionary<(WorkDefinitionId DefinitionId, WorkConcurrencyKey ConcurrencyKey), HashSet<WorkerReadModelWorker>> workersByDefinitionAndConcurrencyKey = [];
     private readonly Dictionary<WorkIdentifier, HashSet<WorkerReadModelWorker>> workersByIdentifier = [];
+    private readonly Dictionary<string, HashSet<WorkerReadModelWorker>> workersByActorId = new(StringComparer.Ordinal);
     private readonly Dictionary<bool, HashSet<WorkerReadModelWorker>> workersByRecurrenceEnabled = [];
     private readonly Dictionary<bool, HashSet<WorkerReadModelWorker>> workersByConcurrencyEnabled = [];
     private readonly Dictionary<bool, HashSet<WorkerReadModelWorker>> workersByProfilingEnabled = [];
@@ -693,6 +699,7 @@ internal sealed class WorkSystemReadModelState
         this.workersByConcurrencyKey.Clear();
         this.workersByDefinitionAndConcurrencyKey.Clear();
         this.workersByIdentifier.Clear();
+        this.workersByActorId.Clear();
         this.workersByRecurrenceEnabled.Clear();
         this.workersByConcurrencyEnabled.Clear();
         this.workersByProfilingEnabled.Clear();
@@ -721,6 +728,7 @@ internal sealed class WorkSystemReadModelState
             FreezeIndex(this.workersByConcurrencyKey),
             FreezeIndex(this.workersByDefinitionAndConcurrencyKey),
             FreezeIndex(this.workersByIdentifier),
+            FreezeIndex(this.workersByActorId),
             FreezeIndex(this.workersByRecurrenceEnabled),
             FreezeIndex(this.workersByConcurrencyEnabled),
             FreezeIndex(this.workersByProfilingEnabled),
@@ -760,6 +768,11 @@ internal sealed class WorkSystemReadModelState
             AddIndex(this.workersByIdentifier, identifier, worker);
         }
 
+        if (worker.OriginActorId is { } actorId)
+        {
+            AddIndex(this.workersByActorId, actorId, worker);
+        }
+
         foreach (var key in WorkerReadModelKey.From(worker))
         {
             this.workerKeys.Add(key);
@@ -790,6 +803,11 @@ internal sealed class WorkSystemReadModelState
         foreach (var identifier in worker.Identifiers)
         {
             RemoveIndex(this.workersByIdentifier, identifier, worker);
+        }
+
+        if (worker.OriginActorId is { } actorId)
+        {
+            RemoveIndex(this.workersByActorId, actorId, worker);
         }
 
         foreach (var key in WorkerReadModelKey.From(worker))
@@ -910,6 +928,7 @@ internal sealed class WorkSystemReadModelSnapshot
         EmptyIndex<WorkConcurrencyKey, WorkerReadModelWorker>(),
         EmptyIndex<(WorkDefinitionId DefinitionId, WorkConcurrencyKey ConcurrencyKey), WorkerReadModelWorker>(),
         EmptyIndex<WorkIdentifier, WorkerReadModelWorker>(),
+        EmptyIndex<string, WorkerReadModelWorker>(),
         EmptyIndex<bool, WorkerReadModelWorker>(),
         EmptyIndex<bool, WorkerReadModelWorker>(),
         EmptyIndex<bool, WorkerReadModelWorker>(),
@@ -936,6 +955,7 @@ internal sealed class WorkSystemReadModelSnapshot
         IReadOnlyDictionary<WorkConcurrencyKey, IReadOnlyList<WorkerReadModelWorker>> workersByConcurrencyKey,
         IReadOnlyDictionary<(WorkDefinitionId DefinitionId, WorkConcurrencyKey ConcurrencyKey), IReadOnlyList<WorkerReadModelWorker>> workersByDefinitionAndConcurrencyKey,
         IReadOnlyDictionary<WorkIdentifier, IReadOnlyList<WorkerReadModelWorker>> workersByIdentifier,
+        IReadOnlyDictionary<string, IReadOnlyList<WorkerReadModelWorker>> workersByActorId,
         IReadOnlyDictionary<bool, IReadOnlyList<WorkerReadModelWorker>> workersByRecurrenceEnabled,
         IReadOnlyDictionary<bool, IReadOnlyList<WorkerReadModelWorker>> workersByConcurrencyEnabled,
         IReadOnlyDictionary<bool, IReadOnlyList<WorkerReadModelWorker>> workersByProfilingEnabled,
@@ -961,6 +981,7 @@ internal sealed class WorkSystemReadModelSnapshot
         this.WorkersByConcurrencyKey = workersByConcurrencyKey;
         this.WorkersByDefinitionAndConcurrencyKey = workersByDefinitionAndConcurrencyKey;
         this.WorkersByIdentifier = workersByIdentifier;
+        this.WorkersByActorId = workersByActorId;
         this.WorkersByRecurrenceEnabled = workersByRecurrenceEnabled;
         this.WorkersByConcurrencyEnabled = workersByConcurrencyEnabled;
         this.WorkersByProfilingEnabled = workersByProfilingEnabled;
@@ -999,6 +1020,8 @@ internal sealed class WorkSystemReadModelSnapshot
 
     public IReadOnlyDictionary<WorkIdentifier, IReadOnlyList<WorkerReadModelWorker>> WorkersByIdentifier { get; }
 
+    public IReadOnlyDictionary<string, IReadOnlyList<WorkerReadModelWorker>> WorkersByActorId { get; }
+
     public IReadOnlyDictionary<bool, IReadOnlyList<WorkerReadModelWorker>> WorkersByRecurrenceEnabled { get; }
 
     public IReadOnlyDictionary<bool, IReadOnlyList<WorkerReadModelWorker>> WorkersByConcurrencyEnabled { get; }
@@ -1033,7 +1056,8 @@ internal sealed record WorkerReadModelWorker(
     WorkerOverviewItem Overview,
     bool RecurrenceEnabled,
     bool ConcurrencyEnabled,
-    bool ProfilingEnabled)
+    bool ProfilingEnabled,
+    string? OriginActorId)
 {
     public WorkerId Id => this.Overview.Id;
 
@@ -1062,8 +1086,15 @@ internal sealed record WorkerReadModelWorker(
         WorkerOverviewItem overview,
         bool recurrenceEnabled,
         bool concurrencyEnabled,
-        bool profilingEnabled)
-        => new(definitionId, overview, recurrenceEnabled, concurrencyEnabled, profilingEnabled);
+        bool profilingEnabled,
+        string? originActorId = null)
+        => new(
+            definitionId,
+            overview,
+            recurrenceEnabled,
+            concurrencyEnabled,
+            profilingEnabled,
+            string.IsNullOrWhiteSpace(originActorId) ? null : originActorId.Trim());
 }
 
 internal sealed record WorkerReadModelIteration(
@@ -1120,7 +1151,8 @@ internal sealed record WorkerReadModelIteration(
 internal sealed record WorkerReadModelIterationUpdate(
     WorkerReadModelWorker Worker,
     WorkerReadModelIteration Iteration,
-    WorkerIterationSnapshot Snapshot);
+    WorkerIterationSnapshot Snapshot,
+    WorkOrigin? CancellationOrigin = null);
 
 internal sealed record WorkerReadModelKey(
     WorkKeyKind Kind,

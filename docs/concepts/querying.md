@@ -72,6 +72,8 @@ WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationTok
 
 Use `IWorkQueryService.Workers` to retrieve workers that match a `WorkerCriteria`. It returns `WorkerOverviewItem` rows instead of full snapshots.
 
+Set `WorkerCriteria.ActorId` to return only workers whose original request context was created by that actor. Actor ids use exact ordinal matching after surrounding whitespace is removed.
+
 ```csharp
 var result = await workSystem.Query.Workers(new WorkerCriteria(
             DefinitionName: "email.welcome.send",

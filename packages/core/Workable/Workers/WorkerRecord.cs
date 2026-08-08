@@ -142,6 +142,16 @@ internal sealed class WorkerRecord(
         }
     }
 
+    internal WorkerIterationReference GetCurrentIterationReference()
+    {
+        lock (this.sync)
+        {
+            var iteration = this.currentIteration
+                ?? throw new InvalidOperationException("The worker does not have an executing iteration.");
+            return new WorkerIterationReference(this.Id, iteration.Sequence);
+        }
+    }
+
     public bool IsCompletionSignaled
     {
         get
@@ -1084,7 +1094,8 @@ internal sealed class WorkerRecord(
             this.ToOverviewItemLocked(),
             this.Configuration.Recurrence.IsEnabled,
             this.Configuration.Coordination.IsConcurrencyEnabled,
-            this.Options.ProfilingEnabled);
+            this.Options.ProfilingEnabled,
+            this.RequestContext.Actor.Id);
 
     private WorkerReadModelIterationUpdate CreateReadModelIterationUpdateLocked(WorkerIterationSnapshot iteration)
     {
@@ -1092,7 +1103,8 @@ internal sealed class WorkerRecord(
         return new WorkerReadModelIterationUpdate(
             worker,
             WorkerReadModelIteration.From(worker, iteration),
-            iteration);
+            iteration,
+            this.cancellationRequestContext?.Origin);
     }
 
     private static TaskCompletionSource<WorkCompletion> CreateCompletionSource()
@@ -1626,6 +1638,7 @@ internal sealed class WorkerRecord(
             QueueDuration = this.QueueDurationLocked(),
             TotalExecutionDuration = this.TotalExecutionDurationLocked(),
             NextRunAt = this.nextRunAt,
+            CurrentIterationSequence = this.currentIteration?.Sequence,
         };
 
     private System.Text.Json.JsonElement CreateEventDataLocked(WorkerEventPayloadDetails? details)

@@ -8,6 +8,90 @@ namespace Workable.Tests;
 public sealed class WorkableRealtimeViewSubscriptionsShould
 {
     [Fact]
+    public async Task WaitForTheSharedChangeStreamBeforeSeedingAView()
+    {
+        var subscriptions = new WorkableRealtimeViewSubscriptions();
+        await using var system = CreateSystem();
+
+        var waiting = subscriptions.WaitForStreaming(system, CancellationToken.None);
+        Assert.False(waiting.IsCompleted);
+
+        Assert.False(subscriptions.SetStreaming(system, isStreaming: true));
+        await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.False(subscriptions.SetStreaming(system, isStreaming: false));
+        var waitingForRestart = subscriptions.WaitForStreaming(system, CancellationToken.None);
+        Assert.False(waitingForRestart.IsCompleted);
+
+        Assert.True(subscriptions.SetStreaming(system, isStreaming: true));
+        await waitingForRestart.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task KeepAGroupBehindItsSeedBarrierUntilEveryJoiningConnectionIsSeeded()
+    {
+        var subscriptions = new WorkableRealtimeViewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        await using var system = CreateSystem();
+        var criteria = Criteria("workers", WorkComponentShapes.Compact);
+        var first = await subscriptions.WatchView(
+            "connection-1",
+            groups,
+            system,
+            "first",
+            "overview",
+            criteria,
+            Authorization(),
+            CancellationToken.None);
+        var second = await subscriptions.WatchView(
+            "connection-2",
+            groups,
+            system,
+            "second",
+            "overview",
+            criteria,
+            Authorization(),
+            CancellationToken.None);
+        var waiting = subscriptions.WaitForSeed(first.GroupName, CancellationToken.None);
+
+        Assert.Equal(first.GroupName, second.GroupName);
+        Assert.False(waiting.IsCompleted);
+
+        subscriptions.CompleteSeed(first.GroupName);
+        Assert.False(waiting.IsCompleted);
+
+        subscriptions.CompleteSeed(second.GroupName);
+        await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task ReleaseSeedWaitersWhenTheLastConnectionLeavesBeforeItsSeedCompletes()
+    {
+        var subscriptions = new WorkableRealtimeViewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        await using var system = CreateSystem();
+        var subscription = await subscriptions.WatchView(
+            "connection-1",
+            groups,
+            system,
+            "panel",
+            "overview",
+            Criteria("workers", WorkComponentShapes.Compact),
+            Authorization(),
+            CancellationToken.None);
+        var waiting = subscriptions.WaitForSeed(subscription.GroupName, CancellationToken.None);
+
+        await subscriptions.UnwatchView(
+            "connection-1",
+            groups,
+            system,
+            "panel",
+            CancellationToken.None);
+
+        await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task NormalizeViewNameAndSubscriptionIdWhenCreatingGroups()
     {
         var subscriptions = new WorkableRealtimeViewSubscriptions();

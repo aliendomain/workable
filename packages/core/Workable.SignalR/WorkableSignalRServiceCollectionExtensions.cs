@@ -18,8 +18,8 @@ public static class WorkableSignalRServiceCollectionExtensions
     /// <param name="configure">Optional callback used to configure realtime transport behavior.</param>
     /// <returns>The same <paramref name="services"/> instance for chaining.</returns>
     /// <remarks>
-    /// This registration enables authenticated SignalR clients to subscribe to Workable event streams, named views,
-    /// and worker-overview updates. Endpoint mapping is performed separately by
+    /// This registration enables authenticated SignalR clients to subscribe to Workable event streams, worker lists,
+    /// named views, and worker-overview updates. Endpoint mapping is performed separately by
     /// <see cref="WorkableSignalREndpointRouteBuilderExtensions.MapWorkableSignalR(Microsoft.AspNetCore.Routing.IEndpointRouteBuilder, string?)"/>.
     /// </remarks>
     public static IServiceCollection AddWorkableSignalR(

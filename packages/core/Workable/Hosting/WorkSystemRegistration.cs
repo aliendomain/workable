@@ -21,4 +21,5 @@ internal sealed record WorkSystemRegistration(
     WorkSystemShutdownGracePeriod ShutdownGracePeriod,
     WorkSystemRetentionConfiguration Retention,
     WorkSystemCapacityConfiguration Capacity,
+    WorkSystemIterationStatusConfiguration IterationStatuses,
     WorkSystemProfilingConfiguration Profiling);

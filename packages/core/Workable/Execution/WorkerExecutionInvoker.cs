@@ -10,6 +10,7 @@ internal sealed class WorkerExecutionInvoker(
     WorkerEventPublisher workerEvents,
     Action<WorkerRecord, WorkIdentifier> identifierDiscovered,
     WorkInitializationExecutor initialization,
+    WorkIterationStatusStream? iterationStatuses = null,
     WorkSystemProfilingConfiguration? profilingConfiguration = null)
 {
     public async Task<WorkerExecutionInvocationResult> Execute(WorkerRecord worker, CancellationToken cancellationToken)
@@ -95,6 +96,12 @@ internal sealed class WorkerExecutionInvoker(
             () => worker.InterruptionReason,
             profiler,
             services,
+            iterationStatuses is null
+                ? EmptyWorkIterationStatusPublisher.Instance
+                : new WorkIterationStatusPublisher(
+                    iterationStatuses,
+                    worker.GetCurrentIterationReference(),
+                    worker.Work.Definition.Name),
             identifier =>
             {
                 var added = worker.AddIdentifier(identifier);

@@ -55,6 +55,12 @@ public interface IWorkSystemSession
     IWorkEventStream Events { get; }
 
     /// <summary>
+    /// Gets the caller-scoped iteration status-stream surface.
+    /// </summary>
+    IWorkIterationStatusStream IterationStatuses
+        => throw new NotSupportedException("This work system session does not expose iteration status streams.");
+
+    /// <summary>
     /// Gets the caller-scoped change-stream surface.
     /// </summary>
     IWorkChangeStream Changes { get; }

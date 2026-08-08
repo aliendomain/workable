@@ -10,6 +10,7 @@ internal sealed class WorkSystemSession(
     IWorkerOperations workers,
     IWorkQueryService query,
     IWorkEventStream events,
+    IWorkIterationStatusStream iterationStatuses,
     IWorkChangeStream changes) : IWorkSystemSession, IWorkSystemCapabilitySource
 {
     public string? SystemName { get; } = systemName;
@@ -29,6 +30,8 @@ internal sealed class WorkSystemSession(
     public IWorkQueryService Query { get; } = query;
 
     public IWorkEventStream Events { get; } = events;
+
+    public IWorkIterationStatusStream IterationStatuses { get; } = iterationStatuses;
 
     public IWorkChangeStream Changes { get; } = changes;
 }

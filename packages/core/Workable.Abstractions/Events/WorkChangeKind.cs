@@ -39,4 +39,9 @@ public enum WorkChangeKind
     /// Work associated with one identifier changed.
     /// </summary>
     Identifier,
+
+    /// <summary>
+    /// Work originated by one actor changed.
+    /// </summary>
+    Actor,
 }

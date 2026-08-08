@@ -109,7 +109,7 @@ Applications reference `Workable.Mcp` when they want to expose Workable systems 
 
 `packages/core/Workable.SignalR` contains the realtime adapter surface:
 
-- SignalR hub mapping for raw event, named view, and worker-overview subscriptions
+- SignalR hub mapping for raw event, worker-list, named-view, and worker-overview subscriptions
 - shared subscription registries keyed by normalized request shape and read visibility
 - raw event broadcasting
 - worker-overview change handling and coalesced worker-overview broadcasting

@@ -23,6 +23,12 @@ public sealed class WorkableRealtimeViewSubscriptions
     private readonly object gate = new();
     private readonly Dictionary<string, WorkableRealtimeViewSubscription> connectionViewGroups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SubscriptionGroup> groups = new(StringComparer.Ordinal);
+    private readonly HashSet<WorkSystemId> streamingSystems = [];
+    private readonly HashSet<WorkSystemId> systemsThatHaveStreamed = [];
+    private readonly HashSet<string> groupsReadyForReconciliation = new(StringComparer.Ordinal);
+    private TaskCompletionSource streamingChanged = CreateStreamingSignal();
+    private TaskCompletionSource seedChanged = CreateStreamingSignal();
+    private TaskCompletionSource reconciliationChanged = CreateStreamingSignal();
 
     internal async Task<WorkableRealtimeViewSubscription> WatchView(
         string connectionId,
@@ -55,6 +61,7 @@ public sealed class WorkableRealtimeViewSubscriptions
                 oldSubscription is not null &&
                 oldSubscription.GroupName == subscription.GroupName)
             {
+                BeginSeedLocked(oldSubscription.GroupName);
                 return oldSubscription;
             }
 
@@ -67,10 +74,14 @@ public sealed class WorkableRealtimeViewSubscriptions
             if (this.groups.TryGetValue(subscription.GroupName, out var group))
             {
                 group.ConnectionCount++;
+                group.PendingSeedCount++;
             }
             else
             {
-                this.groups[subscription.GroupName] = new SubscriptionGroup(subscription, 1);
+                this.groups[subscription.GroupName] = new SubscriptionGroup(subscription, 1)
+                {
+                    PendingSeedCount = 1,
+                };
             }
 
             addToGroup = true;
@@ -95,6 +106,7 @@ public sealed class WorkableRealtimeViewSubscriptions
                         ReferenceEquals(current, subscription))
                     {
                         this.connectionViewGroups.Remove(connectionViewKey);
+                        CompleteSeedLocked(subscription.GroupName);
                         ReleaseGroupLocked(subscription.GroupName);
                     }
                 }
@@ -192,6 +204,141 @@ public sealed class WorkableRealtimeViewSubscriptions
         }
     }
 
+    internal bool SetStreaming(IWorkSystem system, bool isStreaming)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        lock (this.gate)
+        {
+            var isRestart = isStreaming &&
+                this.systemsThatHaveStreamed.Contains(system.Id) &&
+                !this.streamingSystems.Contains(system.Id);
+            var changed = isStreaming
+                ? this.streamingSystems.Add(system.Id)
+                : this.streamingSystems.Remove(system.Id);
+            if (!changed)
+            {
+                return false;
+            }
+
+            if (isStreaming)
+            {
+                this.systemsThatHaveStreamed.Add(system.Id);
+            }
+
+            var completed = this.streamingChanged;
+            this.streamingChanged = CreateStreamingSignal();
+            completed.TrySetResult();
+            return isRestart;
+        }
+    }
+
+    internal async Task WaitForStreaming(IWorkSystem system, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        while (true)
+        {
+            Task wait;
+            lock (this.gate)
+            {
+                if (this.streamingSystems.Contains(system.Id))
+                {
+                    return;
+                }
+
+                wait = this.streamingChanged.Task;
+            }
+
+            await wait.WaitAsync(cancellationToken);
+        }
+    }
+
+    internal void CompleteSeed(string groupName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            CompleteSeedLocked(groupName);
+        }
+    }
+
+    internal async Task WaitForSeed(string groupName, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        while (true)
+        {
+            Task wait;
+            lock (this.gate)
+            {
+                if (!this.groups.TryGetValue(groupName, out var group) || group.PendingSeedCount == 0)
+                {
+                    return;
+                }
+
+                wait = this.seedChanged.Task;
+            }
+
+            await wait.WaitAsync(cancellationToken);
+        }
+    }
+
+    internal bool DeferBroadcastUntilSeeded(string groupName, bool reconcileAfterSeed = true)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            if (!this.groups.TryGetValue(groupName, out var group))
+            {
+                return true;
+            }
+
+            if (group.PendingSeedCount == 0)
+            {
+                return false;
+            }
+
+            group.ReconcileAfterSeed |= reconcileAfterSeed;
+            return true;
+        }
+    }
+
+    internal async Task<IReadOnlyList<WorkableRealtimeViewSubscription>> WaitForSeedReconciliations(
+        IWorkSystem system,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+
+        while (true)
+        {
+            Task wait;
+            lock (this.gate)
+            {
+                var subscriptions = this.groupsReadyForReconciliation
+                    .Select(groupName => this.groups.TryGetValue(groupName, out var group) ? group : null)
+                    .Where(group => group?.Subscription.SystemId == system.Id)
+                    .Select(group => group!.Subscription)
+                    .ToArray();
+                if (subscriptions.Length > 0)
+                {
+                    foreach (var subscription in subscriptions)
+                    {
+                        this.groupsReadyForReconciliation.Remove(subscription.GroupName);
+                    }
+
+                    return subscriptions;
+                }
+
+                wait = this.reconciliationChanged.Task;
+            }
+
+            await wait.WaitAsync(cancellationToken);
+        }
+    }
+
     /// <summary>
     /// Gets debug snapshots for the active named-view subscriptions that belong to one Workable system.
     /// </summary>
@@ -279,6 +426,51 @@ public sealed class WorkableRealtimeViewSubscriptions
     private static string NormalizeSubscriptionId(string subscriptionId)
         => subscriptionId.Trim();
 
+    private static TaskCompletionSource CreateStreamingSignal()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private void BeginSeedLocked(string groupName)
+    {
+        if (this.groups.TryGetValue(groupName, out var group))
+        {
+            group.PendingSeedCount++;
+        }
+    }
+
+    private void CompleteSeedLocked(string groupName)
+    {
+        if (!this.groups.TryGetValue(groupName, out var group) || group.PendingSeedCount == 0)
+        {
+            return;
+        }
+
+        group.PendingSeedCount--;
+        if (group.PendingSeedCount == 0)
+        {
+            SignalSeedChangedLocked();
+            if (group.ReconcileAfterSeed)
+            {
+                group.ReconcileAfterSeed = false;
+                this.groupsReadyForReconciliation.Add(groupName);
+                SignalReconciliationChangedLocked();
+            }
+        }
+    }
+
+    private void SignalSeedChangedLocked()
+    {
+        var completed = this.seedChanged;
+        this.seedChanged = CreateStreamingSignal();
+        completed.TrySetResult();
+    }
+
+    private void SignalReconciliationChangedLocked()
+    {
+        var completed = this.reconciliationChanged;
+        this.reconciliationChanged = CreateStreamingSignal();
+        completed.TrySetResult();
+    }
+
     private void ReleaseGroupLocked(string groupName)
     {
         if (!this.groups.TryGetValue(groupName, out var group))
@@ -290,6 +482,11 @@ public sealed class WorkableRealtimeViewSubscriptions
         if (group.ConnectionCount <= 0)
         {
             this.groups.Remove(groupName);
+            this.groupsReadyForReconciliation.Remove(groupName);
+            if (group.PendingSeedCount > 0)
+            {
+                SignalSeedChangedLocked();
+            }
         }
     }
 
@@ -300,5 +497,9 @@ public sealed class WorkableRealtimeViewSubscriptions
         public WorkableRealtimeViewSubscription Subscription { get; } = subscription;
 
         public int ConnectionCount { get; set; } = connectionCount;
+
+        public int PendingSeedCount { get; set; }
+
+        public bool ReconcileAfterSeed { get; set; }
     }
 }

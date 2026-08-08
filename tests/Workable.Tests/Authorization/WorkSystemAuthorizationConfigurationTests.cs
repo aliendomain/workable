@@ -122,6 +122,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await using var subscription = readerSession.Changes.Subscribe();
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
+        inMemory.ChangeStream.Publish(WorkChangeKey.Actor("hidden-actor"));
         inMemory.ChangeStream.Publish(WorkChangeKey.Definition(hidden.Name));
         inMemory.ChangeStream.Publish(WorkChangeKey.Definition(visible.Name));
 
@@ -130,6 +131,31 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var diagnostics = Assert.IsAssignableFrom<IWorkChangeSubscriptionDiagnostics>(subscription)
             .GetDiagnosticsSnapshot();
         Assert.Equal(0, diagnostics.AcceptedChangeCount);
+    }
+
+    [Fact]
+    public async Task ReadAllSessionCanObserveActorChangeKeys()
+    {
+        var definition = PausedDefinition("actor.change");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["work-admin"] = Groups("work.admin"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .ConfigureAuthorization(authorization => authorization.WorkAdministrators("work.admin"))
+                .AddWork(definition, SuccessfulWork))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var inMemory = Assert.IsType<InMemoryWorkSystem>(system);
+        var session = await system.CreateSession(CreateRequestContext("work-admin"));
+        await using var subscription = session.Changes.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var expected = WorkChangeKey.Actor("visible-actor");
+
+        inMemory.ChangeStream.Publish(expected);
+
+        Assert.Equal(expected, (await ReadNextChange(reader)).Key);
     }
 
     [Fact]

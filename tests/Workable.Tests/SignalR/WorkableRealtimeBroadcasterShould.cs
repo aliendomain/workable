@@ -45,6 +45,8 @@ public sealed class WorkableRealtimeBroadcasterShould
             ]),
             authorization,
             CancellationToken.None);
+        subscriptions.CompleteSeed(failed.GroupName);
+        subscriptions.CompleteSeed(healthy.GroupName);
         var clients = new RecordingHubClients("failed-connection");
         var timerFactory = new ManualTimerFactory();
         var logger = new RecordingLogger<WorkableRealtimeBroadcaster>();
@@ -105,7 +107,7 @@ public sealed class WorkableRealtimeBroadcasterShould
         var subscriptions = new WorkableRealtimeViewSubscriptions();
         var groups = new RecordingSignalRGroupManager();
         var authorization = Authorization();
-        await subscriptions.WatchView(
+        var failed = await subscriptions.WatchView(
             "failed-connection",
             groups,
             system,
@@ -117,7 +119,7 @@ public sealed class WorkableRealtimeBroadcasterShould
             ]),
             authorization,
             CancellationToken.None);
-        await subscriptions.WatchView(
+        var healthy = await subscriptions.WatchView(
             "healthy-connection",
             groups,
             system,
@@ -129,6 +131,8 @@ public sealed class WorkableRealtimeBroadcasterShould
             ]),
             authorization,
             CancellationToken.None);
+        subscriptions.CompleteSeed(failed.GroupName);
+        subscriptions.CompleteSeed(healthy.GroupName);
         var clients = new RecordingHubClients("failed-connection");
         var logger = new RecordingLogger<WorkableRealtimeBroadcaster>();
         var broadcaster = CreateBroadcaster(
@@ -155,6 +159,121 @@ public sealed class WorkableRealtimeBroadcasterShould
         Assert.Equal(1, clients.For("failed-connection").Attempts);
         var error = Assert.Single(logger.Entries);
         Assert.Contains("overview", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DeferOnlyTheSeedingGroupAndReconcileItAfterItsSeedCompletes()
+    {
+        await using var provider = CreateProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var subscriptions = new WorkableRealtimeViewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        var seeding = await subscriptions.WatchView(
+            "seeding-connection",
+            groups,
+            system,
+            "seeding-view",
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new("seeding-throughput", "throughput", Shape: WorkComponentShapes.Compact),
+            ]),
+            Authorization(),
+            CancellationToken.None);
+        var healthy = await subscriptions.WatchView(
+            "healthy-connection",
+            groups,
+            system,
+            "healthy-view",
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new("healthy-throughput", "throughput", Shape: WorkComponentShapes.Standard),
+            ]),
+            Authorization(),
+            CancellationToken.None);
+        subscriptions.CompleteSeed(healthy.GroupName);
+        var clients = new RecordingHubClients("never-fails");
+        var broadcaster = CreateBroadcaster(
+            provider,
+            subscriptions,
+            clients,
+            new ManualTimerFactory(),
+            new RecordingLogger<WorkableRealtimeBroadcaster>());
+        var versions = new Dictionary<string, WorkableRealtimeViewVersion>(StringComparer.Ordinal);
+
+        await InvokeAsync(
+            broadcaster,
+            "BroadcastViewSubscriptions",
+            system,
+            new Func<WorkableRealtimeViewSubscription, bool>(_ => true),
+            versions,
+            CancellationToken.None);
+
+        Assert.Empty(clients.For("seeding-connection").Calls);
+        Assert.Single(clients.For("healthy-connection").Calls);
+
+        subscriptions.CompleteSeed(seeding.GroupName);
+        var ready = await subscriptions.WaitForSeedReconciliations(system, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+        await InvokeAsync(
+            broadcaster,
+            "ReconcileSeededViewSubscriptions",
+            system,
+            ready,
+            versions,
+            CancellationToken.None);
+
+        Assert.Single(clients.For("seeding-connection").Calls);
+        Assert.Single(clients.For("healthy-connection").Calls);
+    }
+
+    [Fact]
+    public async Task ReconcileActiveViewsWhenTheSharedChangeStreamRestarts()
+    {
+        await using var provider = CreateProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var subscriptions = new WorkableRealtimeViewSubscriptions();
+        var subscription = await subscriptions.WatchView(
+            "restart-connection",
+            new RecordingSignalRGroupManager(),
+            system,
+            "restart-view",
+            "workers",
+            new WorkViewCriteria(),
+            Authorization(),
+            CancellationToken.None);
+        subscriptions.CompleteSeed(subscription.GroupName);
+        var clients = new RecordingHubClients("never-fails");
+        var broadcaster = CreateBroadcaster(
+            provider,
+            subscriptions,
+            clients,
+            new ManualTimerFactory(),
+            new RecordingLogger<WorkableRealtimeBroadcaster>());
+
+        await InvokeAsync(
+            broadcaster,
+            "BroadcastViewsFromChanges",
+            system,
+            new CompletedChangeStream(),
+            CancellationToken.None);
+        Assert.Empty(clients.For("restart-connection").Calls);
+
+        var handle = await system.Queue.Enqueue("signalr.broadcaster.tests");
+        var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected an accepted worker.");
+        await TestEventually.Until(async () => await system.Query.Worker(workerId) is not null);
+
+        await InvokeAsync(
+            broadcaster,
+            "BroadcastViewsFromChanges",
+            system,
+            new CompletedChangeStream(),
+            CancellationToken.None);
+
+        Assert.Single(clients.For("restart-connection").Calls);
     }
 
     [Fact]
@@ -267,6 +386,7 @@ public sealed class WorkableRealtimeBroadcasterShould
             "Expected the worker overview subscription to become active.");
         subscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
         await watch;
+        subscriptions.SetSeeded(subscription.GroupName, hasPublishedState: true);
         subscriptions.SetStreaming(subscription.GroupName, isStreaming: false);
         var clients = new RecordingHubClients("failed-connection");
         var logger = new RecordingLogger<WorkableRealtimeBroadcaster>();
@@ -386,12 +506,15 @@ public sealed class WorkableRealtimeBroadcasterShould
             null!);
 
     private static async Task InvokeAsync(object target, string methodName, params object?[] arguments)
+        => await InvokeTask(target, methodName, arguments);
+
+    private static Task InvokeTask(object target, string methodName, params object?[] arguments)
     {
         var method = target.GetType().GetMethod(
             methodName,
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         Assert.NotNull(method);
-        await Assert.IsAssignableFrom<Task>(method.Invoke(target, arguments));
+        return Assert.IsAssignableFrom<Task>(method.Invoke(target, arguments));
     }
 
     private static async Task<object> InvokeWithResult(

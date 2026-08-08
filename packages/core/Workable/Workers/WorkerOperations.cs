@@ -19,6 +19,7 @@ internal sealed class WorkerOperations :
     private readonly ConcurrentDictionary<WorkerId, WorkerRecord> workers = [];
     private readonly WorkerIndex index = new();
     private readonly WorkerPersistenceCoordinator persistence;
+    private readonly WorkIterationStatusStream iterationStatusStream;
     private readonly ConcurrentDictionary<WorkerIterationReference, WorkCompletionStatus> iterationStatuses = [];
     private readonly ConcurrentDictionary<WorkerId, byte> finalizationInProgress = [];
     private readonly InMemoryWorkMetricsSink metrics;
@@ -52,6 +53,7 @@ internal sealed class WorkerOperations :
         string? workSystemName,
         IServiceProvider rootServices,
         WorkEventStream events,
+        WorkIterationStatusStream iterationStatusStream,
         IWorkSystemReadModelStore readModel,
         IReadOnlyList<WorkExceptionClassifier> systemExceptionClassifiers,
         IReadOnlyList<WorkExceptionClassifier> globalExceptionClassifiers,
@@ -67,6 +69,7 @@ internal sealed class WorkerOperations :
     {
         this.catalog = catalog;
         this.getSystemState = getSystemState;
+        this.iterationStatusStream = iterationStatusStream;
         this.shutdownGracePeriod = shutdownGracePeriod;
         this.capacity = capacity;
         this.profileCaptureRules = profileCaptureRules;
@@ -105,7 +108,8 @@ internal sealed class WorkerOperations :
             this.workerEvents,
             this.AddIdentifier,
             new WorkInitializationExecutor(rootServices),
-            profilingConfiguration);
+            iterationStatuses: iterationStatusStream,
+            profilingConfiguration: profilingConfiguration);
         var exceptionHandler = new WorkerExecutionExceptionHandler(
             new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, this.logger),
             this.logger);
@@ -310,12 +314,22 @@ internal sealed class WorkerOperations :
         if (this.workers.ContainsKey(iteration.Worker.Id))
         {
             var reference = iteration.Iteration.Reference;
+            this.iterationStatusStream.Begin(reference, iteration.Worker.DefinitionName);
             if (this.TryRecordIterationStatus(reference, iteration.Iteration.Status))
             {
                 this.metrics.IterationRecorded(iteration.Iteration.DefinitionId, iteration.Snapshot);
             }
 
             this.readModel.RecordIteration(iteration);
+            if (iteration.Iteration.Status.IsFinal())
+            {
+                this.iterationStatusStream.Complete(new WorkIterationStatusCompletion(
+                    reference.WorkerId,
+                    iteration.Worker.Revision,
+                    iteration.Worker.State,
+                    iteration.Snapshot,
+                    iteration.CancellationOrigin));
+            }
         }
     }
 
@@ -324,6 +338,7 @@ internal sealed class WorkerOperations :
         if (this.workers.ContainsKey(iteration.WorkerId))
         {
             this.iterationStatuses.TryRemove(iteration, out _);
+            this.iterationStatusStream.Forget(iteration);
             this.readModel.ForgetIteration(iteration);
         }
     }
@@ -1224,6 +1239,8 @@ internal sealed class WorkerOperations :
         {
             this.iterationStatuses.TryRemove(reference, out _);
         }
+
+        this.iterationStatusStream.Forget(workerId);
     }
 
     private void ForgetIterationStatuses(List<WorkerId> workerIds)
@@ -1238,6 +1255,11 @@ internal sealed class WorkerOperations :
             .Where(reference => ContainsWorker(workerIds, workerIdSet, reference.WorkerId)))
         {
             this.iterationStatuses.TryRemove(reference, out _);
+        }
+
+        foreach (var workerId in workerIds)
+        {
+            this.iterationStatusStream.Forget(workerId);
         }
     }
 

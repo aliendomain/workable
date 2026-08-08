@@ -77,6 +77,12 @@ public interface IWorkSystem : IAsyncDisposable
     IWorkEventStream Events { get; }
 
     /// <summary>
+    /// Gets the direct iteration status-stream surface for the system.
+    /// </summary>
+    IWorkIterationStatusStream IterationStatuses
+        => throw new NotSupportedException("This work system does not expose iteration status streams.");
+
+    /// <summary>
     /// Gets the direct change-stream surface for the system.
     /// </summary>
     /// <remarks>

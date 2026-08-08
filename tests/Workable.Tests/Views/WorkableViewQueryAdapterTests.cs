@@ -109,6 +109,33 @@ public sealed class WorkableViewQueryAdapterTests
     }
 
     [Fact]
+    public void ShouldPublishForChangesMatchesWorkerGridByOriginActor()
+    {
+        var adapter = new WorkableViewQueryAdapter();
+        const string actorId = "user-123";
+        var criteria = new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest(
+                "workers",
+                "workerGrid",
+                JsonSerializer.SerializeToElement(new { actorId })),
+        ]);
+
+        Assert.True(adapter.ShouldPublishForChanges(
+            "workers",
+            criteria,
+            [WorkChangeKey.Actor(actorId)]));
+        Assert.False(adapter.ShouldPublishForChanges(
+            "workers",
+            criteria,
+            [WorkChangeKey.Actor("user-456")]));
+        Assert.True(adapter.ShouldPublishForChanges(
+            "workers",
+            criteria,
+            [WorkChangeKey.System()]));
+    }
+
+    [Fact]
     public void ShouldPublishForChangesMatchesDefinitionScopedViewsByDefinition()
     {
         var adapter = new WorkableViewQueryAdapter();

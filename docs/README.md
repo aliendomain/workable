@@ -17,6 +17,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 
 - [Getting Started](guides/getting-started.md): package split, work author setup, host setup, queueing work, and the preferred ASP.NET Core dispatcher path for custom HTTP endpoints.
 - [Implementing Work](guides/implementing-work.md): write executor code, use `IWorkExecutionContext`, and understand failure, cancellation, pause, and interruption behavior.
+- [Iteration Status Streams](guides/iteration-status-streams.md): publish ordered per-iteration progress, subscribe in process or through SignalR, and resume safely with replay cursors.
 - [Microsoft Entra Authentication](guides/entra-authentication.md): configure Entra bearer-token authentication and claim mapping for Workable surfaces.
 - [Registration](guides/registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.
 - [Workflows](guides/workflows.md): register multi-step orchestrations that dispatch existing work definitions, fan out from typed outputs, run named parallel branches, and join on completion.
@@ -29,7 +30,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
   - [Failed-Worker Handling Configuration](guides/configuration/failed-worker.md): opt into auto-cancel for failed non-recurring workers and control runtime overrides.
   - [Logging Configuration](guides/configuration/logging.md): worker-scoped logging behavior.
   - [Retention Configuration](guides/configuration/retention.md): automatic purge timing and final-worker count cleanup.
-  - [System Settings](guides/configuration/system-settings.md): startup-only system-wide limits for admission capacity and retained final workers.
+  - [System Settings](guides/configuration/system-settings.md): startup-only limits for admission capacity, retained final workers, iteration status replay, payload size, and profiling.
   - [Concurrency Configuration](guides/configuration/concurrency.md): capacity limits by definition, subject, or concurrency key.
   - [Queue Durability Configuration](guides/configuration/queue-durability.md): durable queueing, persistence-backed idempotency, and durable completion.
   - [Invocation Configuration](guides/configuration/invocation.md): channels allowed to start a work definition.
@@ -39,7 +40,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 
 - [HTTP API](adapters/http-api.md): expose registered work through HTTP endpoints.
 - [MCP](adapters/mcp.md): expose registered work, query tools, worker action tools, and definition-default reconfiguration through an MCP server.
-- [Realtime](adapters/realtime.md): stream worker events, component-view updates, diagnostics, and admin event-viewer traffic through SignalR.
+- [Realtime](adapters/realtime.md): stream worker collections, worker details, component-view updates, diagnostics, and raw worker events through SignalR.
 
 ## Concepts
 

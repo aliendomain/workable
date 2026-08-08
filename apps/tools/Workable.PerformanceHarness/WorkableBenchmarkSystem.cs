@@ -7,6 +7,7 @@ namespace Workable.PerformanceHarness;
 internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
 {
     internal const string OperatorGroup = "workable.performance.operator";
+    internal const string BenchmarkActorId = "workable.performance.benchmark";
     internal static readonly WorkIdentifier HotIdentifier = new("tenant", "tenant-000");
 
     private readonly ServiceProvider provider;
@@ -39,8 +40,11 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         bool requiresAuthorization = false,
         int definitionCount = 4,
         bool includeUnauthorizedDefinition = false,
+        int actorCount = 1,
         CancellationToken cancellationToken = default)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(actorCount, 1);
+
         var definitions = Enumerable.Range(0, definitionCount)
             .Select(index => WorkDefinition.Create(
                 $"perf.benchmark.{index:D2}",
@@ -83,14 +87,21 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
 
         var provider = services.BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
-        var requestContext = CreateRequestContext();
+        var requestContext = CreateRequestContext(actorIndex: 0);
         await system.Start(requestContext, cancellationToken);
-        var session = await system.CreateSession(requestContext);
+        var session = await system.CreateSession(requestContext, cancellationToken);
+        var actorSessions = new IWorkSystemSession[actorCount];
+        for (var index = 0; index < actorSessions.Length; index++)
+        {
+            actorSessions[index] = await system.CreateSession(
+                CreateRequestContext(index),
+                cancellationToken);
+        }
 
         for (var index = 0; index < workerCount; index++)
         {
             var definition = definitions[index % definitions.Length];
-            var handle = await session.Queue.Enqueue(
+            var handle = await actorSessions[index % actorSessions.Length].Queue.Enqueue(
                 definition.Name,
                 CreateInput(index),
                 cancellationToken: cancellationToken);
@@ -106,6 +117,9 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
 
         return new WorkableBenchmarkSystem(provider, system, session, requestContext, definitions);
     }
+
+    internal static string ActorId(int index)
+        => index == 0 ? BenchmarkActorId : $"{BenchmarkActorId}.{index:D3}";
 
     public static WorkInput CreateInput(int index)
     {
@@ -130,11 +144,11 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         }
     }
 
-    private static WorkRequestContext CreateRequestContext()
+    private static WorkRequestContext CreateRequestContext(int actorIndex)
     {
         var actor = new WorkActor(
-            Id: "workable.performance.benchmark",
-            Name: "Workable Performance Benchmark");
+            Id: ActorId(actorIndex),
+            Name: $"Workable Performance Benchmark Actor {actorIndex:D3}");
         var origin = WorkOrigin.Create(WorkInvocationChannel.InProcess, actor);
         return new WorkRequestContext(
             Origin: origin,

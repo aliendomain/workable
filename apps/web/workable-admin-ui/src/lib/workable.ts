@@ -322,6 +322,7 @@ export type WorkViewWorkerGridDetailed = WorkOverviewFailedWorkerStandard & {
   identifiers?: WorkTypedValue[];
   state: WorkerState;
   isFinal: boolean;
+  currentIterationSequence?: number | null;
 };
 
 export type WorkOverviewFailedWorker =

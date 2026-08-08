@@ -456,6 +456,7 @@ internal sealed class WorkSystemReadModelQueryService(
             !TryAddCandidate(candidates, snapshot.WorkersBySubject, query.SubjectId) ||
             !TryAddCandidate(candidates, snapshot.WorkersByConcurrencyKey, query.ConcurrencyKey) ||
             !TryAddCandidate(candidates, snapshot.WorkersByIdentifier, query.Identifier) ||
+            !TryAddCandidate(candidates, snapshot.WorkersByActorId, NormalizeActorId(query.ActorId)) ||
             !TryAddConfigurationCandidates(snapshot, query.Configuration, candidates))
         {
             return [];
@@ -909,6 +910,7 @@ internal sealed class WorkSystemReadModelQueryService(
             (query.SubjectId is null || worker.SubjectId == query.SubjectId) &&
             (query.ConcurrencyKey is null || worker.ConcurrencyKey == query.ConcurrencyKey) &&
             (query.Identifier is null || worker.Identifiers.Contains(query.Identifier.Value)) &&
+            (NormalizeActorId(query.ActorId) is not { } actorId || string.Equals(worker.OriginActorId, actorId, StringComparison.Ordinal)) &&
             (query.States is null || query.States.Contains(worker.State)) &&
             (query.Configuration is null || Matches(worker, query.Configuration)) &&
             (query.CreatedFrom is null || worker.CreatedAt >= query.CreatedFrom) &&
@@ -1075,6 +1077,25 @@ internal sealed class WorkSystemReadModelQueryService(
         return true;
     }
 
+    private static bool TryAddCandidate<TValue>(
+        List<IReadOnlyList<TValue>> candidates,
+        IReadOnlyDictionary<string, IReadOnlyList<TValue>> index,
+        string? key)
+    {
+        if (key is null)
+        {
+            return true;
+        }
+
+        if (!index.TryGetValue(key, out var values) || values.Count == 0)
+        {
+            return false;
+        }
+
+        candidates.Add(values);
+        return true;
+    }
+
     private static IReadOnlyList<TValue> Combine<TKey, TValue, TIdentity>(
         IReadOnlyDictionary<TKey, IReadOnlyList<TValue>> index,
         IEnumerable<TKey> keys,
@@ -1158,6 +1179,9 @@ internal sealed class WorkSystemReadModelQueryService(
 
     private static int NormalizeWorkerTake(int take)
         => take <= 0 ? WorkerCriteria.DefaultTake : Math.Min(take, WorkerCriteria.MaximumTake);
+
+    private static string? NormalizeActorId(string? actorId)
+        => string.IsNullOrWhiteSpace(actorId) ? null : actorId.Trim();
 
     private static int NormalizeWorkerIterationTake(int take)
         => take <= 0 ? WorkerIterationCriteria.DefaultTake : Math.Min(take, WorkerIterationCriteria.MaximumTake);

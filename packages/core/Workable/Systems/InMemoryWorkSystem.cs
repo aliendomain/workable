@@ -35,6 +35,7 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkSystemSessionFactory sessions;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
+    private readonly WorkIterationStatusStream iterationStatuses;
     private readonly WorkChangeStream changes = new();
     private readonly WorkProfileCaptureRuleStore profileCaptureRules = new();
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
@@ -54,6 +55,17 @@ internal sealed class InMemoryWorkSystem :
     {
         this.Id = registration.Id;
         this.Name = registration.Name;
+        this.iterationStatuses = new WorkIterationStatusStream(
+            this.Id,
+            this.Name,
+            retainedItemCapacity: registration.IterationStatuses.ReplayItemCapacity,
+            replayPayloadByteCapacity: registration.IterationStatuses.ReplayPayloadByteCapacity,
+            systemReplayItemCapacity: registration.IterationStatuses.SystemReplayItemCapacity,
+            systemReplayByteCapacity: registration.IterationStatuses.SystemReplayByteCapacity,
+            maximumPayloadBytes: registration.IterationStatuses.MaximumPayloadBytes,
+            maximumTypeBytes: registration.IterationStatuses.MaximumTypeBytes,
+            maximumSubscriptions: registration.IterationStatuses.MaximumSubscriptions,
+            maximumSubscriptionsPerIteration: registration.IterationStatuses.MaximumSubscriptionsPerIteration);
         this.RequiresAuthorization = registration.RequiresAuthorization;
         this.authorization = registration.Authorization;
         this.rootServices = rootServices;
@@ -93,6 +105,7 @@ internal sealed class InMemoryWorkSystem :
             this.Name,
             rootServices,
             this.events,
+            this.iterationStatuses,
             this.readModel,
             registration.ExceptionClassifiers,
             globalExceptionClassifiers,
@@ -122,6 +135,7 @@ internal sealed class InMemoryWorkSystem :
             this.workers,
             this.query,
             this.events,
+            this.iterationStatuses,
             this.changes,
             this.authorization,
             this.groupResolver);
@@ -226,6 +240,15 @@ internal sealed class InMemoryWorkSystem :
         {
             this.ThrowIfAuthorizationRequiredForDirectAccess();
             return this.events;
+        }
+    }
+
+    public IWorkIterationStatusStream IterationStatuses
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.iterationStatuses;
         }
     }
 
@@ -560,6 +583,7 @@ internal sealed class InMemoryWorkSystem :
         this.lifecycleLock.Dispose();
         await this.readModel.DisposeAsync();
         await this.events.DisposeAsync();
+        await this.iterationStatuses.DisposeAsync();
         await this.changes.DisposeAsync();
     }
 
