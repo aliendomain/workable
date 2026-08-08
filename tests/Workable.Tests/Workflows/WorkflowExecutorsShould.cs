@@ -397,6 +397,39 @@ public sealed class WorkflowExecutorsShould
     }
 
     [Fact]
+    public async Task NotifyDurableQueueAfterDispatchTransactionCommitsBeforeWaitingForChild()
+    {
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var workerId = WorkerId.New();
+        var queue = new DelegateQueueService((_, _, _, _) =>
+            Task.FromResult<IWorkerHandle>(AcceptedHandle(workerId)));
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            name => CreateRegisteredWork(name),
+            _ => new TestWorkSystemSession(queue),
+            observedWorkerId =>
+            {
+                Assert.Equal(workerId, observedWorkerId);
+                Assert.Equal(1, store.TransactionCommitCount);
+                Assert.Equal(1, queue.DurableWorkNotifications);
+                return CompletedHandle(observedWorkerId);
+            },
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.post-commit-notification",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("dispatch", "sample.dispatch"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.Equal(1, queue.DurableWorkNotifications);
+    }
+
+    [Fact]
     public async Task PersistRemainingJoinWorkersAsChildrenComplete()
     {
         var store = new RecordingWorkflowStore();
@@ -1657,6 +1690,11 @@ public sealed class WorkflowExecutorsShould
         Func<string, WorkInput?, WorkerOptions?, CancellationToken, Task<IWorkerHandle>> enqueue)
         : IWorkQueueService
     {
+        public int DurableWorkNotifications { get; private set; }
+
+        public void NotifyDurableWorkAvailable()
+            => this.DurableWorkNotifications++;
+
         public Task<IWorkerHandle> Enqueue(
             string name,
             WorkInput? input = null,
@@ -1687,6 +1725,8 @@ public sealed class WorkflowExecutorsShould
         public List<IReadOnlyList<WorkerId>> DurableWorkerExistenceBatches { get; } = [];
 
         public int DurableWorkerExistenceCalls { get; private set; }
+
+        public int TransactionCommitCount { get; private set; }
 
         public Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
@@ -1754,7 +1794,8 @@ public sealed class WorkflowExecutorsShould
         public Task<IWorkflowPersistenceTransaction> BeginWorkflowTransaction(
             WorkflowPersistenceTransactionRequest request,
             CancellationToken cancellationToken = default)
-            => Task.FromResult<IWorkflowPersistenceTransaction>(new RecordingWorkflowTransaction());
+            => Task.FromResult<IWorkflowPersistenceTransaction>(new RecordingWorkflowTransaction(
+                () => this.TransactionCommitCount++));
 
         public Task UpsertWorkflowRun(
             WorkflowRunPersistenceRecord run,
@@ -1790,13 +1831,16 @@ public sealed class WorkflowExecutorsShould
             return Task.CompletedTask;
         }
 
-        private sealed class RecordingWorkflowTransaction : IWorkflowPersistenceTransaction
+        private sealed class RecordingWorkflowTransaction(Action onCommit) : IWorkflowPersistenceTransaction
         {
             public ValueTask DisposeAsync()
                 => ValueTask.CompletedTask;
 
             public Task Commit(CancellationToken cancellationToken = default)
-                => Task.CompletedTask;
+            {
+                onCommit();
+                return Task.CompletedTask;
+            }
         }
     }
 

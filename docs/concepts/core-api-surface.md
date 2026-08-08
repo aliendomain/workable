@@ -79,6 +79,7 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 ## Queue Rules
 
 - Queue work by passing the definition name to `IWorkQueueService`.
+- After a caller-owned durable enqueue transaction commits, `IWorkQueueService.NotifyDurableWorkAvailable()` wakes the local reader while fallback polling continues to cover other processes and missed signals.
 - `IWorkCommandDispatcher` provides a standardized queue-and-optionally-wait path for callers that want system resolution, session creation, queueing, and completion mapping in one helper.
 - `IHttpContextWorkCommandDispatcher` is the ASP.NET Core convenience wrapper for that same path when the current `HttpContext` should define the `WorkRequestContext`.
 - `IHttpContextWorkflowCommandDispatcher` is the ASP.NET Core convenience wrapper for workflow start and action commands from custom HTTP endpoints.

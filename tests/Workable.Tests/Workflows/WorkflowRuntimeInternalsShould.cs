@@ -3131,6 +3131,10 @@ public sealed class WorkflowRuntimeInternalsShould
         Func<string, WorkInput?, WorkerOptions?, CancellationToken, Task<IWorkerHandle>> enqueue)
         : IWorkQueueService
     {
+        public void NotifyDurableWorkAvailable()
+        {
+        }
+
         public Task<IWorkerHandle> Enqueue(
             string name,
             WorkInput? input = null,

@@ -461,6 +461,9 @@ internal sealed class WorkerOperations :
             WorkQueueOutcome.Accepted(workerId),
             this.GetTrackedWorker);
 
+    internal void NotifyDurableWorkAvailable()
+        => this.persistence.NotifyDurableWorkAvailable();
+
     internal Task<WorkerIterationSnapshot?> GetIterationAuthoritative(
         WorkerIterationReference iteration,
         CancellationToken cancellationToken = default)

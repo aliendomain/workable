@@ -7,6 +7,9 @@ internal sealed class AuthorizedWorkQueueService(
     WorkRequestContext requestContext,
     bool canViewDiagnostics) : IWorkQueueService
 {
+    public void NotifyDurableWorkAvailable()
+        => inner.NotifyDurableWorkAvailable();
+
     public async Task<IWorkerHandle> Enqueue(
         string name,
         WorkInput? input = null,

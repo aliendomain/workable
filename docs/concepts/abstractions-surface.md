@@ -134,6 +134,10 @@ System-boundary failures are where `WorkSystemAuthorizationRequiredException` an
 
 `IWorkQueueService` accepts work by definition name, with either raw `WorkInput` or typed CLR input.
 
+After committing work enqueued with a caller-owned durability transaction, callers can use
+`NotifyDurableWorkAvailable()` to wake that system's local durable reader without waiting for fallback polling. The
+notification is a trusted in-process hint; cross-process and missed-signal correctness still comes from polling.
+
 Queueing always returns an `IWorkerHandle`, even when the request is rejected. The handle bridges two moments:
 
 - immediate admission through `WorkQueueOutcome`

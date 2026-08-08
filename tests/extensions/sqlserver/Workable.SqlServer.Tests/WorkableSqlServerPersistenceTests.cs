@@ -2094,7 +2094,7 @@ WHERE SubjectType = N'order'
     }
 
     [Fact]
-    public async Task DurableQueueUsingExistingTransactionStartsOnlyAfterCommit()
+    public async Task DurableQueueUsingExistingTransactionStartsPromptlyWhenNotifiedAfterCommit()
     {
         if (this.SkipIfUnavailable())
         {
@@ -2128,7 +2128,9 @@ WHERE SubjectType = N'order'
         Assert.Null(await system.Query.Worker(RequiredWorkerId(handle)));
 
         await transaction.CommitAsync();
+        system.Queue.NotifyDurableWorkAvailable();
 
+        await WaitWithTimeout(ran.Task);
         var completion = await WaitForCompletion(handle);
         await system.Stop();
 
@@ -2410,6 +2412,13 @@ SET ANSI_NULLS OFF;
         }
 
         await transaction.RollbackAsync();
+
+        var claimAttempts = system.Diagnostics.Durability.ClaimAttemptCount;
+        system.Queue.NotifyDurableWorkAvailable();
+        await TestEventually.Until(
+            () => system.Diagnostics.Durability.ClaimAttemptCount > claimAttempts,
+            "Expected the explicit durable queue notification to trigger an empty claim after rollback.",
+            timeout: TimeSpan.FromSeconds(2));
 
         var rows = await CountRowsForSubject(connection, "rollback");
         await system.Stop();

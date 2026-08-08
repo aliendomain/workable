@@ -66,6 +66,12 @@ At a practical level, a provider is responsible for:
 - storing the latest workflow-run snapshot
 - deleting persisted workflow runs after their retained final lifetime ends
 
+The persistence provider does not need to implement a notification channel. Workable-owned commits signal the local
+reader automatically. Code that commits a caller-owned enqueue transaction should call
+`IWorkQueueService.NotifyDurableWorkAvailable()` after the commit succeeds. That signal is local and coalesced;
+provider polling remains the correctness path for other processes and missed notifications. The notification is a
+trusted in-process hint and should not be exposed directly to untrusted callers.
+
 `WorkQueueDurabilityInitializationContext` is worth noticing because Workable hands the provider the system id, optional name, and current definitions. That is the provider's chance to prepare tables, validate schema, or align definition metadata before queue traffic begins.
 
 `WorkflowPersistenceInitializationContext` is the workflow-side equivalent. It gives the provider the configured system name, the registered durable workflow definitions for that system, and a `PersistenceScope` helper before durable workflow state is read or written.

@@ -3713,11 +3713,10 @@ public sealed class WorkflowRuntimeShould
 
         var parallelWorkerIds = blocked!.Steps.Single(step => step.Name == "dispatch").WorkerIds;
         Assert.Equal(2, parallelWorkerIds.Count);
-        var parallelWorkers = await Task.WhenAll(parallelWorkerIds.Select(workerId => system.Query.Worker(workerId)));
-        var retainedWorkerId = parallelWorkers.Single(worker =>
-            string.Equals(worker?.DefinitionName, "sample.auto.durable.retained", StringComparison.Ordinal))!.Id;
-        var failedWorkerId = parallelWorkers.Single(worker =>
-            string.Equals(worker?.DefinitionName, "sample.auto.durable.retained.flaky", StringComparison.Ordinal))!.Id;
+        var retainedWorkerId = Assert.Single(blocked.Steps.Single(step => step.Name == "retained").WorkerIds);
+        var failedWorkerId = Assert.Single(blocked.Steps.Single(step => step.Name == "flaky").WorkerIds);
+        Assert.Contains(retainedWorkerId, parallelWorkerIds);
+        Assert.Contains(failedWorkerId, parallelWorkerIds);
         await TestEventually.Until(
             () =>
             {

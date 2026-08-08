@@ -609,6 +609,7 @@ public sealed class DurableQueueTests
             "durable-external-transaction",
             options: WorkerOptions.Default with { QueueDurabilityTransaction = new TestQueueDurabilityTransaction() });
 
+        await ran.Task.WaitAsync(TimeSpan.FromSeconds(3));
         var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(3));
         await system.Stop();
 
@@ -618,11 +619,11 @@ public sealed class DurableQueueTests
     }
 
     [Fact]
-    public async Task DurableQueuePollsQuicklyForCallerTransactionWaiters()
+    public async Task DurableQueueProcessesCallerTransactionWorkAfterExplicitNotification()
     {
         var ran = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var store = new InMemoryDurableQueueStore();
-        var definition = WorkDefinition.Create("durable-local-waiter-poll", "Does not wait for the long fallback when a caller is waiting.");
+        var definition = WorkDefinition.Create("durable-explicit-notification", "Wakes after a caller-owned transaction commits.");
         var system = new ServiceCollection()
             .AddSingleton<IWorkPersistenceStore>(store)
             .AddWorkableSystem(builder => builder.AddWork(
@@ -640,15 +641,70 @@ public sealed class DurableQueueTests
         await system.Start();
 
         var handle = await system.Queue.Enqueue(
-            "durable-local-waiter-poll",
+            "durable-explicit-notification",
             options: WorkerOptions.Default with { QueueDurabilityTransaction = new TestQueueDurabilityTransaction() });
+        system.Queue.NotifyDurableWorkAvailable();
 
-        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(2));
+        await ran.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var completion = await WaitForCompletion(handle, TimeSpan.FromSeconds(1));
         await system.Stop();
 
         Assert.True(handle.QueueOutcome.IsAccepted);
         Assert.True(ran.Task.IsCompleted);
         Assert.True(completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task WaitingForCallerTransactionWorkerDoesNotReduceFallbackPollingInterval()
+    {
+        var store = new InMemoryDurableQueueStore
+        {
+            HoldClaims = true,
+        };
+        var definition = WorkDefinition.Create("durable-waiter-poll", "Keeps the configured fallback interval while waiting.");
+        var system = new ServiceCollection()
+            .AddSingleton<IWorkPersistenceStore>(store)
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configuration => configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(5))))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        store.ResetClaimReadyAttempts();
+        var handle = await system.Queue.Enqueue(
+            "durable-waiter-poll",
+            options: WorkerOptions.Default with { QueueDurabilityTransaction = new TestQueueDurabilityTransaction() });
+        using var waitCancellation = new CancellationTokenSource();
+        var waiting = handle.WaitForCompletion(waitCancellation.Token);
+        await TestEventually.Until(
+            () => store.ClaimReadyAttempts == 1,
+            "Expected the waiter to issue one immediate reader notification.",
+            timeout: TimeSpan.FromSeconds(1));
+
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+        Assert.Equal(1, store.ClaimReadyAttempts);
+        waitCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        await system.Stop();
+    }
+
+    [Fact]
+    public void RepeatedDurableReaderNotificationsAreCoalesced()
+    {
+        var coordinator = CreateCoordinator(
+            new InMemoryDurableQueueStore(),
+            (_, _) => Task.CompletedTask);
+
+        for (var index = 0; index < 100; index++)
+        {
+            coordinator.SignalReader();
+        }
+
+        Assert.Equal(1, coordinator.ReaderSignals);
     }
 
     [Fact]
@@ -1318,6 +1374,8 @@ public sealed class DurableQueueTests
 
         public int ClaimReadyAttempts { get; private set; }
 
+        public bool HoldClaims { get; set; }
+
         public int RenewLeaseFailuresRemaining { get; set; }
 
         public int RenewLeaseAttempts { get; private set; }
@@ -1430,7 +1488,7 @@ public sealed class DurableQueueTests
                     throw new InvalidOperationException("Transient durable claim failure.");
                 }
 
-                while (this.pending.TryDequeue(out var entry))
+                while (!this.HoldClaims && this.pending.TryDequeue(out var entry))
                 {
                     claimed.Add(entry);
                 }

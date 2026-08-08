@@ -496,6 +496,7 @@ internal sealed class DurableWorkflowExecutor(
                     },
                     cancellationToken),
                 cancellationToken);
+            session.Queue.NotifyDurableWorkAvailable();
 
             publisher.StepUpdated(run.ToSnapshot(), step.Name);
             return [];
@@ -588,6 +589,10 @@ internal sealed class DurableWorkflowExecutor(
                     },
                     cancellationToken),
                 cancellationToken);
+            if (expansion.Inputs.Count > 0)
+            {
+                session.Queue.NotifyDurableWorkAvailable();
+            }
 
             publisher.StepUpdated(run.ToSnapshot(), step.Name);
             return new DispatchEachOutcome(true, WorkflowRunStatus.Completed, []);
