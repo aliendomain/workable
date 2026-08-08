@@ -21,6 +21,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private WorkSystemShutdownGracePeriod shutdownGracePeriod = WorkSystemShutdownGracePeriod.HostRelative();
     private WorkSystemRetentionConfiguration retention = WorkSystemRetentionConfiguration.Default;
     private WorkSystemCapacityConfiguration capacity = WorkSystemCapacityConfiguration.Default;
+    private WorkSystemIterationStatusConfiguration iterationStatuses = WorkSystemIterationStatusConfiguration.Default;
     private WorkSystemProfilingConfiguration profiling = WorkSystemProfilingConfiguration.Default;
 
     public IWorkSystemBuilder WithWorkDefaults(
@@ -232,6 +233,45 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         return this;
     }
 
+    public IWorkSystemBuilder UseIterationStatuses(WorkSystemIterationStatusConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ValidateIterationStatuses(configuration);
+
+        this.iterationStatuses = configuration;
+        return this;
+    }
+
+    public IWorkSystemBuilder ConfigureIterationStatuses(
+        int? replayItemCapacity = null,
+        int? replayPayloadByteCapacity = null,
+        int? systemReplayItemCapacity = null,
+        int? systemReplayByteCapacity = null,
+        int? maximumPayloadBytes = null,
+        int? maximumTypeBytes = null,
+        int? maximumSubscriptions = null,
+        int? maximumSubscriptionsPerIteration = null)
+    {
+        this.iterationStatuses = this.iterationStatuses with
+        {
+            ReplayItemCapacity = replayItemCapacity ?? WorkSystemIterationStatusConfiguration.Default.ReplayItemCapacity,
+            ReplayPayloadByteCapacity = replayPayloadByteCapacity ??
+                WorkSystemIterationStatusConfiguration.Default.ReplayPayloadByteCapacity,
+            SystemReplayItemCapacity = systemReplayItemCapacity ??
+                WorkSystemIterationStatusConfiguration.Default.SystemReplayItemCapacity,
+            SystemReplayByteCapacity = systemReplayByteCapacity ??
+                WorkSystemIterationStatusConfiguration.Default.SystemReplayByteCapacity,
+            MaximumPayloadBytes = maximumPayloadBytes ?? WorkSystemIterationStatusConfiguration.Default.MaximumPayloadBytes,
+            MaximumTypeBytes = maximumTypeBytes ?? WorkSystemIterationStatusConfiguration.Default.MaximumTypeBytes,
+            MaximumSubscriptions = maximumSubscriptions ??
+                WorkSystemIterationStatusConfiguration.Default.MaximumSubscriptions,
+            MaximumSubscriptionsPerIteration = maximumSubscriptionsPerIteration ??
+                WorkSystemIterationStatusConfiguration.Default.MaximumSubscriptionsPerIteration,
+        };
+        ValidateIterationStatuses(this.iterationStatuses);
+        return this;
+    }
+
     public IWorkSystemBuilder UseProfiling(WorkSystemProfilingConfiguration profiling)
     {
         ArgumentNullException.ThrowIfNull(profiling);
@@ -369,6 +409,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             this.shutdownGracePeriod,
             this.retention,
             this.capacity,
+            this.iterationStatuses,
             this.profiling);
 
     private static WorkflowDefinition ApplyWorkflowAuthorization(
@@ -416,6 +457,75 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         if (capacity.MaximumWorkers <= 0)
         {
             throw new InvalidOperationException("System capacity maximum workers must be greater than zero.");
+        }
+    }
+
+    private static void ValidateIterationStatuses(WorkSystemIterationStatusConfiguration configuration)
+    {
+        if (configuration.ReplayItemCapacity <= 0)
+        {
+            throw new InvalidOperationException("Iteration status replay item capacity must be greater than zero.");
+        }
+
+        if (configuration.MaximumPayloadBytes <= 0)
+        {
+            throw new InvalidOperationException("Iteration status maximum payload bytes must be greater than zero.");
+        }
+
+        if (configuration.MaximumTypeBytes <= 0)
+        {
+            throw new InvalidOperationException("Iteration status maximum type bytes must be greater than zero.");
+        }
+
+        if (configuration.ReplayPayloadByteCapacity <= 0)
+        {
+            throw new InvalidOperationException("Iteration status replay payload byte capacity must be greater than zero.");
+        }
+
+        if (configuration.SystemReplayItemCapacity <= 0)
+        {
+            throw new InvalidOperationException("Iteration status system replay item capacity must be greater than zero.");
+        }
+
+        if (configuration.SystemReplayByteCapacity <= 0)
+        {
+            throw new InvalidOperationException("Iteration status system replay byte capacity must be greater than zero.");
+        }
+
+        if (configuration.ReplayPayloadByteCapacity <
+            (long)configuration.MaximumPayloadBytes + configuration.MaximumTypeBytes)
+        {
+            throw new InvalidOperationException(
+                "Iteration status replay payload byte capacity cannot be less than the combined maximum type and payload bytes.");
+        }
+
+        if (configuration.SystemReplayItemCapacity < configuration.ReplayItemCapacity)
+        {
+            throw new InvalidOperationException(
+                "Iteration status system replay item capacity cannot be less than the per-iteration replay item capacity.");
+        }
+
+        if (configuration.SystemReplayByteCapacity < configuration.ReplayPayloadByteCapacity)
+        {
+            throw new InvalidOperationException(
+                "Iteration status system replay byte capacity cannot be less than the per-iteration replay byte capacity.");
+        }
+
+        if (configuration.MaximumSubscriptionsPerIteration <= 0)
+        {
+            throw new InvalidOperationException(
+                "Iteration status maximum subscriptions per iteration must be greater than zero.");
+        }
+
+        if (configuration.MaximumSubscriptions <= 0)
+        {
+            throw new InvalidOperationException("Iteration status maximum subscriptions must be greater than zero.");
+        }
+
+        if (configuration.MaximumSubscriptions < configuration.MaximumSubscriptionsPerIteration)
+        {
+            throw new InvalidOperationException(
+                "Iteration status maximum subscriptions cannot be less than the per-iteration subscription limit.");
         }
     }
 

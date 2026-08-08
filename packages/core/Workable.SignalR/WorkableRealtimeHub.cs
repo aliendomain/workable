@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Workable;
@@ -208,6 +209,68 @@ public sealed class WorkableRealtimeHub(
     }
 
     /// <summary>
+    /// Streams retained and live application-defined status messages for one work iteration in sequence order.
+    /// </summary>
+    /// <param name="workerId">The worker identifier as a string-form GUID.</param>
+    /// <param name="iterationSequence">The iteration sequence within the worker.</param>
+    /// <param name="afterSequence">The last status sequence already received, or zero to replay from the beginning.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
+    /// <param name="cancellationToken">Cancels the streaming invocation.</param>
+    /// <returns>Status-item messages followed by normal completion, or one terminal typed gap message.</returns>
+    public IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamIterationStatus(
+        string workerId,
+        long iterationSequence,
+        long afterSequence = 0,
+        string? systemName = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (iterationSequence <= 0)
+        {
+            throw new HubException("The iteration sequence must be greater than zero.");
+        }
+
+        if (afterSequence < 0)
+        {
+            throw new HubException("The iteration status sequence cursor cannot be negative.");
+        }
+
+        var system = ResolveSystem(systemName);
+        _ = CreateAuthorization(system, systemName, out var session);
+        var iteration = new WorkerIterationReference(ParseWorkerId(workerId), iterationSequence);
+        return ReadIterationStatus(
+            session.IterationStatuses,
+            iteration,
+            afterSequence,
+            this.Context.ConnectionAborted,
+            cancellationToken);
+    }
+
+    internal static IWorkIterationStatusSubscription SubscribeIterationStatus(
+        IWorkIterationStatusStream stream,
+        WorkerIterationReference iteration,
+        long afterSequence)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        try
+        {
+            return stream.Subscribe(iteration, afterSequence);
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new HubException(exception.Message);
+        }
+        catch (KeyNotFoundException)
+        {
+            throw new HubException(
+                $"Worker '{iteration.WorkerId}' iteration {iteration.Sequence} does not have an available status stream.");
+        }
+        catch (WorkIterationStatusSubscriptionLimitException exception)
+        {
+            throw new HubException(exception.Message);
+        }
+    }
+
+    /// <summary>
     /// Removes all active subscriptions for the connection that is disconnecting.
     /// </summary>
     /// <param name="exception">The disconnect exception, if one caused the disconnect.</param>
@@ -243,6 +306,82 @@ public sealed class WorkableRealtimeHub(
                 subscription.ViewName,
                 result),
             this.Context.ConnectionAborted);
+    }
+
+    internal static async IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> ReadIterationStatus(
+        IWorkIterationStatusStream stream,
+        WorkerIterationReference iteration,
+        long afterSequence,
+        CancellationToken connectionAborted,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        IWorkIterationStatusSubscription? subscription = null;
+        WorkIterationStatusGapException? gap = null;
+        try
+        {
+            subscription = SubscribeIterationStatus(stream, iteration, afterSequence);
+        }
+        catch (WorkIterationStatusGapException exception)
+        {
+            gap = exception;
+        }
+
+        if (gap is not null)
+        {
+            yield return WorkableRealtimeIterationStatusMessage.From(gap);
+            yield break;
+        }
+
+        await foreach (var message in ReadIterationStatus(
+            subscription!,
+            connectionAborted,
+            cancellationToken))
+        {
+            yield return message;
+        }
+    }
+
+    internal static async IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> ReadIterationStatus(
+        IWorkIterationStatusSubscription subscription,
+        CancellationToken connectionAborted,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await using (subscription)
+        using (var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            connectionAborted,
+            cancellationToken))
+        await using (var reader = subscription
+            .Read(linkedCancellation.Token)
+            .GetAsyncEnumerator(linkedCancellation.Token))
+        {
+            while (true)
+            {
+                bool hasNext;
+                WorkIterationStatusGapException? gap = null;
+                try
+                {
+                    hasNext = await reader.MoveNextAsync();
+                }
+                catch (WorkIterationStatusGapException exception)
+                {
+                    hasNext = false;
+                    gap = exception;
+                }
+
+                if (gap is not null)
+                {
+                    yield return WorkableRealtimeIterationStatusMessage.From(gap);
+                    yield break;
+                }
+
+                if (!hasNext)
+                {
+                    yield break;
+                }
+
+                yield return WorkableRealtimeIterationStatusMessage.From(reader.Current);
+            }
+        }
     }
 
     private async Task SendWorkerOverview(

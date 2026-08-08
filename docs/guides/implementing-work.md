@@ -128,6 +128,20 @@ context.AddIdentifier(new WorkIdentifier("email-message", providerMessageId));
 
 The identifier becomes part of worker query and correlation surfaces.
 
+### Status
+
+`Status` publishes ordered, application-defined progress for the current iteration.
+
+```csharp
+context.Status.Publish("assistant.text.delta", new
+{
+    messageId,
+    text = chunk
+});
+```
+
+Use it for transient live progress that needs per-iteration ordering and replay, such as assistant text chunks or tool stages. It is separate from lifecycle events, logs, and final output. See [Iteration Status Streams](iteration-status-streams.md) for subscription, SignalR, replay-gap, authorization, and lifetime behavior.
+
 ### Fail
 
 `Fail(string code, string message, string? target = null, bool transient = false)` asks Workable to finish this execution as failed without throwing an exception.
@@ -400,6 +414,7 @@ See [Recurrence Configuration](configuration/recurrence.md), [Transient Retry Co
 - Use `context.Services` for scoped collaborators instead of reaching for root singletons.
 - Prefer constructor injection for normal executor dependencies; use `context.Services` when execution-scoped or dynamic lookup is the better fit.
 - Use `context.AddIdentifier(...)` when execution discovers a durable correlation key.
+- Use `context.Status.Publish(...)` for small, ordered, transient iteration progress; keep the durable result in `WorkOutput`.
 - Use `context.Fail(...)` for expected business failures.
 - Use `RequireManualFailedWorkerHandling()` or `AllowFailedWorkerAutoCancel(...)` only when the current execution should override the configured failed-worker policy.
 - Let `OperationCanceledException` propagate unless you have a clear reason to translate it.
@@ -412,6 +427,7 @@ See [Recurrence Configuration](configuration/recurrence.md), [Transient Retry Co
 - [Getting Started](getting-started.md)
 - [Registration](registration.md)
 - [Queueing](queueing.md)
+- [Iteration Status Streams](iteration-status-streams.md)
 - [Failed-Worker Handling Configuration](configuration/failed-worker.md)
 - [Recurrence Configuration](configuration/recurrence.md)
 - [Transient Retry Configuration](configuration/transient-retry.md)

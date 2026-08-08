@@ -139,6 +139,36 @@ When `Workable.SignalR` is not registered:
 }
 ```
 
+## Iteration Status Streams
+
+Executors can publish ordered application-defined progress through `IWorkExecutionContext.Status`. SignalR clients consume one exact worker iteration with a streaming hub invocation:
+
+```csharp
+var stream = connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+    "StreamIterationStatus",
+    [workerId.ToString("D"), iterationSequence, afterSequence, systemName],
+    cancellationToken);
+
+await foreach (var message in stream.WithCancellation(cancellationToken))
+{
+    if (message.Gap is { } gap)
+    {
+        // Reload application state; the missing status range cannot be replayed.
+        break;
+    }
+
+    var item = message.Status!;
+    afterSequence = item.Sequence;
+    // Apply item.Type and item.Data.
+}
+```
+
+The server replays retained items after the exclusive `afterSequence` cursor, then continues live until the iteration status stream completes or the caller cancels the invocation. Definition read authorization governs visibility. Unknown and unreadable iterations complete without revealing whether a hidden worker exists.
+
+Iteration status items are delivered individually and are not routed through raw-event batching. If a cursor has fallen behind the retained replay window, SignalR emits one terminal `gap` message containing the requested, first-available, and last-available sequences, then completes the stream normally. The available range is null when system-wide retention evicted the iteration's complete replay window. Core configuration also caps active subscriptions per iteration and per system; reaching either limit returns a client-safe hub error.
+
+See [Iteration Status Streams](../guides/iteration-status-streams.md) for publishing, JavaScript consumption, cursor recovery, current retention and persistence limits, and the SampleHost assistant stream.
+
 ## Worker Overview Updates
 
 Worker detail pages should load their initial worker-overview snapshot through HTTP, then subscribe to the dedicated realtime worker-overview stream.
@@ -560,4 +590,10 @@ Task WatchWorkerOverview(string subscriptionId, string workerId, WorkWorkerOverv
 Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null);
 Task WatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task UnwatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
+IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamIterationStatus(
+    string workerId,
+    long iterationSequence,
+    long afterSequence = 0,
+    string? systemName = null,
+    CancellationToken cancellationToken = default);
 ```

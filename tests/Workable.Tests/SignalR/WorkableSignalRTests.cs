@@ -189,6 +189,213 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task IterationStatusStreamReplaysInOrderAndResumesAfterASequence()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureWorkable: builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("signalr.iteration-status"),
+                (context, _, _) =>
+                {
+                    context.Status.Publish("assistant.text.delta", "one");
+                    context.Status.Publish("assistant.text.delta", "two");
+                    context.Status.Publish("assistant.text.delta", "three");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                }));
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var handle = await Session(system).Queue.Enqueue("signalr.iteration-status");
+        var completion = await handle.WaitForCompletion();
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected a completed worker.");
+        var iterationSequence = worker.LastIterationSequence
+            ?? throw new InvalidOperationException("Expected a completed iteration.");
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var stream = connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+            "StreamIterationStatus",
+            [worker.Id.Value.ToString("D"), iterationSequence, 1L, null],
+            CancellationToken.None);
+        var messages = await ReadStream(stream);
+        var items = messages.Select(message => Assert.IsType<WorkableRealtimeIterationStatus>(message.Status)).ToArray();
+
+        Assert.Equal([2L, 3L], items.Select(static item => item.Sequence));
+        Assert.Equal(["two", "three"], items.Select(static item => item.Data?.GetString()));
+        Assert.All(items, item =>
+        {
+            Assert.Equal(worker.Id, item.WorkerId);
+            Assert.Equal(iterationSequence, item.IterationSequence);
+            Assert.Equal("signalr.iteration-status", item.WorkDefinitionName);
+            Assert.Equal("assistant.text.delta", item.Type);
+        });
+        Assert.All(messages, message =>
+        {
+            Assert.Equal(WorkableRealtimeIterationStatusMessage.StatusKind, message.Kind);
+            Assert.Null(message.Gap);
+        });
+    }
+
+    [Fact]
+    public async Task IterationStatusStreamRejectsInvalidArgumentsAndFutureCursors()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureWorkable: builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("signalr.iteration-status.validation"),
+                (context, _, _) =>
+                {
+                    context.Status.Publish("progress", 1);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                }));
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var completion = await (await Session(system).Queue.Enqueue("signalr.iteration-status.validation"))
+            .WaitForCompletion();
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected a completed worker.");
+        var iterationSequence = worker.LastIterationSequence
+            ?? throw new InvalidOperationException("Expected a completed iteration.");
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var invalidIteration = await ReadStreamFailure(connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+            "StreamIterationStatus",
+            [worker.Id.Value.ToString("D"), 0L, 0L, null],
+            CancellationToken.None));
+        var negativeCursor = await ReadStreamFailure(connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+            "StreamIterationStatus",
+            [worker.Id.Value.ToString("D"), iterationSequence, -1L, null],
+            CancellationToken.None));
+        var futureCursor = await ReadStreamFailure(connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+            "StreamIterationStatus",
+            [worker.Id.Value.ToString("D"), iterationSequence, 2L, null],
+            CancellationToken.None));
+
+        Assert.Contains("iteration sequence must be greater than zero", invalidIteration.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cursor cannot be negative", negativeCursor.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("last published sequence 1", futureCursor.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task IterationStatusStreamDoesNotRevealUnknownIterations()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var stream = connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+            "StreamIterationStatus",
+            [WorkerId.New().Value.ToString("D"), 1L, 0L, null],
+            CancellationToken.None);
+        var items = await ReadStream(stream);
+
+        Assert.Empty(items);
+    }
+
+    [Fact]
+    public async Task IterationStatusStreamReportsAnExpiredReplayCursor()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureWorkable: builder => builder
+                .ConfigureIterationStatuses(
+                    replayItemCapacity: 10,
+                    replayPayloadByteCapacity: 24,
+                    maximumPayloadBytes: 8,
+                    maximumTypeBytes: 8)
+                .AddAuthorizedTransportWork(
+                    WorkDefinition.Create("signalr.iteration-status.gap"),
+                    (context, _, _) =>
+                    {
+                        for (var index = 1; index <= 3; index++)
+                        {
+                            context.Status.Publish("progress", index switch
+                            {
+                                1 => "aa",
+                                2 => "bb",
+                                _ => "cc",
+                            });
+                        }
+
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    }));
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var completion = await (await Session(system).Queue.Enqueue("signalr.iteration-status.gap"))
+            .WaitForCompletion();
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected a completed worker.");
+        var iterationSequence = worker.LastIterationSequence
+            ?? throw new InvalidOperationException("Expected a completed iteration.");
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var messages = await ReadStream(connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+            "StreamIterationStatus",
+            [worker.Id.Value.ToString("D"), iterationSequence, 0L, null],
+            CancellationToken.None));
+        var message = Assert.Single(messages);
+        var gap = Assert.IsType<WorkableRealtimeIterationStatusGap>(message.Gap);
+
+        Assert.Equal(WorkableRealtimeIterationStatusMessage.GapKind, message.Kind);
+        Assert.Null(message.Status);
+        Assert.Equal(worker.Id, gap.WorkerId);
+        Assert.Equal(iterationSequence, gap.IterationSequence);
+        Assert.Equal(0, gap.RequestedAfterSequence);
+        Assert.Equal(2, gap.FirstAvailableSequence);
+        Assert.Equal(3, gap.LastAvailableSequence);
+    }
+
+    [Fact]
+    public async Task IterationStatusSignalRReaderMapsALiveReplayGapAndDisposesTheSubscription()
+    {
+        var iteration = new WorkerIterationReference(WorkerId.New(), 1);
+        var subscription = new GapIterationStatusSubscription(
+            new WorkIterationStatusGapException(
+                iteration,
+                afterSequence: 4,
+                firstAvailableSequence: 7,
+                lastAvailableSequence: 9));
+
+        var messages = await ReadStream(WorkableRealtimeHub.ReadIterationStatus(
+            subscription,
+            CancellationToken.None,
+            CancellationToken.None));
+        var message = Assert.Single(messages);
+        var gap = Assert.IsType<WorkableRealtimeIterationStatusGap>(message.Gap);
+
+        Assert.Equal(WorkableRealtimeIterationStatusMessage.GapKind, message.Kind);
+        Assert.Equal(4, gap.RequestedAfterSequence);
+        Assert.Equal(7, gap.FirstAvailableSequence);
+        Assert.Equal(9, gap.LastAvailableSequence);
+        Assert.True(subscription.IsDisposed);
+    }
+
+    [Fact]
+    public void IterationStatusSignalRSubscriptionMapsAMissingRawStreamToAClientSafeError()
+    {
+        var iteration = new WorkerIterationReference(WorkerId.New(), 3);
+
+        var exception = Assert.Throws<Microsoft.AspNetCore.SignalR.HubException>(() =>
+            WorkableRealtimeHub.SubscribeIterationStatus(
+                MissingIterationStatusStream.Instance,
+                iteration,
+                afterSequence: 0));
+
+        Assert.Contains(iteration.WorkerId.ToString(), exception.Message, StringComparison.Ordinal);
+        Assert.Contains("iteration 3", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("available status stream", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IterationStatusSignalRSubscriptionMapsASubscriptionLimitToAClientSafeError()
+    {
+        var iteration = new WorkerIterationReference(WorkerId.New(), 3);
+        var stream = new LimitedIterationStatusStream(iteration);
+
+        var exception = Assert.Throws<Microsoft.AspNetCore.SignalR.HubException>(() =>
+            WorkableRealtimeHub.SubscribeIterationStatus(stream, iteration, afterSequence: 0));
+
+        Assert.Contains("limit of 1", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("active status subscriptions", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task EventWatcherFiltersByDefinitionAndKey()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -2015,6 +2222,25 @@ public sealed class WorkableSignalRTests
         throw new InvalidOperationException("Expected item was not received.");
     }
 
+    private static async Task<IReadOnlyList<T>> ReadStream<T>(IAsyncEnumerable<T> stream)
+    {
+        var items = new List<T>();
+        await foreach (var item in stream)
+        {
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private static async Task<Exception> ReadStreamFailure<T>(IAsyncEnumerable<T> stream)
+        => await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            await foreach (var _ in stream)
+            {
+            }
+        });
+
     private static async Task DrainUntilQuiet<T>(
         ChannelReader<T> reader,
         TimeSpan quietPeriod)
@@ -2116,6 +2342,55 @@ public sealed class WorkableSignalRTests
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class GapIterationStatusSubscription(WorkIterationStatusGapException exception) :
+        IWorkIterationStatusSubscription
+    {
+        public bool IsDisposed { get; private set; }
+
+        public IAsyncEnumerable<WorkIterationStatusItem> Read(CancellationToken cancellationToken = default)
+            => ThrowGap(exception, cancellationToken);
+
+        public ValueTask DisposeAsync()
+        {
+            this.IsDisposed = true;
+            return ValueTask.CompletedTask;
+        }
+
+        private static async IAsyncEnumerable<WorkIterationStatusItem> ThrowGap(
+            WorkIterationStatusGapException gap,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Yield();
+            throw gap;
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+    }
+
+    private sealed class MissingIterationStatusStream : IWorkIterationStatusStream
+    {
+        public static MissingIterationStatusStream Instance { get; } = new();
+
+        public IWorkIterationStatusSubscription Subscribe(
+            WorkerIterationReference iteration,
+            long afterSequence = 0)
+            => throw new KeyNotFoundException();
+    }
+
+    private sealed class LimitedIterationStatusStream(WorkerIterationReference expectedIteration) :
+        IWorkIterationStatusStream
+    {
+        public IWorkIterationStatusSubscription Subscribe(
+            WorkerIterationReference iteration,
+            long afterSequence = 0)
+        {
+            Assert.Equal(expectedIteration, iteration);
+            throw new WorkIterationStatusSubscriptionLimitException(iteration, 1, isSystemLimit: false);
+        }
     }
 
     private sealed class ManualRealtimeTimerFactory : IWorkableRealtimeTimerFactory

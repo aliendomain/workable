@@ -142,6 +142,16 @@ internal sealed class WorkerRecord(
         }
     }
 
+    internal WorkerIterationReference GetCurrentIterationReference()
+    {
+        lock (this.sync)
+        {
+            var iteration = this.currentIteration
+                ?? throw new InvalidOperationException("The worker does not have an executing iteration.");
+            return new WorkerIterationReference(this.Id, iteration.Sequence);
+        }
+    }
+
     public bool IsCompletionSignaled
     {
         get
