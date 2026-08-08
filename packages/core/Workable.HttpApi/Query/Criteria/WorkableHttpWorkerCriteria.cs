@@ -19,7 +19,10 @@ namespace Workable;
 /// <param name="Take">The requested page size.</param>
 /// <param name="Category">An optional definition category filter.</param>
 /// <param name="IncludeSubcategories">Whether category filtering includes descendant categories.</param>
-/// <param name="ActorId">An optional exact identifier for the actor that originated the worker.</param>
+/// <param name="ActorId">
+/// An optional identifier for the actor in the worker's original request context. This is a query filter within the
+/// caller's existing read authorization, not an authorization boundary.
+/// </param>
 public sealed record WorkableHttpWorkerCriteria(
     string? DefinitionName = null,
     WorkSubjectId? SubjectId = null,

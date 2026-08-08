@@ -46,6 +46,8 @@ That keeps multi-system discovery on the public contract without forcing consume
 - `Workers`
 - `Query`
 - `Events`
+- `IterationStatuses`
+- `Changes`
 - `Diagnostics`
 - `DescribeAccess(...)`
 - `CreateSession(...)`
@@ -73,7 +75,7 @@ IWorkSystemSession session = await workSystem.CreateSession(
 WorkerQueryResult workers = await session.Query.Workers(cancellationToken: cancellationToken);
 ```
 
-That session-bound model is the most important mental model in this package: the same catalog, queue, worker, query, event, and diagnostics contracts still exist, but they can now be filtered or rejected according to the bound caller.
+That session-bound model is the most important mental model in this package: the same catalog, queue, worker, query, event, iteration-status, change-stream, and diagnostics contracts still exist, but they can now be filtered or rejected according to the bound caller.
 
 For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also part of that bound caller state. Workable uses it together with a known actor to evaluate rules such as `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, and `AllowOperationsToKnownAuthenticatedUsers(...)`.
 

@@ -235,7 +235,19 @@ Parallel publication before and after replacing the single system lock with per-
 | 4 | 155.19 ns/status | 206.66 ns/status | 91.62 ns/status |
 | 16 | 213.69 ns/status | 254.91 ns/status | 163.24 ns/status |
 
-The shared stream no longer serializes unrelated iterations through one lock. It still contends on the atomic system-budget counters, adding 19-33% to the former shared-stream measurements in these short runs. The four-publisher hardened case remains approximately 4.8 million statuses per second. System-budget eviction scans iteration heads only after a configured system limit is exceeded, so the normal path does not pay an iteration scan. Re-run these cases with:
+Per-iteration buffer mutation no longer passes through one broad stream lock. Publications still coordinate briefly around aggregate retention ordering and counters, adding 19-33% to the former shared-stream measurements in these short runs. The four-publisher hardened case remains approximately 4.8 million statuses per second.
+
+A final high-cardinality review replaced the aggregate-limit scan with an ordered, compacting retention index. The production BenchmarkDotNet case publishes continuously while the system item budget is full:
+
+| Active iteration buffers | Mean per publish | Allocation |
+| ---: | ---: | ---: |
+| 4,096 | 142.8 ns | 128 B |
+| 16,384 | 278.1 ns | 128 B |
+| 65,536 | 661.6 ns | 128 B |
+
+The 65,536-buffer short run was noisy, with a 542.1 ns median, but remained sub-microsecond. An isolated old/new algorithm probe showed why the index matters: publication at 4,096, 16,384, and 65,536 buffers fell from 0.194 ms, 0.355 ms, and 2.076 ms with the full scan to 0.005 ms, 0.002 ms, and 0.003 ms with indexed retention. Normal publication pays a small fixed bookkeeping cost: the empty no-subscriber case moved from 44.75 ns to 92.83 ns, 4 KiB payload cases increased 6-13%, 32 KiB cases increased 3-7%, and high-fanout cases were effectively unchanged. This trades tens of nanoseconds on ordinary publication for eliminating an eventual millisecond-scale scan as historical iteration count grows.
+
+Re-run these cases with:
 
 ```powershell
 dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --benchmarks --filter *BaselineIterationStatus*

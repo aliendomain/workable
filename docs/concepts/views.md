@@ -261,7 +261,7 @@ This lets a custom UI reuse the same component names for global dashboards, one 
 Most components need only `id`, `type`, and `shape`. A few also accept JSON options:
 
 - `throughput`: `windowSeconds` and `bucketSeconds`
-- `workerGrid`: `states`, `configuration`, `skip`, `take`, optional `keyKind`, `keyType`, and `keyValue`, and optional `actorId` for workers originated by one actor
+- `workerGrid`: `states`, `configuration`, `skip`, `take`, optional `keyKind`, `keyType`, and `keyValue`, and optional `actorId` for workers originated by one actor. The actor id is a query filter, not an authorization boundary; user-facing SignalR clients should use `WatchMyWorkers` so the server supplies it from the authenticated request context.
 - `iterationGrid`: `statuses`, `skip`, `take`, and optional `keyKind`, `keyType`, and `keyValue`
 - `workerDetail` and `workerCurrentIteration`: `workerId`
 - `workflowRuns`: `includeFinal`, `definitionName`, and `childSampleSize`

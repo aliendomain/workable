@@ -44,7 +44,9 @@ public sealed class WorkableRealtimeHub(
     /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     /// <remarks>
     /// This is the discoverable worker-list form of <see cref="WatchView"/>. It uses the same <c>workers</c> named
-    /// view, initial seed, shared change stream, coalescing, authorization, and reconciliation path.
+    /// view, initial seed, shared change stream, coalescing, authorization, and reconciliation path. A caller-supplied
+    /// worker-grid actor id is only a filter within that authorization and must not be used as an end-user isolation
+    /// boundary.
     /// </remarks>
     public Task WatchWorkers(
         string subscriptionId,
@@ -60,7 +62,8 @@ public sealed class WorkableRealtimeHub(
     /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
     /// <remarks>
     /// Any caller-supplied worker-grid actor id is replaced with the authenticated actor id. The call fails closed
-    /// when the authenticated principal does not resolve to a stable actor id.
+    /// when the authenticated principal does not resolve to a stable actor id. Criteria may contain only worker-grid
+    /// components; omit criteria to use the default detailed worker grid.
     /// </remarks>
     public Task WatchMyWorkers(
         string subscriptionId,

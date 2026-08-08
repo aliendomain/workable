@@ -72,11 +72,12 @@ WorkerSnapshot? worker = await workSystem.Query.Worker(workerId, cancellationTok
 
 Use `IWorkQueryService.Workers` to retrieve workers that match a `WorkerCriteria`. It returns `WorkerOverviewItem` rows instead of full snapshots.
 
-Set `WorkerCriteria.ActorId` to return only workers whose original request context was created by that actor. Actor ids use exact ordinal matching after surrounding whitespace is removed.
+Set `WorkerCriteria.ActorId` to return only workers whose original request context was created by that actor. Actor ids use exact ordinal matching after surrounding whitespace is removed. This is a query predicate, not an authorization boundary: use an authorized `IWorkSystemSession` when the caller must be prevented from reading other actors' work. Later actions by an actor do not change the worker's originating-actor scope.
 
 ```csharp
 var result = await workSystem.Query.Workers(new WorkerCriteria(
             DefinitionName: "email.welcome.send",
+            ActorId: "user-123",
             SubjectId: new WorkSubjectId("user", "user-123"),
             Identifier: new WorkIdentifier("order", "order-456"),
             Take: 50), cancellationToken: cancellationToken);

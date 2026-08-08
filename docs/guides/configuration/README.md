@@ -100,7 +100,7 @@ The rest of the direct setters follow the same pattern:
 - [Failed-Worker Handling Configuration](failed-worker.md): opt into auto-cancel for failed non-recurring workers and control runtime overrides.
 - [Logging Configuration](logging.md): worker-scoped logging behavior.
 - [Retention Configuration](retention.md): automatic purge timing and background count-target cleanup for completed and canceled workers.
-- [System Settings](system-settings.md): startup-only system-wide limits for admission capacity and retained final workers.
+- [System Settings](system-settings.md): startup-only limits for admission capacity, retained final workers, iteration status replay, payload size, subscriptions, and profiling.
 - [Concurrency Configuration](concurrency.md): capacity limits by definition, subject, or concurrency key.
 - [Queue Durability Configuration](queue-durability.md): persist accepted queue requests, recover interrupted durable work, and opt into transaction-bound durable completion.
 - [Invocation Configuration](invocation.md): channels allowed to start a work definition.

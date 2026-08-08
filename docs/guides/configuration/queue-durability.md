@@ -80,9 +80,11 @@ services.AddWorkableSystem(builder =>
 ## Queue-Time Configuration
 
 ```csharp
-IWorkQueueDurabilityTransaction queueTransaction = ...;
+DbTransaction transaction = ...;
+IWorkQueueDurabilityTransaction queueTransaction = ...; // Store-specific wrapper for transaction.
+IWorkQueueService queue = system.Queue;
 
-var handle = await system.Queue.Enqueue(
+var handle = await queue.Enqueue(
     "orders.capture-payment",
     input: WorkInput.FromValue(new CapturePayment("order-123")),
     options: new WorkerOptions(
@@ -107,13 +109,14 @@ When the caller owns that transaction, notify the local queue reader immediately
 
 ```csharp
 await transaction.CommitAsync(cancellationToken);
-session.Queue.NotifyDurableWorkAvailable();
+queue.NotifyDurableWorkAvailable();
 ```
 
 The notification is synchronous and safe to repeat. Calls are coalesced while a wake remains pending; after the reader
 consumes that wake, another call can schedule another drain. Treat it as a trusted in-process hint rather than exposing
-it directly to untrusted clients. Call it only after the commit succeeds. A notification after rollback is harmless and
-produces an empty drain, but a notification before commit can be consumed while the durable row is still invisible.
+it directly to untrusted clients. Call it only after the commit succeeds. Do not notify after rollback; that produces
+needless store traffic. A notification before commit can be consumed while the durable row is still invisible, leaving
+fallback polling to discover it later unless another notification arrives.
 
 ## Reconfiguration
 

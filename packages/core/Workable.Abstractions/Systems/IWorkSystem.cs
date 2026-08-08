@@ -79,6 +79,10 @@ public interface IWorkSystem : IAsyncDisposable
     /// <summary>
     /// Gets the direct iteration status-stream surface for the system.
     /// </summary>
+    /// <remarks>
+    /// This member is intended for open systems. When authorization is required, access may throw because no request
+    /// context is available for evaluation; use <see cref="IWorkSystemSession.IterationStatuses"/> instead.
+    /// </remarks>
     IWorkIterationStatusStream IterationStatuses
         => throw new NotSupportedException("This work system does not expose iteration status streams.");
 

@@ -96,7 +96,7 @@ await foreach (var item in subscription.Read(cancellationToken))
 }
 ```
 
-`afterSequence` is exclusive. Passing `42` replays retained item `43` and later, then continues with live items. Passing zero starts from the first retained item.
+`afterSequence` is exclusive. Passing `42` requests item `43` and later, then continues with live items when that complete range is still retained. Passing zero requests the stream from sequence one; it reports a replay gap if the beginning has already been evicted.
 
 The read completes after the iteration reaches a final status and all retained items have been delivered. Disposing the subscription or canceling `Read(...)` stops the live reader.
 

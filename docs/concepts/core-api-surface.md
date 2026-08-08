@@ -14,6 +14,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkerOperations` controls worker actions.
 - `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
+- `IWorkIterationStatusStream` replays ordered application-defined progress for one exact worker iteration, then continues live until that iteration finishes.
 - `IWorkChangeStream` creates compact state-change subscriptions for UI refresh, view invalidation, and other latest-state consumers.
 - `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, retention cleanup, concurrency backlog, durability loops, and idempotency duplicate rejection.
 - `Start` and `Stop` control system lifecycle.
@@ -23,7 +24,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 
 `IWorkSystemRegistry` exposes the default system, lookup by name for named systems, and enumeration of registered systems.
 
-Work execution receives scoped services and profile access through `IWorkExecutionContext`.
+Work execution receives scoped services, profile access, and an iteration-status publisher through `IWorkExecutionContext`.
 Execution context also exposes the worker's creation `WorkRequestContext` (including `Origin`), the nullable `CancellationRequestContext` for an accepted explicit cancel request, whether interruption is currently being applied through `IsInterrupted`, and the nullable `InterruptionReason` (`Shutdown` or `LeaseLost`). A cancellation request context is published before Workable signals the execution token, so executor cleanup can read its actor and optional reason without querying action history.
 
 ## Definition Rules
@@ -114,7 +115,7 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 - `IWorkQueryService.WorkIterationKeys` and `IWorkQueryService.WorkIterationKeyTypes` expose the same key search shape for worker iteration overview rows.
 - `IWorkQueryService.SystemDetails` exposes the typed whole-system aggregate query, including scoped queue pressure through `OldestQueuedAt`.
 - `IWorkQueryService` also exposes system slice methods for throughput, worker counts with queue pressure, iteration counts, common key types, failed workers with worker counts, failed iterations, and completed iterations.
-- Worker criteria can filter by definition, definition name, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
+- Worker criteria can filter by definition, definition name, originating actor id, subject id, concurrency key, work identifier, state, selected configuration flags, and timestamps.
 - Work definition criteria can filter by id, name, category, and search text.
 - `IWorkCatalog.ListByCategory` returns definitions by category path.
 - Bulk worker actions can target all workers in a system or workers whose definitions belong to a category path.
@@ -131,6 +132,8 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 - Worker event payloads are selective and bounded. Use event data for notification, correlation, and realtime incremental updates, and query worker detail for full input, messages, full log history, full iteration history, action history, or profile data. The payloads now include focused overview fields such as latest iteration snapshots for `worker.started`, `worker.completed`, `worker.failed`, `worker.waiting`, `worker.retrying`, and `worker.log`, retained worker-level `logSummary` and `timelineSummary` aggregates on the base worker payload, `retryAttempt` and `configDifferenceCount` on the base worker payload when they are relevant, stable log entry ids on `worker.log`, iteration `sequence` and per-iteration `ordinal` on retained log rows for stable ordering, and retained iteration `attemptCount`, `output`, and `failure` fields when those are available.
 - Each subscription owns a bounded event buffer.
 - Disposing a subscription or canceling its reader removes it from the stream.
+
+Iteration status is a separate replayable surface for application-defined progress such as assistant text deltas or tool activity. Unlike raw events, status published before a subscriber arrives remains available within configured in-memory replay limits. See [Iteration Status Streams](../guides/iteration-status-streams.md) for ordering, completion, replay gaps, authorization, and retention behavior.
 
 ## Worker State Rules
 

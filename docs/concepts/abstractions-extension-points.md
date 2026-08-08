@@ -256,6 +256,12 @@ public sealed class ApplicationWorkGroupProvider(IApplicationPermissions permiss
 
 ASP.NET Core integration additionally resolves groups from the current authenticated user's claims when that user matches the actor being evaluated. It does not replace the actor-based provider. When a durable operation is rehydrated outside HTTP, Workable falls back to the host's `IWorkAuthorizationGroupProvider`.
 
+Invocation adapters can contribute ambient groups through `IWorkAuthorizationGroupContextProvider`. Its nullable result is intentional: return `null` when the current invocation context does not apply to the requested actor, and return an empty set when it does apply but the actor has no groups. Workable checks applicable context providers before falling back to `IWorkAuthorizationGroupProvider`. Context providers are also singleton services and must follow the same concurrency, scoped-resource, cancellation, and bounded-retry rules.
+
+Adapter code that needs the effective groups should depend on `IWorkAuthorizationGroupResolver`, not call either provider contract directly. The resolver preserves the authoritative order: a matching authorization snapshot already stored on the request context, then an applicable invocation-context provider, then the actor-based provider used by durable and background execution.
+
+Provider failures other than cancellation or fatal runtime exceptions are wrapped as an authorization-group resolution failure. Durable workflow recovery retries that failure with bounded exponential backoff while the run remains active; ordinary request/session creation reports it to the caller. Providers should therefore perform one bounded lookup per call rather than layering an unbounded retry loop underneath Workable.
+
 This is the seam between "the host knows who the actor is" and "Workable needs normalized group names to evaluate."
 
 ## Choosing The Right Level

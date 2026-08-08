@@ -28,6 +28,8 @@ Use `IWorkChangeStream` when the consumer only needs to know that state changed 
 
 SignalR follows the same split: `WatchMyWorkers`, `WatchWorkers`, `WatchWorkerOverview`, and generic view subscriptions use change-stream semantics, while `WatchEvents` is the raw-event surface for diagnostics and low-level consumers. Prefer `WatchMyWorkers` for the authenticated user's live collection, `WatchWorkers` for an operator-selected actor, and `WatchView` for advanced component and workflow views.
 
+Iteration status streams are a third, deliberately separate surface. Use them for ordered application-defined progress that must be retained before a subscriber arrives and replayed by sequence after reconnect, such as assistant text deltas. See [Iteration Status Streams](../guides/iteration-status-streams.md).
+
 ## Subscription Contract
 
 `Subscribe(...)` returns an `IWorkEventSubscription`. The subscription itself is just the owner of the stream registration. `Read(...)` is what produces the async event sequence:

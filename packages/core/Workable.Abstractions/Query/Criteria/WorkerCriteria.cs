@@ -20,7 +20,10 @@ namespace Workable;
 /// <param name="Take">The requested page size, capped by <see cref="MaximumTake"/>.</param>
 /// <param name="Category">An optional category-path filter.</param>
 /// <param name="IncludeSubcategories">Whether a category filter should include descendant category paths.</param>
-/// <param name="ActorId">An optional exact identifier for the actor that originated the worker.</param>
+/// <param name="ActorId">
+/// An optional identifier for the actor in the worker's original request context. Surrounding whitespace is removed
+/// and the remaining value is matched with ordinal comparison. This is a query filter, not an authorization boundary.
+/// </param>
 public sealed record WorkerCriteria(
     string? DefinitionName = null,
     IReadOnlySet<string>? DefinitionNames = null,

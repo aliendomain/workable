@@ -40,7 +40,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 
 - [HTTP API](adapters/http-api.md): expose registered work through HTTP endpoints.
 - [MCP](adapters/mcp.md): expose registered work, query tools, worker action tools, and definition-default reconfiguration through an MCP server.
-- [Realtime](adapters/realtime.md): stream worker collections, worker details, component-view updates, diagnostics, and raw worker events through SignalR.
+- [Realtime](adapters/realtime.md): stream worker collections, per-iteration status, worker details, component-view updates, diagnostics, and raw worker events through SignalR.
 
 ## Concepts
 
