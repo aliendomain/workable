@@ -666,7 +666,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             actor,
             "Authorize with a pre-resolved snapshot.") with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 actor,
                 ["snapshot.read", "snapshot.operate"],
                 readableDefinitionIds: null),
@@ -701,7 +702,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             WorkInvocationChannel.InProcess,
             requestActor) with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 new WorkActor("different-user"),
                 ["snapshot.read", "snapshot.operate"],
                 readableDefinitionIds: null),
@@ -712,6 +714,108 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
         Assert.Empty(session.Catalog.Definitions);
         Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
+    }
+
+    [Fact]
+    public async Task AuthorizationSnapshotForDifferentSystemIsReplacedBeforeCreatingSession()
+    {
+        var definition = PausedDefinition("snapshot.system-mismatch");
+        var groupProvider = new SystemAwareTestGroupProvider(new Dictionary<string, IReadOnlySet<string>>(
+            StringComparer.OrdinalIgnoreCase)
+        {
+            ["target"] = Groups("target.read", "target.operate"),
+        });
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(groupProvider)
+            .AddDefaultWorkableSystemForAuthorizationTests("source", _ => { })
+            .AddDefaultWorkableSystemForAuthorizationTests("target", builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.RequireGroups(
+                    readGroups: ["target.read"],
+                    operateGroups: ["target.operate"])))
+            .BuildServiceProvider();
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(registry.TryGet("target", out var target));
+        await target.Start();
+        var actor = new WorkActor("shared-context-user");
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                "source",
+                actor,
+                ["source.read", "source.operate"],
+                readableDefinitionIds: null),
+        };
+
+        var session = await target.CreateSession(requestContext);
+        var queued = await session.Queue.Enqueue(definition.Name);
+        var worker = await session.Query.Worker(
+            queued.WorkerId ?? throw new InvalidOperationException("Expected the target system to accept the worker."));
+
+        Assert.True(queued.QueueOutcome.IsAccepted);
+        Assert.NotNull(worker);
+        Assert.Null(worker.RequestContext.Authorization);
+        var effectiveContext = Assert.IsType<WorkSystemSession>(session).RequestContext;
+        var replacement = Assert.IsType<WorkAuthorizationSnapshot>(effectiveContext.Authorization);
+        Assert.Equal(actor, replacement.Actor);
+        Assert.Equal("target", replacement.Scope?.SystemName);
+        Assert.Contains("target.read", replacement.Groups);
+        Assert.Contains("target.operate", replacement.Groups);
+        Assert.DoesNotContain("source.read", replacement.Groups);
+        Assert.Contains("target", groupProvider.RequestedSystemNames);
+    }
+
+    [Fact]
+    public async Task UnscopedAuthorizationSnapshotUsesNormalGroupResolution()
+    {
+        var definition = PausedDefinition("snapshot.unscoped");
+        var groupProvider = new SystemAwareTestGroupProvider(new Dictionary<string, IReadOnlySet<string>>(
+            StringComparer.OrdinalIgnoreCase)
+        {
+            ["target"] = Groups("target.read", "target.operate"),
+        });
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(groupProvider)
+            .AddDefaultWorkableSystemForAuthorizationTests("target", builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.RequireGroups(
+                    readGroups: ["target.read"],
+                    operateGroups: ["target.operate"])))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var actor = new WorkActor("legacy-context-user");
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                actor,
+                ["untrusted.snapshot.group"],
+                readableDefinitionIds: null) with { Scope = null },
+        };
+
+        var session = await system.CreateSession(requestContext);
+        var queued = await session.Queue.Enqueue(definition.Name);
+        var worker = await session.Query.Worker(
+            queued.WorkerId ?? throw new InvalidOperationException("Expected the target system to accept the worker."));
+
+        Assert.True(queued.QueueOutcome.IsAccepted);
+        Assert.NotNull(worker);
+        Assert.Null(worker.RequestContext.Authorization);
+        var effectiveContext = Assert.IsType<WorkSystemSession>(session).RequestContext;
+        var replacement = Assert.IsType<WorkAuthorizationSnapshot>(effectiveContext.Authorization);
+        Assert.Equal("target", replacement.Scope?.SystemName);
+        Assert.Contains("target.read", replacement.Groups);
+        Assert.DoesNotContain("untrusted.snapshot.group", replacement.Groups);
+        Assert.Contains("target", groupProvider.RequestedSystemNames);
     }
 
     [Fact]
@@ -764,15 +868,18 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     public void AuthorizationSnapshotFingerprintDependsOnReadableDefinitionsNotGroups()
     {
         var actor = new WorkActor(Id: "snapshot-user");
-        var first = WorkAuthorizationSnapshot.Create(
+        var first = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
             actor,
             ["billing.read"],
             [new WorkDefinitionId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))]);
-        var second = WorkAuthorizationSnapshot.Create(
+        var second = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
             actor,
             ["billing.read", "extra.group"],
             [new WorkDefinitionId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))]);
-        var third = WorkAuthorizationSnapshot.Create(
+        var third = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
             actor,
             ["billing.read"],
             [new WorkDefinitionId(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))]);
@@ -822,6 +929,24 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             => ValueTask.FromResult<IReadOnlySet<string>>(actor.Id is not null && groupsByActor.TryGetValue(actor.Id, out var groups)
                 ? groups
                 : new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private sealed class SystemAwareTestGroupProvider(
+        IReadOnlyDictionary<string, IReadOnlySet<string>> groupsBySystem) : IWorkAuthorizationGroupProvider
+    {
+        public List<string?> RequestedSystemNames { get; } = [];
+
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+        {
+            this.RequestedSystemNames.Add(systemName);
+            return ValueTask.FromResult(
+                systemName is not null && groupsBySystem.TryGetValue(systemName, out var groups)
+                    ? groups
+                    : Groups());
+        }
     }
 
     private sealed class ThrowingGroupProvider : IWorkAuthorizationGroupProvider

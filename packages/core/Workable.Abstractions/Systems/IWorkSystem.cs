@@ -118,7 +118,8 @@ public interface IWorkSystem : IAsyncDisposable
     /// Creates a caller-scoped session over the system surfaces.
     /// </summary>
     /// <param name="requestContext">
-    /// The caller context whose identity, origin, and authorization snapshot should govern the returned session.
+    /// The caller context whose identity and origin should govern the returned session. A matching system-scoped authorization
+    /// snapshot is reused; a snapshot for another system, another actor, or no explicit system is replaced after fallback resolution.
     /// </param>
     /// <param name="cancellationToken">A token that cancels authorization-group resolution.</param>
     /// <returns>A session whose catalog, queue, query, worker, event, and diagnostics access is scoped to the caller.</returns>

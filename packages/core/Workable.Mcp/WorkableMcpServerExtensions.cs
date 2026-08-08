@@ -180,11 +180,15 @@ public static class WorkableMcpServerExtensions
         var requestContext = services.GetRequiredService<IWorkRequestContextFactory>()
             .Create(httpContext, WorkInvocationChannel.Mcp)
             .WithSurface(WorkOriginSurface.WorkableAdapter);
+        var resolvedSystemName = ResolveSystem(
+            services.GetRequiredService<IWorkSystemRegistry>(),
+            systemName).Name;
         var groups = await services.GetRequiredService<IWorkAuthorizationGroupResolver>()
-            .GetGroups(requestContext, systemName, cancellationToken);
+            .GetGroups(requestContext, resolvedSystemName, cancellationToken);
         return requestContext with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                resolvedSystemName,
                 requestContext.Actor,
                 groups,
                 readableDefinitionIds: null),
@@ -197,11 +201,7 @@ public static class WorkableMcpServerExtensions
     {
         ArgumentNullException.ThrowIfNull(registry);
 
-        var system = string.IsNullOrWhiteSpace(systemName)
-            ? registry.Default
-            : registry.TryGet(systemName, out var namedSystem)
-                ? namedSystem
-                : throw new InvalidOperationException($"Workable system '{systemName}' was not found.");
+        var system = ResolveSystem(registry, systemName);
         if (system.RequiresAuthorization)
         {
             return;
@@ -209,6 +209,17 @@ public static class WorkableMcpServerExtensions
 
         throw new InvalidOperationException(
             $"Workable MCP requires authorization-enabled systems. System '{system.Name ?? "<default>"}' does not require authorization.");
+    }
+
+    private static IWorkSystem ResolveSystem(IWorkSystemRegistry registry, string? systemName)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        return string.IsNullOrWhiteSpace(systemName)
+            ? registry.Default
+            : registry.TryGet(systemName, out var namedSystem)
+                ? namedSystem
+                : throw new InvalidOperationException($"Workable system '{systemName}' was not found.");
     }
 
     private static void RequireAuthenticated(IEndpointConventionBuilder builder)

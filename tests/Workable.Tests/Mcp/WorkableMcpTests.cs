@@ -464,6 +464,30 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
+    public async Task MappedHttpMcpDefaultEndpointUsesResolvedNamedSystemForAuthorization()
+    {
+        var observedGroups = new CapturingAuthorizationGroupContextProvider();
+        using var host = await CreateNamedDefaultMcpHttpHost(observedGroups);
+        var httpClient = host.GetTestClient();
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost/workable/mcp"),
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var client = await McpClient.CreateAsync(transport);
+
+        var tools = await client.ListToolsAsync();
+
+        Assert.Contains(tools, tool => tool.Name == "workable_work_remote_echo");
+        var observedSystemNames = observedGroups.SystemNames;
+        Assert.NotEmpty(observedSystemNames);
+        Assert.All(observedSystemNames, systemName => Assert.Equal("remote", systemName));
+    }
+
+    [Fact]
     public async Task MappedHttpMcpNamedEndpointRequiresAnySystemAccess()
     {
         using var host = await CreateNamedMcpHttpHost(
@@ -1863,7 +1887,8 @@ public sealed class WorkableMcpTests
             actor,
             "Seed readable workflow.") with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 actor,
                 ["workflow.read", "workflow.ops"],
                 readableDefinitionIds: null),
@@ -2080,6 +2105,48 @@ public sealed class WorkableMcpTests
         return host;
     }
 
+    private static async Task<IHost> CreateNamedDefaultMcpHttpHost(
+        CapturingAuthorizationGroupContextProvider observedGroups)
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddTransportTestAuthorization();
+                    services.AddSingleton<IWorkAuthorizationGroupContextProvider>(observedGroups);
+                    services.AddWorkableSystem("remote", builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.AddAuthorizedTransportWork(
+                            WorkDefinition.Create("remote.echo", configuration: AllowMcp()),
+                            SuccessfulWork);
+                    });
+                    services.AddWorkableMcpServer();
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = TransportAuthorizationTestSupport.CreateTransportPrincipal(
+                            id: "mcp-user-1",
+                            name: "MCP User",
+                            email: "mcp.user@example.com");
+                        await next();
+                    });
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
     private static async Task<IHost> CreateAuthorizedMcpHttpHost(
         IEnumerable<string>? groups = null,
         WorkDefinition? allowedDefinition = null)
@@ -2208,7 +2275,11 @@ public sealed class WorkableMcpTests
             actor,
             description) with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(actor, groups, readableDefinitionIds: null),
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                system.Name,
+                actor,
+                groups,
+                readableDefinitionIds: null),
         };
         return system.CreateSession(requestContext);
     }
@@ -2242,6 +2313,36 @@ public sealed class WorkableMcpTests
                 WorkInvocationChannel.HttpApi,
                 WorkInvocationChannel.Mcp),
         };
+
+    private sealed class CapturingAuthorizationGroupContextProvider : IWorkAuthorizationGroupContextProvider
+    {
+        private readonly object gate = new();
+        private readonly List<string?> systemNames = [];
+
+        public IReadOnlyList<string?> SystemNames
+        {
+            get
+            {
+                lock (this.gate)
+                {
+                    return [.. this.systemNames];
+                }
+            }
+        }
+
+        public ValueTask<IReadOnlySet<string>?> GetCurrentGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+        {
+            lock (this.gate)
+            {
+                this.systemNames.Add(systemName);
+            }
+
+            return ValueTask.FromResult<IReadOnlySet<string>?>(null);
+        }
+    }
 
     private sealed record WorkflowMcpInput(string ExternalKey);
 }

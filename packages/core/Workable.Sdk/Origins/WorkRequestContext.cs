@@ -7,7 +7,7 @@ namespace Workable;
 /// <param name="Description">Optional human-readable context describing why the caller is performing the action.</param>
 /// <param name="Url">Optional URL that points back to the caller's originating page or resource.</param>
 /// <param name="Authorization">
-/// An optional precomputed authorization snapshot that Workable can use instead of resolving groups on demand.
+/// An optional precomputed authorization snapshot that Workable can use instead of resolving groups on demand when it is scoped to the target system.
 /// </param>
 /// <param name="IsAuthenticated">
 /// Indicates whether the caller should count as authenticated for rules that distinguish authenticated known actors.

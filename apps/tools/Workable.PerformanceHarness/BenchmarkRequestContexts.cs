@@ -13,7 +13,8 @@ internal static class BenchmarkRequestContexts
         return new WorkRequestContext(
             origin,
             Description: description,
-            Authorization: WorkAuthorizationSnapshot.Create(
+            Authorization: WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 actor,
                 [WorkableBenchmarkSystem.OperatorGroup],
                 readableDefinitionIds: null),

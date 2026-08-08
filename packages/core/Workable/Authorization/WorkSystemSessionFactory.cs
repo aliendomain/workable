@@ -24,28 +24,10 @@ internal sealed class WorkSystemSessionFactory(
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        var sessionDiagnostics = new SessionWorkSystemDiagnostics(diagnostics, requestContext);
-        var sessionCatalog = new SessionWorkCatalog(catalog, requestContext);
-        var sessionQueue = new SessionWorkQueueService(queue, requestContext);
-        var sessionWorkers = new SessionWorkerOperations(workers, requestContext);
-        var sessionQuery = new SessionWorkQueryService(query, requestContext);
-        var sessionEvents = new SessionWorkEventStream(events, requestContext);
-        var sessionIterationStatuses = new SessionWorkIterationStatusStream(iterationStatuses, requestContext);
-        var sessionChanges = new SessionWorkChangeStream(changes, requestContext);
+        requestContext = SanitizeRequestContext(requestContext, systemName, out var replaceAuthorization);
         if (!requiresAuthorization)
         {
-            return new WorkSystemSession(
-                systemName,
-                capabilities,
-                getSystemState,
-                sessionDiagnostics,
-                sessionCatalog,
-                sessionQueue,
-                sessionWorkers,
-                sessionQuery,
-                sessionEvents,
-                sessionIterationStatuses,
-                sessionChanges);
+            return this.CreateUnrestrictedSession(requestContext);
         }
 
         var groups = await groupResolver.GetGroups(requestContext, systemName, cancellationToken);
@@ -56,9 +38,30 @@ internal sealed class WorkSystemSessionFactory(
             groups,
             requestContext.IsAuthenticated && requestContext.Actor.IsKnown,
             systemAuthorization);
+        var readableDefinitions = authorization.ReadableDefinitions();
+        if (replaceAuthorization)
+        {
+            requestContext = requestContext with
+            {
+                Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                    systemName,
+                    requestContext.Actor,
+                    groups,
+                    readableDefinitions.Select(static definition => definition.Id)),
+            };
+        }
+
+        var sessionDiagnostics = new SessionWorkSystemDiagnostics(diagnostics, requestContext);
+        var sessionCatalog = new SessionWorkCatalog(catalog, requestContext);
+        var sessionQueue = new SessionWorkQueueService(queue, requestContext);
+        var sessionWorkers = new SessionWorkerOperations(workers, requestContext);
+        var sessionQuery = new SessionWorkQueryService(query, requestContext);
+        var sessionEvents = new SessionWorkEventStream(events, requestContext);
+        var sessionIterationStatuses = new SessionWorkIterationStatusStream(iterationStatuses, requestContext);
+        var sessionChanges = new SessionWorkChangeStream(changes, requestContext);
         var isKnownAuthenticatedActor = requestContext.IsAuthenticated && requestContext.Actor.IsKnown;
         var hasReadAllWorkAccess = systemAuthorization.HasReadAllWorkAccess();
-        var readableDefinitionNames = authorization.ReadableDefinitions()
+        var readableDefinitionNames = readableDefinitions
             .Select(definition => definition.Name)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var readableWorkflows = hasReadAllWorkAccess
@@ -71,6 +74,7 @@ internal sealed class WorkSystemSessionFactory(
 
         return new WorkSystemSession(
             systemName,
+            requestContext,
             capabilities,
             getSystemState,
             canViewDiagnostics
@@ -83,5 +87,49 @@ internal sealed class WorkSystemSessionFactory(
             new AuthorizedWorkEventStream(sessionEvents, readableDefinitionNames),
             new AuthorizedWorkIterationStatusStream(iterationStatuses, readableDefinitionNames),
             new AuthorizedWorkChangeStream(sessionChanges, authorization, canViewDiagnostics));
+    }
+
+    private IWorkSystemSession CreateUnrestrictedSession(WorkRequestContext requestContext)
+    {
+        var sessionDiagnostics = new SessionWorkSystemDiagnostics(diagnostics, requestContext);
+        var sessionCatalog = new SessionWorkCatalog(catalog, requestContext);
+        var sessionQueue = new SessionWorkQueueService(queue, requestContext);
+        var sessionWorkers = new SessionWorkerOperations(workers, requestContext);
+        var sessionQuery = new SessionWorkQueryService(query, requestContext);
+        var sessionEvents = new SessionWorkEventStream(events, requestContext);
+        var sessionIterationStatuses = new SessionWorkIterationStatusStream(iterationStatuses, requestContext);
+        var sessionChanges = new SessionWorkChangeStream(changes, requestContext);
+        return new WorkSystemSession(
+            systemName,
+            requestContext,
+            capabilities,
+            getSystemState,
+            sessionDiagnostics,
+            sessionCatalog,
+            sessionQueue,
+            sessionWorkers,
+            sessionQuery,
+            sessionEvents,
+            sessionIterationStatuses,
+            sessionChanges);
+    }
+
+    private static WorkRequestContext SanitizeRequestContext(
+        WorkRequestContext requestContext,
+        string? systemName,
+        out bool replaceAuthorization)
+    {
+        if (requestContext.Authorization is not { } snapshot)
+        {
+            replaceAuthorization = false;
+            return requestContext;
+        }
+
+        replaceAuthorization = snapshot.Actor != requestContext.Actor ||
+            snapshot.Scope is not { } scope ||
+            !scope.IsForSystem(systemName);
+        return !replaceAuthorization
+            ? requestContext
+            : requestContext.WithoutAuthorization();
     }
 }

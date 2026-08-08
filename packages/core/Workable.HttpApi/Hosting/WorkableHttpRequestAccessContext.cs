@@ -132,7 +132,8 @@ internal sealed class WorkableHttpRequestAccessContext(
             return authorization;
         }
 
-        authorization = WorkAuthorizationSnapshot.Create(
+        authorization = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName,
             actor,
             await this.GetGroups(systemName, cancellationToken),
             readableDefinitionIds: null);

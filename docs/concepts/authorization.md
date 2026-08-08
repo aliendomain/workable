@@ -434,9 +434,13 @@ That session composition is why the caller-scoped surface stays coherent. The sa
 
 Authorization data comes from either:
 
-- `WorkRequestContext.Authorization`, when the caller already has a trusted authorization snapshot
+- `WorkRequestContext.Authorization`, when the caller already has a trusted authorization snapshot scoped to the target system
 - `IWorkAuthorizationGroupProvider.GetGroups(...)`, when groups should be resolved from the retained actor
 - an adapter-provided invocation context, such as matching claims from the current HTTP user, when one applies
+
+Create trusted snapshots with `WorkAuthorizationSnapshot.CreateForSystem(...)`. The logical system-name scope survives host restarts; an explicit `null` system name identifies the default unnamed system. When session creation receives an unscoped snapshot, a snapshot for another system, or a snapshot for another actor, Workable removes it, resolves authorization through the normal context-provider and actor-provider fallback, and captures a replacement snapshot scoped to the current system for the returned session. Worker and workflow persistence continues to remove precomputed authorization snapshots from stored request contexts.
+
+Authorization snapshots are trusted in-process data, not credentials or anti-forgery tokens. Built-in HTTP, MCP, and SignalR transports do not bind snapshots or caller-supplied groups from wire payloads. The logical system scope prevents accidental reuse between configured systems; code that can directly construct a scoped snapshot and choose its groups already runs inside the application's trusted boundary.
 
 For the built-in `Workable.HttpApi` adapter, those group and access resolutions are coordinated through a request-scoped cache instead of each step resolving independently. The adapter reuses that cached state across the outer gate, inner gate, host discovery, named-system selection, and request-context creation for the selected system.
 
