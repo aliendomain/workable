@@ -29,7 +29,7 @@ public sealed record WorkWorkerOverviewRealtimeState(
     IReadOnlyList<WorkWorkerOverviewTimelineItem> TimelineItems);
 
 /// <summary>
-/// Represents a partial worker-overview realtime update.
+/// Represents a synchronized worker-overview latest-state update or refresh instruction.
 /// </summary>
 public sealed record WorkWorkerOverviewRealtimeUpdate(
     DateTimeOffset GeneratedAt,

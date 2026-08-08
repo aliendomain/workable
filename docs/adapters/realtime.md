@@ -99,7 +99,7 @@ app.MapWorkableSignalR("/internal/work/realtime");
 
 Browser connections join SignalR groups and share server-side recomputation or event readers when their normalized subscription request and effective read access match. One browser does not get its own private Workable event-stream subscription unless its request shape differs from the other active subscribers.
 
-State-based named views are wake-on-change: the in-memory runtime publishes coalesced change notifications after its read model snapshot advances, and the SignalR broadcaster recomputes the latest view for each matching group. Worker, definition, subject, concurrency-key, and identifier changes are used to avoid recomputing named-view groups whose normalized criteria cannot be affected. Views that depend on time passing still use `PublishInterval`.
+State-based named views are wake-on-change: the in-memory runtime publishes coalesced change notifications after its read model snapshot advances, and the SignalR broadcaster recomputes the latest view for each matching group. Worker, definition, subject, concurrency-key, identifier, and originating-actor changes are used to avoid recomputing named-view groups whose normalized criteria cannot be affected. Views that depend on time passing still use `PublishInterval`.
 
 ## Capability Discovery
 
@@ -139,6 +139,51 @@ When `Workable.SignalR` is not registered:
 }
 ```
 
+## Actor-Scoped Worker Updates
+
+Use `WatchWorkers` to keep a browser synchronized with all workers originated by one actor. It is a discoverable convenience method over the existing `workers` named view, so it retains the same initial-snapshot and change-stream guarantees without introducing a separate subscription implementation. Set `actorId` on the `workerGrid` component options; actor ids use exact ordinal matching after surrounding whitespace is removed.
+
+```javascript
+const subscriptionId = `user-work:${userId}`;
+
+connection.on("workable.view", envelope => {
+  if (envelope.subscriptionId !== subscriptionId) {
+    return;
+  }
+
+  const workerGrid = envelope.result.components.workerGrid;
+  renderWorkers(workerGrid.data);
+});
+
+await connection.start();
+await connection.invoke(
+  "WatchWorkers",
+  subscriptionId,
+  {
+    components: [
+      {
+        id: "workerGrid",
+        type: "workerGrid",
+        shape: "detailed",
+        options: {
+          actorId: userId,
+          take: 50
+        }
+      }
+    ]
+  },
+  null
+);
+```
+
+Subscription establishment always sends the current worker-grid snapshot, including an empty grid when the actor has not originated any work yet. The subscription is registered first, then waits for the shared view change stream to be live before querying that snapshot. Group broadcasts wait behind the direct seed, so a newer group update cannot be overtaken by an older initial snapshot. A worker change that races subscription establishment is therefore either already represented by the initial query or causes a later actor-keyed view update; the browser does not need to subscribe to individual workers or raw events.
+
+If the shared view change stream stops and restarts, the broadcaster re-queries every active state-based view group before consuming new changes. This closes changes that may have occurred while the stream was unavailable without requiring clients to recreate their watches.
+
+The scope follows the actor stored on the worker's original request context. Actions later performed by that actor on somebody else's worker do not move that worker into this view. Normal read authorization still applies, so the grid contains only definitions visible to the SignalR caller.
+
+Stop the subscription with `UnwatchWorkers(subscriptionId, systemName)`.
+
 ## Worker Overview Updates
 
 Worker detail pages should load their initial worker-overview snapshot through HTTP, then subscribe to the dedicated realtime worker-overview stream.
@@ -159,7 +204,7 @@ connection.On<WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>>(
         return;
     }
 
-    // Merge the partial update into the visible worker overview state.
+    // Apply the synchronized sections to the visible worker overview state.
 });
 
 await connection.StartAsync();
@@ -240,7 +285,7 @@ await connection.InvokeAsync(
 
 Raw event subscriptions are for event viewers, diagnostics, and consumers that want low-level `WorkEvent` envelopes rather than worker-overview state updates.
 
-Worker detail pages should generally prefer `WatchWorkerOverview` over raw event handling. Dashboards and state-oriented UI should prefer `WatchView`, `WatchWorkerOverview`, or other change-stream-backed surfaces. Use `WatchEvents` only when the client needs raw event payloads, event types, or event-by-event diagnostic output.
+Worker-list pages should prefer `WatchWorkers`, and worker detail pages should generally prefer `WatchWorkerOverview`, over raw event handling. Dashboards and other state-oriented UI should prefer these methods, `WatchView`, or another change-stream-backed surface. Use `WatchEvents` only when the client needs raw event payloads, event types, or event-by-event diagnostic output.
 
 Worker messages are delivered through `workable.event` for single events and `workable.events` for batches.
 
@@ -374,7 +419,7 @@ Use the optional `connectionId` filter when you need to match one browser tab or
 
 ## Component View Updates
 
-Overview-style clients can subscribe to the same component-view request shape used by the HTTP API.
+Overview-style clients can subscribe to the same component-view request shape used by the HTTP API. Use `WatchWorkers` for the common live worker-list case; use the generic `WatchView` method for overview dashboards, workflow views, diagnostics, and custom named views.
 
 ```csharp
 const string OverviewSubscriptionId = "overview-main";
@@ -556,6 +601,8 @@ The hub exposes these observability methods:
 ```csharp
 Task WatchView(string subscriptionId, string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
 Task UnwatchView(string subscriptionId, string? systemName = null);
+Task WatchWorkers(string subscriptionId, WorkViewCriteria? criteria = null, string? systemName = null);
+Task UnwatchWorkers(string subscriptionId, string? systemName = null);
 Task WatchWorkerOverview(string subscriptionId, string workerId, WorkWorkerOverviewRealtimeCriteria? criteria = null, string? systemName = null);
 Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null);
 Task WatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);

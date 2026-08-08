@@ -19,6 +19,7 @@ internal sealed class AuthorizedWorkChangeStream(
         return new AuthorizedWorkChangeSubscription(
             inner.Subscribe(options),
             readableDefinitionNames,
+            hasReadAllWorkAccess,
             canViewDiagnostics,
             hasReadAllWorkAccess || canViewDiagnostics);
     }
@@ -26,6 +27,7 @@ internal sealed class AuthorizedWorkChangeStream(
     private sealed class AuthorizedWorkChangeSubscription(
         IWorkChangeSubscription inner,
         IReadOnlySet<string> readableDefinitionNames,
+        bool hasReadAllWorkAccess,
         bool canViewDiagnostics,
         bool exposeDiagnostics) : IWorkChangeSubscription, IWorkChangeSubscriptionDiagnostics
     {
@@ -63,6 +65,7 @@ internal sealed class AuthorizedWorkChangeStream(
                 WorkChangeKind.Subject or
                 WorkChangeKind.ConcurrencyKey or
                 WorkChangeKind.Identifier => readableDefinitionNames.Count > 0,
+                WorkChangeKind.Actor => hasReadAllWorkAccess,
                 _ => false,
             };
     }

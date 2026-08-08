@@ -135,6 +135,7 @@ dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Rele
 Current benchmark groups:
 
 - `BaselineWorkerQueryBenchmarks` measures broad first-page worker queries, exact identifier-index queries, and identifier key-type facets at 100, 10,000, and 100,000 queued workers.
+- `BaselineActorWorkerQueryBenchmarks` measures exact originating-actor queries at approximately 100% and 1% selectivity across the same worker-count scale.
 - `BaselineReadModelPublishBenchmarks` measures the cost of flushing one new worker update into already-large read-model snapshots at 100, 5,000, and 25,000 queued workers.
 - `BaselineAuthorizedBulkActionBenchmarks` measures authorized `ExecuteAll(Cancel)` over queued workers at 100, 1,000, and 5,000 workers.
 - `BaselineDurableLifecycleBenchmarks` measures representative SQL-backed queue, complete, and queued-start action paths.

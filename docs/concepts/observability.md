@@ -24,9 +24,9 @@ That keeps the event stream cheap while still letting richer UIs stay accurate.
 
 Use raw events when the consumer needs the event envelope, payload, event type, or exact sequence of worker activity. Good fits include event viewers, diagnostic tools, log-style timelines, and low-level integrations.
 
-Use `IWorkChangeStream` when the consumer only needs to know that state changed and should be queried again. Each `IWorkSystem` exposes it through `workSystem.Changes`, and authorized sessions expose the caller-scoped equivalent through `session.Changes`. The change stream publishes compact keys such as worker, definition, subject, concurrency, identifier, diagnostics, and system changes. Repeated changes for the same key coalesce while a reader is behind, which makes it the preferred primitive for UI refresh, worker overview updates, and view invalidation.
+Use `IWorkChangeStream` when the consumer only needs to know that state changed and should be queried again. Each `IWorkSystem` exposes it through `workSystem.Changes`, and authorized sessions expose the caller-scoped equivalent through `session.Changes`. The change stream publishes compact keys such as worker, definition, subject, concurrency, identifier, originating actor, diagnostics, and system changes. Repeated changes for the same key coalesce while a reader is behind, which makes it the preferred primitive for UI refresh, worker overview updates, and view invalidation.
 
-SignalR follows the same split: `WatchWorkerOverview` and view subscriptions use change-stream semantics, while `WatchEvents` is the raw-event surface for diagnostics and low-level consumers.
+SignalR follows the same split: `WatchWorkers`, `WatchWorkerOverview`, and generic view subscriptions use change-stream semantics, while `WatchEvents` is the raw-event surface for diagnostics and low-level consumers. Prefer `WatchWorkers` for a live worker collection, optionally filtered by originating actor; use `WatchView` for advanced component and workflow views.
 
 ## Subscription Contract
 

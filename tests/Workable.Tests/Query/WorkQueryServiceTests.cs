@@ -60,6 +60,28 @@ public sealed class WorkQueryServiceTests
     }
 
     [Fact]
+    public async Task WorkersQueryFiltersByOriginActorId()
+    {
+        var definition = WorkDefinition.Create("actor.work", "Filters workers by their originating actor.");
+        await using var system = CreateSystem(definition, SuccessfulWork);
+        await system.Start();
+        var firstActor = new WorkActor("user-123", "First User");
+        var secondActor = new WorkActor("user-456", "Second User");
+        var firstSession = system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess, firstActor));
+        var secondSession = system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess, secondActor));
+
+        var first = await firstSession.Queue.Enqueue(definition.Name);
+        await secondSession.Queue.Enqueue(definition.Name);
+        await WaitForReadModel(system);
+
+        var matching = await system.Query.Workers(new WorkerCriteria(ActorId: $" {firstActor.Id} "));
+        var wrongCase = await system.Query.Workers(new WorkerCriteria(ActorId: firstActor.Id?.ToUpperInvariant()));
+
+        Assert.Equal(RequiredWorkerId(first), Assert.Single(matching.Workers).Id);
+        Assert.Empty(wrongCase.Workers);
+    }
+
+    [Fact]
     public async Task WorkersQueryCanFindIdentifiersDiscoveredDuringExecution()
     {
         var discovered = new WorkIdentifier("order", "ord-123");

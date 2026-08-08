@@ -725,6 +725,8 @@ Content-Type: application/json
 }
 ```
 
+The worker criteria also accepts `actorId` to scope results to workers originated by that actor. Actor ids use exact ordinal matching after surrounding whitespace is removed.
+
 Search known worker keys across subjects, concurrency keys, and identifiers.
 
 ```http

@@ -37,7 +37,7 @@ Workable also gives applications a path to expose the same authored work through
 - `Workable.Views`: shared component-view contracts and projections used by HTTP and SignalR adapters; most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
 - `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling workers and workflow runs.
 - `Workable.Mcp`: MCP server adapter for authored work, worker and workflow queries, and worker and workflow actions.
-- `Workable.SignalR`: realtime worker and workflow events plus component-view updates for ASP.NET Core clients.
+- `Workable.SignalR`: realtime worker collections, worker and workflow events, worker details, and component-view updates for ASP.NET Core clients.
 
 ### Apps And Tools
 

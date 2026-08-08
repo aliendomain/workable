@@ -9,10 +9,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http.Connections;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Workable;
 
 namespace Workable.Tests;
@@ -530,6 +532,169 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task WorkersWatcherScopesSnapshotsAndChangesToOriginActor()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            groups: TransportAuthorizationTestSupport.ReadGroups
+                .Concat(TransportAuthorizationTestSupport.OperateGroups));
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var targetActor = new WorkActor("signalr-origin-user", "Origin User");
+        var otherActor = new WorkActor("signalr-other-user", "Other User");
+        var targetSession = TransportAuthorizationTestSupport.CreateTransportSession(system, actor: targetActor);
+        var otherSession = TransportAuthorizationTestSupport.CreateTransportSession(system, actor: otherActor);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "actor-workers";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchWorkers",
+            subscriptionId,
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "workerGrid",
+                    "workerGrid",
+                    JsonSerializer.SerializeToElement(new { actorId = targetActor.Id }),
+                    WorkComponentShapes.Detailed),
+            ]),
+            null);
+
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workerGrid"));
+        var initialGrid = Assert.IsType<JsonElement>(initial.Components["workerGrid"].Data);
+        Assert.Equal(0, initialGrid.GetProperty("totalCount").GetInt32());
+        Assert.Empty(initialGrid.GetProperty("workers").EnumerateArray());
+
+        var other = await otherSession.Queue.Enqueue("signalr.worker");
+        var otherWorkerId = other.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+        await TestEventually.Until(async () => await otherSession.Query.Worker(otherWorkerId) is not null);
+        await AssertNoItem(views.Reader, TimeSpan.FromMilliseconds(500));
+
+        var target = await targetSession.Queue.Enqueue("signalr.worker");
+        var updated = await ReadUntil(
+            views.Reader,
+            view =>
+            {
+                if (!view.Components.TryGetValue("workerGrid", out var component) ||
+                    component.Data is not JsonElement data)
+                {
+                    return false;
+                }
+
+                return data.GetProperty("workers")
+                    .EnumerateArray()
+                    .Any(worker => worker.GetProperty("id").GetProperty("value").GetGuid() == target.WorkerId?.Value);
+            });
+        var updatedGrid = Assert.IsType<JsonElement>(updated.Components["workerGrid"].Data);
+
+        Assert.Equal(1, updatedGrid.GetProperty("totalCount").GetInt32());
+        Assert.Single(updatedGrid.GetProperty("workers").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task WorkersWatcherUsesWorkersViewNameAndDefaultGrid()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "workers-default";
+        var updates = Channel.CreateUnbounded<WorkableRealtimeViewEnvelope<WorkComponentQueryResult>>();
+        connection.On<WorkableRealtimeViewEnvelope<WorkComponentQueryResult>>(
+            WorkableRealtimeClientMethods.ViewUpdated,
+            envelope => updates.Writer.TryWrite(envelope));
+        await connection.StartAsync();
+
+        await connection.InvokeAsync("WatchWorkers", subscriptionId, null, null);
+
+        var initial = await ReadUntil(
+            updates.Reader,
+            envelope => string.Equals(envelope.SubscriptionId, subscriptionId, StringComparison.Ordinal));
+        var workerGrid = Assert.IsType<JsonElement>(initial.Result.Components["workerGrid"].Data);
+
+        Assert.Equal("workers", initial.ViewName);
+        Assert.Equal(WorkComponentShapes.Detailed, initial.Result.Components["workerGrid"].Shape);
+        Assert.Equal(0, workerGrid.GetProperty("totalCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task ActorScopedWorkersWatcherSeedsWorkCreatedWhileSubscriptionEstablishmentIsBlocked()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services =>
+            {
+                services.AddSingleton<BlockingViewGroupHubLifetimeManager>();
+                services.AddSingleton<HubLifetimeManager<WorkableRealtimeHub>>(
+                    provider => provider.GetRequiredService<BlockingViewGroupHubLifetimeManager>());
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var lifetime = host.Services.GetRequiredService<BlockingViewGroupHubLifetimeManager>();
+        var subscriptions = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
+        await subscriptions.WaitForStreaming(system, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        var targetActor = new WorkActor("signalr-racing-origin-user", "Racing Origin User");
+        var targetSession = TransportAuthorizationTestSupport.CreateTransportSession(system, actor: targetActor);
+        var existing = await targetSession.Queue.Enqueue("signalr.worker");
+        var existingWorkerId = existing.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+        await TestEventually.Until(async () => await targetSession.Query.Worker(existingWorkerId) is not null);
+        await using var connection = CreateConnection(host);
+        const string subscriptionId = "actor-workers-race";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+
+        var watch = connection.InvokeAsync(
+            "WatchWorkers",
+            subscriptionId,
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "workerGrid",
+                    "workerGrid",
+                    JsonSerializer.SerializeToElement(new { actorId = targetActor.Id }),
+                    WorkComponentShapes.Detailed),
+            ]),
+            null);
+
+        try
+        {
+            await lifetime.WaitForBlockedGroupAdd();
+            var raced = await targetSession.Queue.Enqueue("signalr.worker");
+            var racedWorkerId = raced.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+            await TestEventually.Until(async () => await targetSession.Query.Worker(racedWorkerId) is not null);
+
+            // The actor-keyed change occurred after registration but before the initial query.
+            // The direct seed must include it while broadcasts remain behind the seed barrier.
+            lifetime.ReleaseGroupAdd();
+            await watch;
+
+            var initial = await ReadUntil(
+                views.Reader,
+                view =>
+                {
+                    if (!view.Components.TryGetValue("workerGrid", out var component) ||
+                        component.Data is not JsonElement data)
+                    {
+                        return false;
+                    }
+
+                    var workerIds = data.GetProperty("workers")
+                        .EnumerateArray()
+                        .Select(worker => worker.GetProperty("id").GetProperty("value").GetGuid())
+                        .ToHashSet();
+                    return workerIds.Contains(existingWorkerId.Value) && workerIds.Contains(racedWorkerId.Value);
+                });
+            var initialGrid = Assert.IsType<JsonElement>(initial.Components["workerGrid"].Data);
+
+            Assert.Equal(2, initialGrid.GetProperty("totalCount").GetInt32());
+            Assert.Equal(2, initialGrid.GetProperty("workers").GetArrayLength());
+        }
+        finally
+        {
+            lifetime.ReleaseGroupAdd();
+        }
+    }
+
+    [Fact]
     public async Task ViewWatcherUsesChangeStreamWithoutEventStreamSubscription()
     {
         var timers = new ManualRealtimeTimerFactory();
@@ -985,6 +1150,42 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task WorkerOverviewWatcherSendsExactlyOneSeedToInitialAndLateSubscribers()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var handle = await Session(system).Queue.Enqueue("signalr.worker");
+        var workerId = handle.WorkerId ?? throw new InvalidOperationException("Expected worker id.");
+        var criteria = new WorkWorkerOverviewRealtimeCriteria(WorkerControls: WorkComponentShapes.Standard);
+        await using var firstConnection = CreateConnection(host);
+        await using var secondConnection = CreateConnection(host);
+        var firstUpdates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
+        var secondUpdates = Channel.CreateUnbounded<WorkWorkerOverviewRealtimeUpdate>();
+        CaptureWorkerOverviewUpdates(firstConnection, "first", firstUpdates);
+        CaptureWorkerOverviewUpdates(secondConnection, "second", secondUpdates);
+        await firstConnection.StartAsync();
+        await secondConnection.StartAsync();
+
+        await firstConnection.InvokeAsync(
+            "WatchWorkerOverview",
+            "first",
+            workerId.Value.ToString("D"),
+            criteria,
+            null);
+        _ = await ReadUntil(firstUpdates.Reader, update => update.Worker?.WorkerId == workerId);
+        await AssertNoItem(firstUpdates.Reader, TimeSpan.FromMilliseconds(500));
+
+        await secondConnection.InvokeAsync(
+            "WatchWorkerOverview",
+            "second",
+            workerId.Value.ToString("D"),
+            criteria,
+            null);
+        _ = await ReadUntil(secondUpdates.Reader, update => update.Worker?.WorkerId == workerId);
+        await AssertNoItem(secondUpdates.Reader, TimeSpan.FromMilliseconds(500));
+    }
+
+    [Fact]
     public async Task WorkerOverviewWatcherKeepsItsSubscriptionWhenTheWorkerDoesNotExistYet()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -1061,7 +1262,7 @@ public sealed class WorkableSignalRTests
         await using var connection = CreateConnection(host);
         await connection.StartAsync();
 
-        await connection.InvokeAsync("WatchView", "view-subscription", "overview", null, null);
+        await connection.InvokeAsync("WatchWorkers", "workers-subscription", null, null);
         await connection.InvokeAsync(
             "WatchWorkerOverview",
             "worker-subscription",
@@ -1072,7 +1273,7 @@ public sealed class WorkableSignalRTests
             viewSubscriptions.GetDebugSubscriptions(system).Count == 1 &&
             workerSubscriptions.GetDebugSubscriptions(system).Count == 1);
 
-        await connection.InvokeAsync("UnwatchView", "view-subscription", null);
+        await connection.InvokeAsync("UnwatchWorkers", "workers-subscription", null);
         await connection.InvokeAsync("UnwatchWorkerOverview", "worker-subscription", null);
 
         Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
@@ -2116,6 +2317,37 @@ public sealed class WorkableSignalRTests
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class BlockingViewGroupHubLifetimeManager(
+        ILogger<DefaultHubLifetimeManager<WorkableRealtimeHub>> logger)
+        : DefaultHubLifetimeManager<WorkableRealtimeHub>(logger)
+    {
+        private readonly TaskCompletionSource groupAddStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource groupAddRelease =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int shouldBlockNextGroupAdd = 1;
+
+        public override async Task AddToGroupAsync(
+            string connectionId,
+            string groupName,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref this.shouldBlockNextGroupAdd, 0) == 1)
+            {
+                this.groupAddStarted.TrySetResult();
+                await this.groupAddRelease.Task.WaitAsync(cancellationToken);
+            }
+
+            await base.AddToGroupAsync(connectionId, groupName, cancellationToken);
+        }
+
+        public Task WaitForBlockedGroupAdd()
+            => this.groupAddStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        public void ReleaseGroupAdd()
+            => this.groupAddRelease.TrySetResult();
     }
 
     private sealed class ManualRealtimeTimerFactory : IWorkableRealtimeTimerFactory

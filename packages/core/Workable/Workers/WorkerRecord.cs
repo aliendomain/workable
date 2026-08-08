@@ -1084,7 +1084,8 @@ internal sealed class WorkerRecord(
             this.ToOverviewItemLocked(),
             this.Configuration.Recurrence.IsEnabled,
             this.Configuration.Coordination.IsConcurrencyEnabled,
-            this.Options.ProfilingEnabled);
+            this.Options.ProfilingEnabled,
+            this.RequestContext.Actor.Id);
 
     private WorkerReadModelIterationUpdate CreateReadModelIterationUpdateLocked(WorkerIterationSnapshot iteration)
     {

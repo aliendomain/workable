@@ -1480,8 +1480,8 @@ export function WorkerConsoleView({
           title: "Realtime resynced",
           tone: "warning",
         });
-        // The server restarts the worker-overview pump after issuing a resync
-        // instruction, so we only need a fresh HTTP snapshot here.
+        // The watch remains active after a resync instruction, so only the
+        // HTTP snapshot needs to be refreshed here.
         setManualRefreshToken((current) => current + 1);
         setRealtimeUpdateError(undefined);
         return;

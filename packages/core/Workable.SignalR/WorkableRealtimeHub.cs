@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.SignalR;
 namespace Workable;
 
 /// <summary>
-/// SignalR hub that exposes Workable realtime event, named-view, and worker-overview subscriptions.
+/// SignalR hub that exposes Workable realtime event, worker-list, named-view, and worker-overview subscriptions.
 /// </summary>
 /// <remarks>
 /// This hub is observability-focused. Clients subscribe to updates here, then use direct .NET or HTTP APIs for
@@ -25,11 +25,37 @@ public sealed class WorkableRealtimeHub(
     /// <param name="viewName">The built-in or custom view name to subscribe to.</param>
     /// <param name="criteria">Optional criteria used to scope the view components.</param>
     /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
-    public async Task WatchView(
+    public Task WatchView(
         string subscriptionId,
         string viewName,
         WorkViewCriteria? criteria = null,
         string? systemName = null)
+        => WatchViewCore(subscriptionId, viewName, criteria, systemName);
+
+    /// <summary>
+    /// Starts or replaces a live worker-list subscription for the current connection.
+    /// </summary>
+    /// <param name="subscriptionId">The caller-defined logical handle for this live worker stream.</param>
+    /// <param name="criteria">
+    /// Optional scope and worker-grid component options. Use the worker-grid <c>actorId</c> option to watch work
+    /// originated by one actor, and its <c>take</c> option to limit the snapshot size.
+    /// </param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
+    /// <remarks>
+    /// This is the discoverable worker-list form of <see cref="WatchView"/>. It uses the same <c>workers</c> named
+    /// view, initial seed, shared change stream, coalescing, authorization, and reconciliation path.
+    /// </remarks>
+    public Task WatchWorkers(
+        string subscriptionId,
+        WorkViewCriteria? criteria = null,
+        string? systemName = null)
+        => WatchViewCore(subscriptionId, "workers", criteria, systemName);
+
+    private async Task WatchViewCore(
+        string subscriptionId,
+        string viewName,
+        WorkViewCriteria? criteria,
+        string? systemName)
     {
         var system = ResolveSystem(systemName);
         WorkableRealtimeViewSubscription? subscription = null;
@@ -46,6 +72,7 @@ public sealed class WorkableRealtimeHub(
                 authorization,
                 this.Context.ConnectionAborted);
 
+            await viewSubscriptions.WaitForStreaming(system, this.Context.ConnectionAborted);
             await SendView(subscription, session, this.Clients.Caller);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
@@ -65,6 +92,13 @@ public sealed class WorkableRealtimeHub(
             }
 
             throw;
+        }
+        finally
+        {
+            if (subscription is not null)
+            {
+                viewSubscriptions.CompleteSeed(subscription.GroupName);
+            }
         }
     }
 
@@ -87,6 +121,14 @@ public sealed class WorkableRealtimeHub(
             subscriptionId,
             this.Context.ConnectionAborted);
     }
+
+    /// <summary>
+    /// Stops a live worker-list subscription for the current connection.
+    /// </summary>
+    /// <param name="subscriptionId">The subscription id originally passed to <see cref="WatchWorkers"/>.</param>
+    /// <param name="systemName">Optional named system. When omitted, the default Workable system is used.</param>
+    public Task UnwatchWorkers(string subscriptionId, string? systemName = null)
+        => UnwatchView(subscriptionId, systemName);
 
     /// <summary>
     /// Starts or replaces a worker-overview subscription for the current connection.
@@ -115,7 +157,8 @@ public sealed class WorkableRealtimeHub(
                 views.NormalizeWorkerOverviewRealtimeCriteria(criteria),
                 authorization,
                 this.Context.ConnectionAborted);
-            await SendWorkerOverview(subscription, session, this.Clients.Caller);
+            var hasPublishedState = await SendWorkerOverview(subscription, session, this.Clients.Caller);
+            workerOverviewSubscriptions.SetSeeded(subscription.GroupName, hasPublishedState);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
         {
@@ -245,7 +288,7 @@ public sealed class WorkableRealtimeHub(
             this.Context.ConnectionAborted);
     }
 
-    private async Task SendWorkerOverview(
+    private async Task<bool> SendWorkerOverview(
         WorkableRealtimeWorkerOverviewSubscription subscription,
         IWorkSystemSession session,
         IClientProxy client)
@@ -257,7 +300,7 @@ public sealed class WorkableRealtimeHub(
             cancellationToken: this.Context.ConnectionAborted);
         if (result is null)
         {
-            return;
+            return false;
         }
 
         await client.SendAsync(
@@ -265,8 +308,9 @@ public sealed class WorkableRealtimeHub(
             new WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>(
                 subscription.SubscriptionId,
                 "worker-overview",
-                WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(result)),
+                WorkableRealtimeWorkerOverviewUpdateFactory.CreateSnapshot(result)),
             this.Context.ConnectionAborted);
+        return true;
     }
 
     private WorkAuthorizationSnapshot CreateAuthorization(

@@ -470,26 +470,41 @@ internal sealed class WorkableRealtimeBroadcaster(
         IAsyncEnumerator<WorkChange>? reader = null;
         Task<bool>? pendingRead = null;
         string? stopReason = null;
-        var hasPublishedState = false;
+        var hasPublishedState = workerOverviewSubscriptions.HasPublishedState(subscription.GroupName);
         try
         {
             reader = changeSubscription.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
-            var current = await views.WorkerOverviewRealtimeState(
-                session,
-                subscription.WorkerId,
-                subscription.Criteria,
-                cancellationToken);
-            if (current is not null)
+            WorkWorkerOverviewRealtimeState? current = null;
+            if (workerOverviewSubscriptions.IsSeeded(subscription.GroupName))
             {
-                await this.SendWorkerOverviewUpdateToGroup(
-                    subscription.GroupName,
-                    WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current),
+                current = await views.WorkerOverviewRealtimeState(
+                    session,
+                    subscription.WorkerId,
+                    subscription.Criteria,
                     cancellationToken);
-                workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
-                hasPublishedState = true;
+                if (current is not null)
+                {
+                    await this.SendWorkerOverviewUpdateToGroup(
+                        subscription.GroupName,
+                        WorkableRealtimeWorkerOverviewUpdateFactory.CreateSnapshot(current),
+                        cancellationToken);
+                    workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
+                    workerOverviewSubscriptions.SetSeeded(subscription.GroupName, hasPublishedState: true);
+                    hasPublishedState = true;
+                }
+                else if (hasPublishedState)
+                {
+                    await this.SendWorkerOverviewUpdateToGroup(
+                        subscription.GroupName,
+                        CreateWorkerOverviewRefreshInstruction("Worker overview state changed and should be refreshed."),
+                        cancellationToken);
+                    workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
+                }
             }
 
             workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
+            await workerOverviewSubscriptions.WaitForSeed(subscription.GroupName, cancellationToken);
+            hasPublishedState |= workerOverviewSubscriptions.HasPublishedState(subscription.GroupName);
             while (!cancellationToken.IsCancellationRequested)
             {
                 pendingRead ??= reader.MoveNextAsync().AsTask();
@@ -529,9 +544,10 @@ internal sealed class WorkableRealtimeBroadcaster(
 
                 await this.SendWorkerOverviewUpdateToGroup(
                     subscription.GroupName,
-                    WorkableRealtimeWorkerOverviewUpdateFactory.CreateInitial(current),
+                    WorkableRealtimeWorkerOverviewUpdateFactory.CreateSnapshot(current),
                     cancellationToken);
                 workerOverviewSubscriptions.ReportActivity(subscription.GroupName, DateTimeOffset.UtcNow);
+                workerOverviewSubscriptions.SetSeeded(subscription.GroupName, hasPublishedState: true);
                 hasPublishedState = true;
             }
         }
@@ -651,17 +667,40 @@ internal sealed class WorkableRealtimeBroadcaster(
             Math.Max(1, options.Value.EventSubscriptionCapacity)));
         var lastPublishedVersionsByGroup = new Dictionary<string, WorkableRealtimeViewVersion>(StringComparer.Ordinal);
         using var timer = timerFactory.Create(options.Value.PublishInterval);
+        using var seedReconciliationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         IAsyncEnumerator<WorkChange>? reader = null;
         Task<bool>? pendingChangeRead = null;
         Task<bool>? pendingTimerRead = null;
+        Task<IReadOnlyList<WorkableRealtimeViewSubscription>>? pendingSeedReconciliation = null;
         try
         {
             reader = changeSubscription.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            var isRestart = viewSubscriptions.SetStreaming(system, isStreaming: true);
+            if (isRestart)
+            {
+                await this.ReconcileViewSubscriptionsAfterRestart(system, cancellationToken);
+            }
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 pendingChangeRead ??= reader.MoveNextAsync().AsTask();
                 pendingTimerRead ??= timer.WaitForNextTickAsync(cancellationToken).AsTask();
-                var completed = await Task.WhenAny(pendingChangeRead, pendingTimerRead);
+                pendingSeedReconciliation ??= viewSubscriptions.WaitForSeedReconciliations(
+                    system,
+                    seedReconciliationCancellation.Token);
+                var completed = await Task.WhenAny(pendingChangeRead, pendingTimerRead, pendingSeedReconciliation);
+                if (completed == pendingSeedReconciliation)
+                {
+                    var subscriptions = await pendingSeedReconciliation;
+                    pendingSeedReconciliation = null;
+                    await this.ReconcileSeededViewSubscriptions(
+                        system,
+                        subscriptions,
+                        lastPublishedVersionsByGroup,
+                        cancellationToken);
+                    continue;
+                }
+
                 if (completed == pendingChangeRead)
                 {
                     if (!await pendingChangeRead)
@@ -728,7 +767,97 @@ internal sealed class WorkableRealtimeBroadcaster(
 
             if (reader is not null && !cancellationToken.IsCancellationRequested)
             {
-                await reader.DisposeAsync();
+                try
+                {
+                    await reader.DisposeAsync();
+                }
+                catch (NotSupportedException)
+                {
+                    // Some completed async iterators reject an explicit dispose after their final MoveNextAsync.
+                }
+            }
+
+            await seedReconciliationCancellation.CancelAsync();
+            if (pendingSeedReconciliation is not null)
+            {
+                try
+                {
+                    await pendingSeedReconciliation;
+                }
+                catch (OperationCanceledException) when (seedReconciliationCancellation.IsCancellationRequested)
+                {
+                    // Expected when the view pump is stopped while waiting for a seeded group to reconcile.
+                }
+            }
+
+            viewSubscriptions.SetStreaming(system, isStreaming: false);
+        }
+    }
+
+    private async Task ReconcileViewSubscriptionsAfterRestart(
+        IWorkSystem system,
+        CancellationToken cancellationToken)
+    {
+        var subscriptions = viewSubscriptions
+            .GetActiveSubscriptions(system)
+            .Where(subscription => !IsDiagnosticsView(subscription))
+            .ToArray();
+        foreach (var subscription in subscriptions)
+        {
+            try
+            {
+                await this.BroadcastView(system, subscription, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (WorkableRealtimeBroadcastRules.IsNonCriticalBroadcastException(exception))
+            {
+                logger.LogError(
+                    exception,
+                    "Failed to reconcile SignalR view '{ViewName}' after the shared change stream restarted for system '{SystemName}' and group '{GroupName}'.",
+                    subscription.ViewName,
+                    system.Name,
+                    subscription.GroupName);
+            }
+        }
+    }
+
+    private async Task ReconcileSeededViewSubscriptions(
+        IWorkSystem system,
+        IReadOnlyList<WorkableRealtimeViewSubscription> subscriptions,
+        Dictionary<string, WorkableRealtimeViewVersion> lastPublishedVersionsByGroup,
+        CancellationToken cancellationToken)
+    {
+        foreach (var subscription in subscriptions.Where(subscription => !IsDiagnosticsView(subscription)))
+        {
+            try
+            {
+                if (!await this.BroadcastView(system, subscription, cancellationToken))
+                {
+                    continue;
+                }
+
+                lastPublishedVersionsByGroup[subscription.GroupName] = new WorkableRealtimeViewVersion(
+                    system is IWorkSystemReadModelClock readModelClock ? readModelClock.AppliedSequence : 0,
+                    WorkableRealtimeWorkflowViews.IsWorkflowView(subscription.ViewName) &&
+                    system is IWorkSystemWorkflowClock workflowClock
+                        ? workflowClock.WorkflowSequence
+                        : 0);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (WorkableRealtimeBroadcastRules.IsNonCriticalBroadcastException(exception))
+            {
+                logger.LogError(
+                    exception,
+                    "Failed to reconcile SignalR view '{ViewName}' after its initial seed completed for system '{SystemName}' and group '{GroupName}'.",
+                    subscription.ViewName,
+                    system.Name,
+                    subscription.GroupName);
             }
         }
     }
@@ -841,8 +970,8 @@ internal sealed class WorkableRealtimeBroadcaster(
 
             try
             {
-                await this.BroadcastView(system, subscription, cancellationToken);
-                if (hasVersionedClocks)
+                var broadcast = await this.BroadcastView(system, subscription, cancellationToken);
+                if (broadcast && hasVersionedClocks)
                 {
                     lastPublishedVersionsByGroup[subscription.GroupName] = new WorkableRealtimeViewVersion(
                         readModelSequence,
@@ -929,7 +1058,11 @@ internal sealed class WorkableRealtimeBroadcaster(
 
                 try
                 {
-                    await this.BroadcastView(system, subscription, cancellationToken);
+                    await this.BroadcastView(
+                        system,
+                        subscription,
+                        cancellationToken,
+                        reconcileAfterSeed: false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -948,11 +1081,17 @@ internal sealed class WorkableRealtimeBroadcaster(
         }
     }
 
-    private async Task BroadcastView(
+    private async Task<bool> BroadcastView(
         IWorkSystem system,
         WorkableRealtimeViewSubscription subscription,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool reconcileAfterSeed = true)
     {
+        if (viewSubscriptions.DeferBroadcastUntilSeeded(subscription.GroupName, reconcileAfterSeed))
+        {
+            return false;
+        }
+
         var session = CreateAuthorizedSession(
             system,
             subscription.Authorization);
@@ -973,6 +1112,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             subscription.ViewName,
             view,
             cancellationToken);
+        return true;
     }
 
     private async Task BroadcastDiagnosticsAlertView(
@@ -980,6 +1120,11 @@ internal sealed class WorkableRealtimeBroadcaster(
         WorkableRealtimeDiagnosticsAlertState alertState,
         CancellationToken cancellationToken)
     {
+        if (viewSubscriptions.DeferBroadcastUntilSeeded(subscription.GroupName, reconcileAfterSeed: false))
+        {
+            return;
+        }
+
         var components = new Dictionary<string, WorkComponentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var component in subscription.Criteria.Components ?? [])
         {
