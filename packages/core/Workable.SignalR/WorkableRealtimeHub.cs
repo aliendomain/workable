@@ -605,7 +605,8 @@ public sealed class WorkableRealtimeHub(
             this.Context.ConnectionAborted);
         var authorizationContext = requestContext with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                system.Name,
                 requestContext.Actor,
                 groups,
                 readableDefinitionIds: null),
@@ -614,7 +615,8 @@ public sealed class WorkableRealtimeHub(
         var session = await system.CreateSession(authorizationContext, this.Context.ConnectionAborted);
 
         return (
-            WorkAuthorizationSnapshot.Create(
+            WorkAuthorizationSnapshot.CreateForSystem(
+                system.Name,
                 requestContext.Actor,
                 groups,
                 session.Catalog.Definitions.Select(static definition => definition.Id)),

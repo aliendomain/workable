@@ -6,7 +6,7 @@ namespace Workable;
 public interface IWorkAuthorizationGroupResolver
 {
     /// <summary>
-    /// Resolves groups from a precomputed snapshot, the current invocation context, or the configured actor provider.
+    /// Resolves groups from a matching system-scoped snapshot, the current invocation context, or the configured actor provider.
     /// </summary>
     /// <param name="requestContext">The caller context whose groups are required.</param>
     /// <param name="systemName">The system name being authorized, or <see langword="null"/> for the default system.</param>

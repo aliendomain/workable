@@ -14,8 +14,9 @@ internal sealed class WorkAuthorizationGroupResolver(
         ArgumentNullException.ThrowIfNull(requestContext);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (requestContext.Authorization is { } snapshot &&
-            snapshot.Actor == requestContext.Actor)
+        if (requestContext.Authorization is { Scope: { } scope } snapshot &&
+            snapshot.Actor == requestContext.Actor &&
+            scope.IsForSystem(systemName))
         {
             return snapshot.Groups;
         }

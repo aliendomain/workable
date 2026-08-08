@@ -6,7 +6,8 @@ namespace Workable.Tests;
 [Trait("Category", "SignalR")]
 public sealed class WorkableRealtimeWorkflowViewsShould
 {
-    private static readonly WorkAuthorizationSnapshot Authorization = WorkAuthorizationSnapshot.Create(
+    private static readonly WorkAuthorizationSnapshot Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+        systemName: null,
         new WorkActor("workflow-viewer", "Workflow Viewer", "viewer@example.test"),
         ["workflow.readers"],
         []);

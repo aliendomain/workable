@@ -3282,7 +3282,8 @@ public sealed class WorkableHttpApiTests
                 actor,
                 isAuthenticated: true) with
             {
-                Authorization = WorkAuthorizationSnapshot.Create(
+                Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                    systemName: null,
                     actor,
                     ["workflow.read", "workflow.ops"],
                     readableDefinitionIds: null),
@@ -4674,7 +4675,8 @@ public sealed class WorkableHttpApiTests
             actor,
             "Wait for HTTP API test read model projection.") with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                system.Name,
                 actor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],
                 readableDefinitionIds: null),

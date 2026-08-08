@@ -212,7 +212,8 @@ public sealed class WorkableRealtimeEventSubscriptionsShould
         => values ?? throw new InvalidOperationException("Expected filter values.");
 
     private static WorkAuthorizationSnapshot Authorization(IReadOnlyList<WorkDefinitionId>? readableDefinitionIds = null)
-        => WorkAuthorizationSnapshot.Create(
+        => WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
             new WorkActor("signalr-subscription-user", "SignalR Subscription User"),
             ["signalr.read"],
             readableDefinitionIds);

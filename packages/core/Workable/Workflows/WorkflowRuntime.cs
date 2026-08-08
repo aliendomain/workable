@@ -1631,9 +1631,15 @@ internal sealed class WorkflowRuntime
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.systemAuthorizationConfiguration, groups);
         var isAllowed = systemAuthorization.HasOperateAllWorkAccess() ||
             definition.Authorization.CanOperate(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown);
-        var authorization = requestContext.Authorization is { } snapshot && snapshot.Actor == requestContext.Actor
+        var authorization = requestContext.Authorization is { Scope: { } scope } snapshot &&
+            snapshot.Actor == requestContext.Actor &&
+            scope.IsForSystem(this.systemName)
             ? snapshot
-            : WorkAuthorizationSnapshot.Create(requestContext.Actor, groups, readableDefinitionIds: null);
+            : WorkAuthorizationSnapshot.CreateForSystem(
+                this.systemName,
+                requestContext.Actor,
+                groups,
+                readableDefinitionIds: null);
         return (isAllowed, authorization);
     }
 

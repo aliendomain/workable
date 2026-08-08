@@ -274,7 +274,8 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
     }
 
     private static WorkAuthorizationSnapshot Authorization()
-        => WorkAuthorizationSnapshot.Create(
+        => WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
             new WorkActor("signalr-worker-overview-subscription-user", "SignalR Worker Overview Subscription User"),
             ["signalr.read"],
             readableDefinitionIds: null);

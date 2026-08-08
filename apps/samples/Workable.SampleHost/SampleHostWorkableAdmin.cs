@@ -20,17 +20,18 @@ internal static class SampleHostWorkableAdmin
         ArgumentNullException.ThrowIfNull(system);
         ArgumentException.ThrowIfNullOrWhiteSpace(description);
 
-        return system.CreateSession(CreateRequestContext(description));
+        return system.CreateSession(CreateRequestContext(system.Name, description));
     }
 
-    public static WorkRequestContext CreateRequestContext(string description)
+    public static WorkRequestContext CreateRequestContext(string? systemName, string description)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(description);
 
         var origin = WorkOrigin.Create(
             WorkInvocationChannel.InProcess,
             Actor);
-        var authorization = WorkAuthorizationSnapshot.Create(
+        var authorization = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName,
             Actor,
             Groups,
             readableDefinitionIds: null);
@@ -73,7 +74,7 @@ internal static class SampleHostWorkableAdmin
             systemName,
             workName,
             input,
-            CreateRequestContext(description),
+            CreateRequestContext(systemName, description),
             new WorkDispatchOptions(WorkDispatchCompletion.ReturnAfterAccepted, workerOptions),
             cancellationToken);
     }

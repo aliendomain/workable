@@ -373,7 +373,8 @@ public sealed class WorkableRealtimeViewSubscriptionsShould
     }
 
     private static WorkAuthorizationSnapshot Authorization()
-        => WorkAuthorizationSnapshot.Create(
+        => WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
             new WorkActor("signalr-view-subscription-user", "SignalR View Subscription User"),
             ["signalr.read"],
             readableDefinitionIds: null);

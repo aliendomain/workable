@@ -51,6 +51,12 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
                 category: index % 2 == 0 ? "Perf:Even" : "Perf:Odd"))
             .ToArray();
         var services = new ServiceCollection();
+        if (requiresAuthorization)
+        {
+            services.AddSingleton<IWorkAuthorizationGroupProvider>(
+                new FixedWorkAuthorizationGroupProvider([OperatorGroup]));
+        }
+
         services.AddWorkableSystem(builder =>
         {
             builder.RequireAuthorization(requiresAuthorization);
@@ -152,7 +158,11 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         var origin = WorkOrigin.Create(WorkInvocationChannel.InProcess, actor);
         return new WorkRequestContext(
             Origin: origin,
-            Authorization: WorkAuthorizationSnapshot.Create(actor, [OperatorGroup], readableDefinitionIds: null));
+            Authorization: WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                actor,
+                [OperatorGroup],
+                readableDefinitionIds: null));
     }
 
     private static Task<WorkExecutionResult> SuccessfulWork(
@@ -160,4 +170,15 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         WorkInput? input,
         CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
+
+    private sealed class FixedWorkAuthorizationGroupProvider(IEnumerable<string> groups) : IWorkAuthorizationGroupProvider
+    {
+        private readonly IReadOnlySet<string> groups = new HashSet<string>(groups, StringComparer.OrdinalIgnoreCase);
+
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(this.groups);
+    }
 }

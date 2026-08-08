@@ -98,7 +98,8 @@ public sealed class WorkflowRuntimeShould
             new WorkActor("workflow-user", "Workflow User"),
             isAuthenticated: true) with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 new WorkActor("workflow-user", "Workflow User"),
                 Groups("workflow.operate-all"),
                 readableDefinitionIds: null),
@@ -389,7 +390,8 @@ public sealed class WorkflowRuntimeShould
             description: "Start workflow with auth context.",
             isAuthenticated: true) with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 new WorkActor("workflow-user", "Workflow User"),
                 Groups("workflow.ops"),
                 readableDefinitionIds: null),

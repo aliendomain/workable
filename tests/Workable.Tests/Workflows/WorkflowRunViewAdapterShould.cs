@@ -897,7 +897,8 @@ public sealed class WorkflowRunViewAdapterShould
             actor,
             isAuthenticated: true) with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 actor,
                 Groups(groups),
                 readableDefinitionIds: null),

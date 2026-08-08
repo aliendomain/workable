@@ -1534,7 +1534,8 @@ public sealed class WorkflowRuntimeInternalsShould
             description: "Cancel for deployment",
             isAuthenticated: true) with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 new WorkActor("workflow-operator", "Workflow Operator"),
                 ["operators"],
                 []),

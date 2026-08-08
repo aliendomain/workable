@@ -149,7 +149,7 @@ Current benchmark groups:
 - `BaselineMcpBenchmarks` measures MCP workflow and worker control tool routing.
 - `BaselineMcpQueryBenchmarks` measures MCP worker query, summary, and detail tools over seeded data.
 - `BaselineAuthorizationBenchmarks` measures authorization-sensitive queue, query, and workflow execution paths.
-- `BaselineAuthorizationResolutionBenchmarks` isolates session creation and access description, including allocation counts for the newly asynchronous authorization entry points.
+- `BaselineAuthorizationResolutionBenchmarks` isolates matching-snapshot session creation, mismatched-snapshot fallback resolution, and access description, including allocation counts for the asynchronous authorization entry points.
 - `BaselineIdempotencyBenchmarks` measures persistence-backed idempotency acceptance, duplicate rejection, and duplicate contention.
 - `BaselineProfilingAdmissionBenchmarks` measures bounded automatic-node omission accounting, temporary full-capture rule misses at zero and maximum active rules, the worst case where 1,000 matching rules have pending exhausted leases, and completion of 1,000 one-shot rules.
 - `BaselineProfilingHttpBenchmarks` measures the process-wide listener tax, admitted and post-cap HTTP activity overhead, concurrent HTTP sampling at the profile cap, and the actual admitted-request path with a 1,000,000-character URI.

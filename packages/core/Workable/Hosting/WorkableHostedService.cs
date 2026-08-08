@@ -31,7 +31,7 @@ internal sealed class WorkableHostedService(
 
         foreach (var system in registry.Systems.Where(system => autoStartIds.Contains(system.Id)))
         {
-            await system.Start(CreateSystemAdministratorRequestContext(), cancellationToken);
+            await system.Start(CreateSystemAdministratorRequestContext(system.Name), cancellationToken);
         }
     }
 
@@ -50,7 +50,7 @@ internal sealed class WorkableHostedService(
         {
             return new SystemShutdownResult(
                 plan,
-                await plan.System.Stop(CreateSystemAdministratorRequestContext(), CancellationToken.None),
+                await plan.System.Stop(CreateSystemAdministratorRequestContext(plan.System.Name), CancellationToken.None),
                 Exception: null);
         }
         catch (Exception exception)
@@ -61,7 +61,7 @@ internal sealed class WorkableHostedService(
 
     private static async Task<SystemShutdownPlan> CreateShutdownPlan(IWorkSystem system)
     {
-        var requestContext = CreateSystemAdministratorRequestContext();
+        var requestContext = CreateSystemAdministratorRequestContext(system.Name);
         var session = await system.CreateSession(requestContext);
         return new(
             system,
@@ -195,12 +195,13 @@ internal sealed class WorkableHostedService(
             ? value.ToString("g")
             : "unknown";
 
-    private static WorkRequestContext CreateSystemAdministratorRequestContext()
+    private static WorkRequestContext CreateSystemAdministratorRequestContext(string? systemName)
         => new(
             WorkOrigin.Create(
                 WorkInvocationChannel.InProcess,
                 HostActor),
-            Authorization: WorkAuthorizationSnapshot.Create(
+            Authorization: WorkAuthorizationSnapshot.CreateForSystem(
+                systemName,
                 HostActor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],
                 readableDefinitionIds: null));

@@ -290,7 +290,8 @@ public sealed class WorkflowRunStateShould
             description: "Pause for maintenance",
             isAuthenticated: true) with
         {
-            Authorization = WorkAuthorizationSnapshot.Create(
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
                 new WorkActor("workflow-operator", "Workflow Operator"),
                 ["operators"],
                 []),

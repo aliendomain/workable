@@ -550,7 +550,8 @@ public sealed class WorkableRealtimeBroadcasterShould
     }
 
     private static WorkAuthorizationSnapshot Authorization()
-        => WorkAuthorizationSnapshot.Create(
+        => WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
             new WorkActor("realtime-broadcaster-test", "Realtime Broadcaster Test"),
             [InternalWorkAuthorizationGroups.SystemAdministrator],
             readableDefinitionIds: null);

@@ -14,7 +14,7 @@ internal static class WorkSystemLifecycleTestExtensions
     {
         ArgumentNullException.ThrowIfNull(system);
 
-        return system.Start(CreateSystemAdministratorRequestContext(), cancellationToken);
+        return system.Start(CreateSystemAdministratorRequestContext(system.Name), cancellationToken);
     }
 
     public static Task<WorkSystemStopResult> Stop(
@@ -23,15 +23,16 @@ internal static class WorkSystemLifecycleTestExtensions
     {
         ArgumentNullException.ThrowIfNull(system);
 
-        return system.Stop(CreateSystemAdministratorRequestContext(), cancellationToken);
+        return system.Stop(CreateSystemAdministratorRequestContext(system.Name), cancellationToken);
     }
 
-    private static WorkRequestContext CreateSystemAdministratorRequestContext()
+    private static WorkRequestContext CreateSystemAdministratorRequestContext(string? systemName)
         => new(
             WorkOrigin.Create(
                 WorkInvocationChannel.InProcess,
                 TestActor),
-            Authorization: WorkAuthorizationSnapshot.Create(
+            Authorization: WorkAuthorizationSnapshot.CreateForSystem(
+                systemName,
                 TestActor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],
                 readableDefinitionIds: null));

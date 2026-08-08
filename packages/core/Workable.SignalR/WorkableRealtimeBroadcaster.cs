@@ -1314,7 +1314,8 @@ internal sealed class WorkableRealtimeBroadcaster(
                 RealtimeBroadcasterActor,
                 WorkOriginSurface.WorkableAdapter),
             Description: "SignalR realtime broadcaster change-stream subscription.",
-            Authorization: WorkAuthorizationSnapshot.Create(
+            Authorization: WorkAuthorizationSnapshot.CreateForSystem(
+                system.Name,
                 RealtimeBroadcasterActor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],
                 readableDefinitionIds: null),
