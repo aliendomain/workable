@@ -17,7 +17,7 @@ namespace Workable.Tests;
 public sealed class WorkableMcpTests
 {
     [Fact]
-    public void ToolDescriptorsUseDefinitionSchemasAndMetadata()
+    public async Task ToolDescriptorsUseDefinitionSchemasAndMetadata()
     {
         var metadata = new WorkDefinitionMetadata(
             Purpose: "Expose cache refresh to external callers.",
@@ -33,7 +33,7 @@ public sealed class WorkableMcpTests
             metadata: metadata,
             configuration: AllowMcp());
         var system = CreateSystem(definition, SuccessfulWork);
-        var session = CreateMcpSession(system, "Read MCP tool descriptors.");
+        var session = await CreateMcpSession(system, "Read MCP tool descriptors.");
 
         var descriptor = Assert.Single(session.GetMcpToolDescriptors());
 
@@ -47,11 +47,11 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
-    public void ToolDescriptorsCanUseOrExcludeFallbackInputSchema()
+    public async Task ToolDescriptorsCanUseOrExcludeFallbackInputSchema()
     {
         var definition = WorkDefinition.Create("maintenance.ping", "Pings maintenance.", configuration: AllowMcp());
         var system = CreateSystem(definition, SuccessfulWork);
-        var session = CreateMcpSession(system, "Read MCP tool descriptors.");
+        var session = await CreateMcpSession(system, "Read MCP tool descriptors.");
 
         var included = Assert.Single(session.GetMcpToolDescriptors());
         var excluded = session.GetMcpToolDescriptors(new WorkableMcpToolCatalogOptions
@@ -71,7 +71,7 @@ public sealed class WorkableMcpTests
         await using var system = CreateSystem(definition, (context, input, cancellationToken) =>
             Task.FromResult(WorkExecutionResult.Success(input is null ? WorkOutput.Empty : WorkOutput.FromData(input))));
         await system.Start();
-        var session = CreateMcpSession(system, "Invoke MCP tool.");
+        var session = await CreateMcpSession(system, "Invoke MCP tool.");
 
         using var document = JsonDocument.Parse("""{"message":"hello"}""");
         var result = await session.InvokeMcpTool("echo", document.RootElement);
@@ -91,7 +91,7 @@ public sealed class WorkableMcpTests
             configuration: AllowMcp() with { Start = WorkStartConfiguration.DoNotStart });
         await using var system = CreateSystem(definition, SuccessfulWork);
         await system.Start();
-        var session = CreateMcpSession(system, "Invoke MCP tool.");
+        var session = await CreateMcpSession(system, "Invoke MCP tool.");
 
         var result = await session.InvokeMcpTool(
             "manual.work",
@@ -110,7 +110,7 @@ public sealed class WorkableMcpTests
     {
         await using var system = CreateSystem(WorkDefinition.Create("known"), SuccessfulWork);
         await system.Start();
-        var session = CreateMcpSession(system, "Invoke MCP tool.");
+        var session = await CreateMcpSession(system, "Invoke MCP tool.");
 
         var result = await session.InvokeMcpTool("missing");
 
@@ -124,7 +124,7 @@ public sealed class WorkableMcpTests
     {
         await using var system = CreateSystem(WorkDefinition.Create("dotnet.http.default"), SuccessfulWork);
         await system.Start();
-        var session = CreateMcpSession(system, "Invoke MCP tool.");
+        var session = await CreateMcpSession(system, "Invoke MCP tool.");
 
         var descriptors = session.GetMcpToolDescriptors();
         var result = await session.InvokeMcpTool("dotnet.http.default");
@@ -147,13 +147,13 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
-    public void McpServerToolsIncludeSafeWorkNamesAndQueryTools()
+    public async Task McpServerToolsIncludeSafeWorkNamesAndQueryTools()
     {
         var definition = WorkDefinition.Create("cache.refresh", "Refreshes cached data.", configuration: AllowMcp());
         using var provider = CreateProvider(definition, SuccessfulWork);
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
 
-        var tools = router.GetTools(CreateMcpRequestContext("List MCP server tools."));
+        var tools = await router.GetTools(CreateMcpRequestContext("List MCP server tools."));
 
         Assert.Contains(tools, tool =>
             tool.Kind == WorkableMcpServerToolKind.Work &&
@@ -233,7 +233,7 @@ public sealed class WorkableMcpTests
     }
 
     [Fact]
-    public void McpServerDisambiguatesWorkToolNameCollisions()
+    public async Task McpServerDisambiguatesWorkToolNameCollisions()
     {
         using var provider = new ServiceCollection()
             .AddWorkableSystem(builder =>
@@ -245,7 +245,7 @@ public sealed class WorkableMcpTests
             .BuildServiceProvider();
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
 
-        var workTools = router.GetTools(CreateMcpRequestContext("List MCP server tools."))
+        var workTools = (await router.GetTools(CreateMcpRequestContext("List MCP server tools.")))
             .Where(tool => tool.Kind == WorkableMcpServerToolKind.Work)
             .ToList();
 
@@ -271,7 +271,7 @@ public sealed class WorkableMcpTests
             options: null,
             systemName: null,
             requestContext: CreateMcpRequestContext("Invoke MCP work tool."));
-        var session = CreateMcpSession(system, "Inspect MCP work tool invocation.");
+        var session = await CreateMcpSession(system, "Inspect MCP work tool invocation.");
         var workers = await session.Query.Workers(new WorkerCriteria(DefinitionName: "echo.message"));
         var worker = await session.Query.Worker(Assert.Single(workers.Workers).Id)
             ?? throw new InvalidOperationException("Expected worker.");
@@ -302,7 +302,7 @@ public sealed class WorkableMcpTests
         await remote.Start();
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
 
-        var tools = router.GetTools(
+        var tools = await router.GetTools(
             CreateMcpRequestContext("List MCP server tools."),
             systemName: "remote");
 
@@ -356,7 +356,7 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         var requestContext = CreateMcpRequestContext("Invoke MCP named system without connect.");
 
-        var toolsException = Assert.Throws<WorkSystemAccessDeniedException>(() => router.GetTools(
+        var toolsException = await Assert.ThrowsAsync<WorkSystemAccessDeniedException>(async () => await router.GetTools(
             requestContext,
             systemName: "remote"));
         var result = await router.CallTool(
@@ -409,7 +409,7 @@ public sealed class WorkableMcpTests
 
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
         await WaitForReadModel(system);
-        var session = CreateMcpSession(system, "Inspect MCP worker state.");
+        var session = await CreateMcpSession(system, "Inspect MCP worker state.");
         var workers = await session.Query.Workers(new WorkerCriteria(DefinitionName: "echo.message"));
         var worker = await session.Query.Worker(Assert.Single(workers.Workers).Id)
             ?? throw new InvalidOperationException("Expected worker.");
@@ -453,7 +453,7 @@ public sealed class WorkableMcpTests
         var registry = host.Services.GetRequiredService<IWorkSystemRegistry>();
         Assert.True(registry.TryGet("remote", out var remote));
         await WaitForReadModel(remote);
-        var session = CreateMcpSession(remote, "Inspect named MCP worker state.");
+        var session = await CreateMcpSession(remote, "Inspect named MCP worker state.");
         var workers = await session.Query.Workers(new WorkerCriteria(DefinitionName: "remote.echo"));
         var worker = await session.Query.Worker(Assert.Single(workers.Workers).Id)
             ?? throw new InvalidOperationException("Expected worker.");
@@ -503,7 +503,7 @@ public sealed class WorkableMcpTests
                 }));
         var registry = host.Services.GetRequiredService<IWorkSystemRegistry>();
         Assert.True(registry.TryGet("remote", out var remote));
-        var session = CreateMcpSession(remote, "Prepare named MCP worker action.");
+        var session = await CreateMcpSession(remote, "Prepare named MCP worker action.");
         var queue = await session.Queue.Enqueue("remote.manual");
         await WaitForReadModel(remote);
         var worker = await session.Query.Worker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker."))
@@ -555,7 +555,7 @@ public sealed class WorkableMcpTests
             ownsHttpClient: false);
         await Assert.ThrowsAnyAsync<Exception>(() => McpClient.CreateAsync(transport));
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var session = CreateMcpSession(system, "Inspect rejected anonymous MCP request.");
+        var session = await CreateMcpSession(system, "Inspect rejected anonymous MCP request.");
         var workers = await session.Query.Workers(new WorkerCriteria(DefinitionName: "echo.message"));
 
         Assert.Empty(workers.Workers);
@@ -611,7 +611,7 @@ public sealed class WorkableMcpTests
                     Start = WorkStartConfiguration.DoNotStart,
                 }));
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var session = CreateMcpSession(system, "Prepare MCP worker action.");
+        var session = await CreateMcpSession(system, "Prepare MCP worker action.");
         var queue = await session.Queue.Enqueue("manual.mcp");
         var worker = await session.Query.Worker(queue.WorkerId ?? throw new InvalidOperationException("Expected worker."))
             ?? throw new InvalidOperationException("Expected worker.");
@@ -695,7 +695,7 @@ public sealed class WorkableMcpTests
                     Start = WorkStartConfiguration.DoNotStart,
                 }));
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
-        var seedSession = CreateMcpSessionWithGroups(
+        var seedSession = await CreateMcpSessionWithGroups(
             system,
             "Seed MCP unauthorized action test worker.",
             "billing.read",
@@ -938,7 +938,7 @@ public sealed class WorkableMcpTests
         await TestEventually.Until(
             async () =>
             {
-                child = await system.CreateSession(CreateMcpRequestContext("Inspect canceled MCP HTTP workflow child."))
+                child = await (await system.CreateSession(CreateMcpRequestContext("Inspect canceled MCP HTTP workflow child.")))
                     .Query.Worker(childWorkerId);
                 return child?.State == WorkerState.Canceled;
             },
@@ -1079,7 +1079,7 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         await system.Start();
 
-        var session = CreateMcpSession(system, "Queue MCP worker for query tool test.");
+        var session = await CreateMcpSession(system, "Queue MCP worker for query tool test.");
         var handle = await session.Queue.Enqueue(
             "reports.generate",
             WorkInput.Empty,
@@ -1122,7 +1122,7 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         await system.Start();
 
-        var session = CreateMcpSession(system, "Queue MCP worker iteration test.");
+        var session = await CreateMcpSession(system, "Queue MCP worker iteration test.");
         var handle = await session.Queue.Enqueue(
             "claim.review",
             WorkInput.Empty
@@ -1168,7 +1168,7 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         await system.Start();
 
-        var session = CreateMcpSession(system, "Queue MCP key query test.");
+        var session = await CreateMcpSession(system, "Queue MCP key query test.");
         var handle = await session.Queue.Enqueue(
             "claim.review",
             WorkInput.Empty
@@ -1218,7 +1218,7 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         await system.Start();
 
-        var session = CreateMcpSession(system, "Queue MCP worker snapshot test.");
+        var session = await CreateMcpSession(system, "Queue MCP worker snapshot test.");
         var handle = await session.Queue.Enqueue("data.import", WorkInput.Empty);
         await handle.WaitForCompletion();
 
@@ -1324,7 +1324,7 @@ public sealed class WorkableMcpTests
             options: null,
             systemName: null,
             requestContext: CreateMcpRequestContext("Invoke MCP action tool."));
-        var session = CreateMcpSession(system, "Inspect reconfigured MCP definition.");
+        var session = await CreateMcpSession(system, "Inspect reconfigured MCP definition.");
         var handle = await session.Queue.Enqueue(definition.Name);
         var worker = await session.Query.Worker(handle.WorkerId ?? throw new InvalidOperationException("Expected worker."));
 
@@ -1631,7 +1631,7 @@ public sealed class WorkableMcpTests
         await TestEventually.Until(
             async () =>
             {
-                child = await system.CreateSession(CreateMcpRequestContext("Inspect canceled MCP workflow child."))
+                child = await (await system.CreateSession(CreateMcpRequestContext("Inspect canceled MCP workflow child.")))
                     .Query.Worker(childWorkerId);
                 return child?.State == WorkerState.Canceled;
             },
@@ -2174,7 +2174,7 @@ public sealed class WorkableMcpTests
         CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
 
-    private static IWorkSystemSession CreateMcpSession(
+    private static ValueTask<IWorkSystemSession> CreateMcpSession(
         IWorkSystem system,
         string description)
         => TransportAuthorizationTestSupport.CreateTransportSession(
@@ -2194,7 +2194,7 @@ public sealed class WorkableMcpTests
     private static string ReadToolText(CallToolResult result)
         => Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text;
 
-    private static IWorkSystemSession CreateMcpSessionWithGroups(
+    private static ValueTask<IWorkSystemSession> CreateMcpSessionWithGroups(
         IWorkSystem system,
         string description,
         params string[] groups)
@@ -2225,7 +2225,7 @@ public sealed class WorkableMcpTests
 
     private static async Task WaitForReadModel(IWorkSystem system)
     {
-        var session = CreateMcpSessionWithGroups(
+        var session = await CreateMcpSessionWithGroups(
             system,
             "Wait for MCP test read model projection.",
             InternalWorkAuthorizationGroups.SystemAdministrator);

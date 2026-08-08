@@ -104,7 +104,7 @@ internal sealed class DurableWorkBenchmarkSystem : IAsyncDisposable
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         var requestContext = BenchmarkRequestContexts.CreateAnonymous("Run durable performance benchmark.");
         await system.Start(requestContext, cancellationToken);
-        var session = system.CreateSession(requestContext);
+        var session = await system.CreateSession(requestContext);
         return new DurableWorkBenchmarkSystem(
             provider,
             system,

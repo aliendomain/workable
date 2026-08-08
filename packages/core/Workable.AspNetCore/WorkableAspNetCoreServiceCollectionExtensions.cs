@@ -33,19 +33,8 @@ public static class WorkableAspNetCoreServiceCollectionExtensions
         services.TryAddSingleton<IWorkRequestContextFactory, HttpContextWorkRequestContextFactory>();
         services.TryAddSingleton<IHttpContextWorkCommandDispatcher, HttpContextWorkCommandDispatcher>();
         services.TryAddSingleton<IHttpContextWorkflowCommandDispatcher, HttpContextWorkflowCommandDispatcher>();
-        UseHttpContextAuthorizationGroupProvider(services);
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IWorkAuthorizationGroupContextProvider, HttpContextClaimsWorkAuthorizationGroupProvider>());
         return services;
-    }
-
-    private static void UseHttpContextAuthorizationGroupProvider(IServiceCollection services)
-    {
-        var existing = services.LastOrDefault(descriptor => descriptor.ServiceType == typeof(IWorkAuthorizationGroupProvider));
-        if (existing is not null && existing.ImplementationType != typeof(HttpContextClaimsWorkAuthorizationGroupProvider))
-        {
-            return;
-        }
-
-        services.RemoveAll<IWorkAuthorizationGroupProvider>();
-        services.AddSingleton<IWorkAuthorizationGroupProvider, HttpContextClaimsWorkAuthorizationGroupProvider>();
     }
 }

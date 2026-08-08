@@ -8,7 +8,7 @@ internal static class WorkableHttpSystemRoutes
 {
     internal static void Map(RouteGroupBuilder group)
     {
-        group.MapGet("/diagnostics", (
+        group.MapGet("/diagnostics", async (
             HttpContext httpContext,
             WorkableHttpTopologyResolver topology,
             IWorkRequestContextFactory requestContexts) =>
@@ -18,7 +18,7 @@ internal static class WorkableHttpSystemRoutes
                 return notFound;
             }
 
-            var session = WorkableHttpRequestContext.CreateSession(
+            var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
                 requestContexts);
@@ -36,7 +36,7 @@ internal static class WorkableHttpSystemRoutes
                 return notFound;
             }
 
-            var requestContext = WorkableHttpRequestContext.Create(
+            var requestContext = await WorkableHttpRequestContext.Create(
                 httpContext,
                 system,
                 requestContexts);
@@ -55,7 +55,7 @@ internal static class WorkableHttpSystemRoutes
                 return notFound;
             }
 
-            var requestContext = WorkableHttpRequestContext.Create(
+            var requestContext = await WorkableHttpRequestContext.Create(
                 httpContext,
                 system,
                 requestContexts);

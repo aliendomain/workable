@@ -81,14 +81,14 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void CreateSessionProvidesInterfacesWhenAuthorizationIsRequired()
+    public async Task CreateSessionProvidesInterfacesWhenAuthorizationIsRequired()
     {
         var provider = new ServiceCollection()
             .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(WorkDefinition.Create("secure"), SuccessfulWork))
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        var session = system.CreateSession(CreateRequestContext("test-user"));
+        var session = await system.CreateSession(CreateRequestContext("test-user"));
 
         Assert.NotNull(session.Catalog);
         Assert.NotNull(session.Queue);
@@ -118,10 +118,11 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
         var inMemory = Assert.IsType<InMemoryWorkSystem>(system);
-        var readerSession = system.CreateSession(CreateRequestContext("reader"));
+        var readerSession = await system.CreateSession(CreateRequestContext("reader"));
         await using var subscription = readerSession.Changes.Subscribe();
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
+        inMemory.ChangeStream.Publish(WorkChangeKey.Actor("hidden-actor"));
         inMemory.ChangeStream.Publish(WorkChangeKey.Definition(hidden.Name));
         inMemory.ChangeStream.Publish(WorkChangeKey.Definition(visible.Name));
 
@@ -130,6 +131,31 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var diagnostics = Assert.IsAssignableFrom<IWorkChangeSubscriptionDiagnostics>(subscription)
             .GetDiagnosticsSnapshot();
         Assert.Equal(0, diagnostics.AcceptedChangeCount);
+    }
+
+    [Fact]
+    public async Task ReadAllSessionCanObserveActorChangeKeys()
+    {
+        var definition = PausedDefinition("actor.change");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["work-admin"] = Groups("work.admin"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .ConfigureAuthorization(authorization => authorization.WorkAdministrators("work.admin"))
+                .AddWork(definition, SuccessfulWork))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var inMemory = Assert.IsType<InMemoryWorkSystem>(system);
+        var session = await system.CreateSession(CreateRequestContext("work-admin"));
+        await using var subscription = session.Changes.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var expected = WorkChangeKey.Actor("visible-actor");
+
+        inMemory.ChangeStream.Publish(expected);
+
+        Assert.Equal(expected, (await ReadNextChange(reader)).Key);
     }
 
     [Fact]
@@ -143,7 +169,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
                     operateGroups: ["private.operate"])))
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
-        var session = system.CreateSession(CreateRequestContext("unknown"));
+        var session = await system.CreateSession(CreateRequestContext("unknown"));
         await using var subscription = session.Changes.Subscribe();
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
@@ -171,13 +197,13 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
-        var operatorSession = system.CreateSession(CreateRequestContext("operator"));
+        var operatorSession = await system.CreateSession(CreateRequestContext("operator"));
         await operatorSession.Queue.Enqueue(visible.Name);
         await operatorSession.Queue.Enqueue(hidden.Name);
         await TestEventually.Until(async () =>
             (await operatorSession.Query.Workers(new WorkerCriteria(Take: 10))).TotalCount == 2);
 
-        var readerSession = system.CreateSession(CreateRequestContext("reader"));
+        var readerSession = await system.CreateSession(CreateRequestContext("reader"));
 
         Assert.Equal(visible.Id, Assert.Single(readerSession.Catalog.Definitions).Id);
         Assert.Equal(visible.Id, Assert.Single((await readerSession.Query.WorkDefinitions()).Definitions).Id);
@@ -205,7 +231,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
-        var session = system.CreateSession(CreateRequestContext("operator"));
+        var session = await system.CreateSession(CreateRequestContext("operator"));
 
         var accepted = await session.Queue.Enqueue(visible.Name);
         var rejected = await session.Queue.Enqueue(hidden.Name);
@@ -234,11 +260,11 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
-        var queued = await system.CreateSession(CreateRequestContext("operator")).Queue.Enqueue(definition.Name);
-        var worker = await system.CreateSession(CreateRequestContext("operator")).Query.Worker(
+        var queued = await (await system.CreateSession(CreateRequestContext("operator"))).Queue.Enqueue(definition.Name);
+        var worker = await (await system.CreateSession(CreateRequestContext("operator"))).Query.Worker(
             queued.WorkerId ?? throw new InvalidOperationException("Expected queued worker."));
 
-        var outcome = await system.CreateSession(CreateRequestContext("reader")).Workers.Execute(
+        var outcome = await (await system.CreateSession(CreateRequestContext("reader"))).Workers.Execute(
             worker?.Version ?? throw new InvalidOperationException("Expected worker."),
             WorkAction.Cancel);
 
@@ -265,7 +291,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
 
-        var outcome = await system.CreateSession(CreateRequestContext("operator")).Workers.Execute(
+        var outcome = await (await system.CreateSession(CreateRequestContext("operator"))).Workers.Execute(
             new WorkerVersion(WorkerId.New(), Revision: 1),
             WorkAction.Start);
 
@@ -273,7 +299,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void UnsecuredSessionDoesNotResolveAuthorizationScope()
+    public async Task UnsecuredSessionDoesNotResolveAuthorizationScope()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider, ThrowingGroupProvider>()
@@ -283,7 +309,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        var session = system.CreateSession(CreateRequestContext("anyone"));
+        var session = await system.CreateSession(CreateRequestContext("anyone"));
 
         Assert.NotNull(session.Catalog);
     }
@@ -302,7 +328,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
 
-        var session = system.CreateSession(CreateRequestContext("operator"));
+        var session = await system.CreateSession(CreateRequestContext("operator"));
         var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Empty(session.Catalog.Definitions);
@@ -322,7 +348,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
 
-        var session = system.CreateSession(CreateRequestContext("operator"));
+        var session = await system.CreateSession(CreateRequestContext("operator"));
         var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
@@ -349,7 +375,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
 
-        var session = system.CreateSession(CreateRequestContext("operator"));
+        var session = await system.CreateSession(CreateRequestContext("operator"));
         var registeredDefinition = Assert.Single(session.Catalog.Definitions);
         var queued = await session.Queue.Enqueue(definition.Name);
 
@@ -359,7 +385,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void AttributeAuthorizationAppearsOnCatalogDefinition()
+    public async Task AttributeAuthorizationAppearsOnCatalogDefinition()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
@@ -370,7 +396,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        var definition = Assert.Single(system.CreateSession(CreateRequestContext("reader")).Catalog.Definitions);
+        var definition = Assert.Single((await system.CreateSession(CreateRequestContext("reader"))).Catalog.Definitions);
 
         Assert.Equal(WorkAuthorizationRegistrationSource.Attribute, definition.Authorization.Read.Source);
         Assert.Equal(WorkAuthorizationRegistrationSource.Attribute, definition.Authorization.Operate.Source);
@@ -379,7 +405,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void FluentAuthorizationOverridesAttributeAuthorization()
+    public async Task FluentAuthorizationOverridesAttributeAuthorization()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
@@ -394,7 +420,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        var definition = Assert.Single(system.CreateSession(CreateRequestContext("reader")).Catalog.Definitions);
+        var definition = Assert.Single((await system.CreateSession(CreateRequestContext("reader"))).Catalog.Definitions);
 
         Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Read.Source);
         Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Operate.Source);
@@ -403,7 +429,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void FluentAllowReadToGroupsSetsReadAuthorization()
+    public async Task FluentAllowReadToGroupsSetsReadAuthorization()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
@@ -418,7 +444,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        var definition = Assert.Single(system.CreateSession(CreateRequestContext("reader")).Catalog.Definitions);
+        var definition = Assert.Single((await system.CreateSession(CreateRequestContext("reader"))).Catalog.Definitions);
 
         Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Read.Source);
         Assert.Equal(["allow.read"], definition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
@@ -427,7 +453,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void FluentAllowOperateToGroupsSetsOperateAuthorization()
+    public async Task FluentAllowOperateToGroupsSetsOperateAuthorization()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider, ThrowingGroupProvider>()
@@ -474,7 +500,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void FluentAllowReadAndOperateToGroupsCanBeChained()
+    public async Task FluentAllowReadAndOperateToGroupsCanBeChained()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
@@ -491,7 +517,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        var definition = Assert.Single(system.CreateSession(CreateRequestContext("operator")).Catalog.Definitions);
+        var definition = Assert.Single((await system.CreateSession(CreateRequestContext("operator"))).Catalog.Definitions);
 
         Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Operate.Source);
         Assert.Equal(["allow.read"], definition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
@@ -514,7 +540,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
 
-        var session = system.CreateSession(CreateRequestContext("work-admin"));
+        var session = await system.CreateSession(CreateRequestContext("work-admin"));
         var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
@@ -564,7 +590,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
 
-        var session = system.CreateSession(CreateRequestContext("system-admin"));
+        var session = await system.CreateSession(CreateRequestContext("system-admin"));
         var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
@@ -572,7 +598,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void AccessSummaryHasAnyAccessUsesActualSystemOrWorkRights()
+    public async Task AccessSummaryHasAnyAccessUsesActualSystemOrWorkRights()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
@@ -590,13 +616,13 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        Assert.True(system.DescribeAccess(CreateRequestContext("reader")).HasAnyAccess());
-        Assert.True(system.DescribeAccess(CreateRequestContext("diagnostics")).HasAnyAccess());
-        Assert.False(system.DescribeAccess(CreateRequestContext("unknown")).HasAnyAccess());
+        Assert.True((await system.DescribeAccess(CreateRequestContext("reader"))).HasAnyAccess());
+        Assert.True((await system.DescribeAccess(CreateRequestContext("diagnostics"))).HasAnyAccess());
+        Assert.False((await system.DescribeAccess(CreateRequestContext("unknown"))).HasAnyAccess());
     }
 
     [Fact]
-    public void DiagnosticsRequireConfiguredPermission()
+    public async Task DiagnosticsRequireConfiguredPermission()
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
@@ -610,8 +636,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
 
-        var diagnosticsSession = system.CreateSession(CreateRequestContext("diagnostics"));
-        var deniedSession = system.CreateSession(CreateRequestContext("reader"));
+        var diagnosticsSession = await system.CreateSession(CreateRequestContext("diagnostics"));
+        var deniedSession = await system.CreateSession(CreateRequestContext("reader"));
 
         Assert.True(diagnosticsSession.Diagnostics.Queue.RejectedWorkCount >= 0);
         var exception = Assert.Throws<WorkSystemAccessDeniedException>(() => deniedSession.Diagnostics.Queue);
@@ -646,11 +672,46 @@ public sealed class WorkSystemAuthorizationConfigurationTests
                 readableDefinitionIds: null),
         };
 
-        var session = system.CreateSession(requestContext);
+        var session = await system.CreateSession(requestContext);
         var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Single(session.Catalog.Definitions);
         Assert.True(queued.QueueOutcome.IsAccepted);
+    }
+
+    [Fact]
+    public async Task AuthorizationSnapshotForDifferentActorIsIgnored()
+    {
+        var definition = PausedDefinition("snapshot.actor-mismatch");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.RequireGroups(
+                    readGroups: ["snapshot.read"],
+                    operateGroups: ["snapshot.operate"])))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var requestActor = new WorkActor("request-user");
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            requestActor) with
+        {
+            Authorization = WorkAuthorizationSnapshot.Create(
+                new WorkActor("different-user"),
+                ["snapshot.read", "snapshot.operate"],
+                readableDefinitionIds: null),
+        };
+
+        var session = await system.CreateSession(requestContext);
+        var queued = await session.Queue.Enqueue(definition.Name);
+
+        Assert.Empty(session.Catalog.Definitions);
+        Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
     }
 
     [Fact]
@@ -667,7 +728,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
-        var session = system.CreateSession(CreateKnownAuthenticatedRequestContext("known-user"));
+        var session = await system.CreateSession(CreateKnownAuthenticatedRequestContext("known-user"));
 
         var queued = await session.Queue.Enqueue(definition.Name);
 
@@ -688,7 +749,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
-        var session = system.CreateSession(WorkRequestContext.Create(
+        var session = await system.CreateSession(WorkRequestContext.Create(
             WorkInvocationChannel.InProcess,
             actor: WorkActor.Unknown,
             description: "Authenticated but unknown actor.",
@@ -754,15 +815,21 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
     private sealed class TestGroupProvider(IReadOnlyDictionary<string, IReadOnlySet<string>> groupsByActor) : IWorkAuthorizationGroupProvider
     {
-        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
-            => actor.Id is not null && groupsByActor.TryGetValue(actor.Id, out var groups)
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlySet<string>>(actor.Id is not null && groupsByActor.TryGetValue(actor.Id, out var groups)
                 ? groups
-                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase));
     }
 
     private sealed class ThrowingGroupProvider : IWorkAuthorizationGroupProvider
     {
-        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
             => throw new InvalidOperationException("Authorization groups should not be resolved.");
     }
 

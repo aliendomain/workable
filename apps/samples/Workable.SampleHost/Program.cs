@@ -103,6 +103,7 @@ builder.Services.AddWorkableSystem(workable =>
     workable.AddWork<DemoTimedWork>(sampleQuickDefinition);
     workable.AddWork<DemoTimedWork>(sampleLongDefinition);
     workable.AddWork<DemoMessagePanelWork>(sampleMessagePanelDefinition);
+    workable.AddWork<DemoAssistantStreamWork>();
     workable.AddWork<DemoProfilingLabWork>(sampleProfilingLabDefinition);
     workable.AddWork<DemoForceCancelWork>(DemoDefinition("sample.demo.force-cancel", "Samples:Demo", "Ignores cancellation so shutdown must force-cancel it."));
     workable.AddWork<DemoWorkflowFanOutSeedWork>(sampleWorkflowSeedDefinition);

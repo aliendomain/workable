@@ -31,7 +31,7 @@ That registers:
 - `IWorkRequestContextFactory`
 - `IHttpContextWorkCommandDispatcher`
 - `IHttpContextWorkflowCommandDispatcher`
-- a default `IWorkAuthorizationGroupProvider`
+- an HTTP claims-based authorization-group context provider
 - `IHttpContextAccessor` when one is not already registered
 
 ## Preferred HTTP Queueing Path
@@ -121,7 +121,7 @@ app.MapPost("/welcome/{userId}", async (
         WorkInvocationChannel.HttpApi,
         "Queue welcome email from custom endpoint.");
 
-    var session = system.CreateSession(requestContext);
+    var session = await system.CreateSession(requestContext, cancellationToken);
 
     return await session.Queue.Enqueue(
         "email.welcome.send",
@@ -157,7 +157,7 @@ This is usually enough for custom endpoints that already have authenticated user
 
 ## Authorization Group Resolution
 
-The default `IWorkAuthorizationGroupProvider` reads group values from `HttpContext.User`.
+The ASP.NET Core group-context provider reads group values from `HttpContext.User` when the current authenticated user matches the `WorkActor` being evaluated.
 
 By default it looks at:
 
@@ -205,16 +205,16 @@ That comes up most often in integration tests or platform-style hosts where Work
 
 ## Custom Group Providers
 
-If your application already has a richer authorization model, you can replace the default group provider:
+If your application already has a richer authorization model, register an actor-based group provider:
 
 ```csharp
-builder.Services.AddSingleton<IWorkAuthorizationGroupProvider, MyGroupProvider>();
 builder.Services.AddWorkableAspNetCoreAuthorization();
+builder.Services.AddSingleton<IWorkAuthorizationGroupProvider, MyGroupProvider>();
 ```
 
-Or register your provider after calling the Workable setup as the final override.
+`MyGroupProvider.GetGroups(actor, systemName, cancellationToken)` can query a database, directory, or remote permission service. The ASP.NET Core claims provider still handles matching live HTTP requests first. The actor-based provider is the fallback when no matching HTTP context exists, including durable work and workflow rehydration in background services.
 
-Use that path when Workable groups should come from something other than raw token claims, such as database lookups, tenant-aware role expansion, or application-specific permission projection.
+Use that path for database lookups, tenant-aware role expansion, application-specific permission projection, or any host that uses durability and needs to resolve the queued actor after the original request has ended.
 
 ## Relationship To Workable Authorization
 

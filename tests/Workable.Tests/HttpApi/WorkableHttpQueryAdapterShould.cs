@@ -14,7 +14,7 @@ public sealed class WorkableHttpQueryAdapterShould
         services.AddWorkableSystem(builder => builder.AddWork(definition, SuccessfulWork));
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = Session(system);
+        var session = await Session(system);
         var adapter = new WorkableHttpQueryAdapter();
 
         var byName = await adapter.DefinitionInfo(session, system, definition.Name);
@@ -38,7 +38,7 @@ public sealed class WorkableHttpQueryAdapterShould
         services.AddWorkableSystem(builder => builder.AddWork(definition, SuccessfulWork));
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = Session(system);
+        var session = await Session(system);
         var input = WorkInput
             .FromJson("""{"case":"configuration"}""")
             .WithSubject(new WorkSubjectId("claim", "CLM-1"))
@@ -72,7 +72,7 @@ public sealed class WorkableHttpQueryAdapterShould
             configuration => configuration.ConfigureLogging(level: LogLevel.Information)));
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = Session(system);
+        var session = await Session(system);
         var handle = await session.Queue.Enqueue(
             definition.Name,
             options: new WorkerOptions(ProfilingEnabled: true));
@@ -136,7 +136,7 @@ public sealed class WorkableHttpQueryAdapterShould
         });
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = Session(system);
+        var session = await Session(system);
         var messageOnlyHandle = await session.Queue.Enqueue(messageOnlyDefinition.Name);
         var quietHandle = await session.Queue.Enqueue(quietDefinition.Name);
         Assert.True((await messageOnlyHandle.WaitForCompletion()).IsCompletedSuccessfully);
@@ -172,7 +172,7 @@ public sealed class WorkableHttpQueryAdapterShould
         services.AddWorkableSystem(builder => builder.AddWork(definition, SuccessfulWork));
         await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = Session(system);
+        var session = await Session(system);
         var adapter = new WorkableHttpQueryAdapter();
         var handle = await session.Queue.Enqueue(definition.Name);
 
@@ -181,7 +181,7 @@ public sealed class WorkableHttpQueryAdapterShould
         Assert.Null(await adapter.WorkerIterationOverview(session, RequiredWorkerId(handle), sequence: 99));
     }
 
-    private static IWorkSystemSession Session(IWorkSystem system)
+    private static ValueTask<IWorkSystemSession> Session(IWorkSystem system)
         => TransportAuthorizationTestSupport.CreateTransportSession(
             system,
             WorkInvocationChannel.HttpApi,

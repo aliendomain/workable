@@ -135,9 +135,10 @@ dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Rele
 Current benchmark groups:
 
 - `BaselineWorkerQueryBenchmarks` measures broad first-page worker queries, exact identifier-index queries, and identifier key-type facets at 100, 10,000, and 100,000 queued workers.
+- `BaselineActorWorkerQueryBenchmarks` measures exact originating-actor queries at approximately 100% and 1% selectivity across the same worker-count scale.
 - `BaselineReadModelPublishBenchmarks` measures the cost of flushing one new worker update into already-large read-model snapshots at 100, 5,000, and 25,000 queued workers.
 - `BaselineAuthorizedBulkActionBenchmarks` measures authorized `ExecuteAll(Cancel)` over queued workers at 100, 1,000, and 5,000 workers.
-- `BaselineDurableLifecycleBenchmarks` measures representative SQL-backed queue, complete, and queued-start action paths.
+- `BaselineDurableLifecycleBenchmarks` measures representative SQL-backed queue, complete, queued-start action, and caller-owned transaction commit/notify paths.
 - `BaselineDurableSoakBenchmarks` measures larger SQL-backed queue, completion, and follow-up query batches to catch durable memory or latency regressions.
 - `BaselineWorkflowDispatchBenchmarks` measures single-dispatch workflow startup and completion overhead and reports per-workflow cost from batched invocations.
 - `BaselineWorkflowParallelJoinBenchmarks` measures parallel branch fan-out and join bookkeeping across branch counts and reports per-workflow cost from batched invocations.
@@ -148,6 +149,7 @@ Current benchmark groups:
 - `BaselineMcpBenchmarks` measures MCP workflow and worker control tool routing.
 - `BaselineMcpQueryBenchmarks` measures MCP worker query, summary, and detail tools over seeded data.
 - `BaselineAuthorizationBenchmarks` measures authorization-sensitive queue, query, and workflow execution paths.
+- `BaselineAuthorizationResolutionBenchmarks` isolates session creation and access description, including allocation counts for the newly asynchronous authorization entry points.
 - `BaselineIdempotencyBenchmarks` measures persistence-backed idempotency acceptance, duplicate rejection, and duplicate contention.
 - `BaselineProfilingAdmissionBenchmarks` measures bounded automatic-node omission accounting, temporary full-capture rule misses at zero and maximum active rules, the worst case where 1,000 matching rules have pending exhausted leases, and completion of 1,000 one-shot rules.
 - `BaselineProfilingHttpBenchmarks` measures the process-wide listener tax, admitted and post-cap HTTP activity overhead, concurrent HTTP sampling at the profile cap, and the actual admitted-request path with a 1,000,000-character URI.
@@ -157,6 +159,11 @@ Current benchmark groups:
 - `BaselineProfilingTeardownBenchmarks` measures unregistering one system while a shared HTTP observer tracks active requests for eight systems.
 - `BaselineSqlProfilingBenchmarks` measures successful, failed, and unsupported-value SQL profile context capture.
 - `BaselineSqlProfilingListenerBenchmarks` measures SqlClient event admission with no SQL listener, outside a Workable profile, and inside an eligible Workable profile. It batches 50,000,000 checks per invocation and reports per-check cost.
+- `BaselineIterationStatusReplayBufferBenchmarks` compares the original front-removal replay buffer with indexed eviction and isolates aggregate payload-byte accounting overhead.
+- `BaselineIterationStatusPublishBenchmarks` measures actual publication across payload sizes and subscriber counts.
+- `BaselineIterationStatusConcurrencyBenchmarks` measures parallel publication through one system stream and independent system streams.
+- `BaselineIterationStatusSystemRetentionBenchmarks` measures steady-state publication at the full system replay limit across 4,096 to 65,536 iteration buffers.
+- `BaselineIterationStatusReplayBenchmarks` measures completed-stream replay for short resume windows and the full default buffer.
 - `StressMillionWorkerQueryBenchmarks` measures broad and indexed first-page queries over 1,000,000 queued workers. This benchmark is intentionally excluded from the default filter.
 
 ### Profiling optimization comparison
@@ -190,6 +197,61 @@ A follow-up pass on the same machine measured the remaining automatic-capture ho
 | SQL event check inside an eligible profile | enabled, 1.7145 ns | enabled, 5.4372 ns | adds 3.72 ns only while SQL profiling is active |
 
 The SQL-listener benchmark measures only the provider's `IsEnabled` decision. Its outside-profile improvement is the change from an enabled event to a rejected event: the slightly more expensive predicate prevents SqlClient from constructing and publishing the much larger diagnostic payload. Focused tests assert the enabled/rejected states in addition to the timing benchmark.
+
+### Iteration status stream comparison
+
+The iteration status stream performance review on 2026-08-07 ran on an Apple M5 Max with .NET 10.0.8 and BenchmarkDotNet 0.15.6. The replay-buffer comparison isolates the original `List.RemoveRange(0, ...)` eviction algorithm from indexed eviction; the remaining cases exercise the production stream implementation.
+
+| Replay-buffer append case | Original front removal | Indexed item eviction | Indexed item + payload-byte eviction |
+| --- | ---: | ---: | ---: |
+| 256-item capacity, no payload | 25.157 ns | 3.734 ns | 3.177 ns |
+| 256-item capacity, 1,024-byte payload accounting | 24.949 ns | 3.694 ns | 3.156 ns |
+| 4,096-item capacity, no payload | 320.461 ns | 3.703 ns | 3.333 ns |
+| 4,096-item capacity, 1,024-byte payload accounting | 319.901 ns | 3.527 ns | 3.307 ns |
+
+At the default 4,096-item replay capacity, indexed eviction is approximately 97x faster than front removal. Aggregate payload-byte accounting did not produce a measurable regression relative to item-only indexed eviction, and all buffer cases allocated zero bytes per append.
+
+The hardening pass added system-wide item and byte budgets, type accounting, subscription quotas, and per-iteration synchronization. Representative before/after production-stream measurements were:
+
+| Case | Before hardening | After hardening | After allocation |
+| --- | ---: | ---: | ---: |
+| Publish without payload or subscribers | 38.04 ns | 55.08 ns | 128 B |
+| Publish a 128-character payload to one subscriber | 75.47 ns | 96.14 ns | 448 B |
+| Publish a 128-character payload to 16 subscribers | 174.52 ns | 192.77 ns | 568 B |
+| Publish a 128-character payload to 256 subscribers | 1.874 us | 1.927 us | 2,488 B |
+| Publish a 4,096-character payload to one subscriber | 530.38 ns | 603.01 ns | 8,384 B |
+| Replay 64 retained statuses | 978.7 ns | 838.8 ns | 1.22 KB |
+| Replay the full 4,096-item default buffer | 48.901 us | 41.533 us | 1.22 KB |
+
+The system-budget counters add 17 ns to an empty, listener-free publication and progressively less relative overhead as payload or fanout work grows. Replay improved by 14-15% because reads now synchronize only on their iteration buffer.
+
+The payload ceiling changed from 65,536 to 32,768 UTF-8 JSON bytes after the 64 KiB case showed a roughly 131 KB allocation and Gen 2 collections. At the new 32 KiB boundary, one-subscriber publication measured 3.040 us and 65,720 B with no Gen 2 collections; 256-subscriber publication measured 5.064 us and 67,760 B. Payload fanout remains approximately linear.
+
+Parallel publication before and after replacing the single system lock with per-iteration locks was:
+
+| Parallel publishers | Shared stream before | Shared stream after | Independent streams after |
+| --- | ---: | ---: | ---: |
+| 1 | 65.44 ns/status | 71.57 ns/status | 72.93 ns/status |
+| 4 | 155.19 ns/status | 206.66 ns/status | 91.62 ns/status |
+| 16 | 213.69 ns/status | 254.91 ns/status | 163.24 ns/status |
+
+Per-iteration buffer mutation no longer passes through one broad stream lock. Publications still coordinate briefly around aggregate retention ordering and counters, adding 19-33% to the former shared-stream measurements in these short runs. The four-publisher hardened case remains approximately 4.8 million statuses per second.
+
+A final high-cardinality review replaced the aggregate-limit scan with an ordered, compacting retention index. The production BenchmarkDotNet case publishes continuously while the system item budget is full:
+
+| Active iteration buffers | Mean per publish | Allocation |
+| ---: | ---: | ---: |
+| 4,096 | 142.8 ns | 128 B |
+| 16,384 | 278.1 ns | 128 B |
+| 65,536 | 661.6 ns | 128 B |
+
+The 65,536-buffer short run was noisy, with a 542.1 ns median, but remained sub-microsecond. An isolated old/new algorithm probe showed why the index matters: publication at 4,096, 16,384, and 65,536 buffers fell from 0.194 ms, 0.355 ms, and 2.076 ms with the full scan to 0.005 ms, 0.002 ms, and 0.003 ms with indexed retention. Normal publication pays a small fixed bookkeeping cost: the empty no-subscriber case moved from 44.75 ns to 92.83 ns, 4 KiB payload cases increased 6-13%, 32 KiB cases increased 3-7%, and high-fanout cases were effectively unchanged. This trades tens of nanoseconds on ordinary publication for eliminating an eventual millisecond-scale scan as historical iteration count grows.
+
+Re-run these cases with:
+
+```powershell
+dotnet run --project apps\tools\Workable.PerformanceHarness --configuration Release -- --benchmarks --filter *BaselineIterationStatus*
+```
 
 Experimental opt-in benchmarks:
 

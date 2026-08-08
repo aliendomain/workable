@@ -129,6 +129,10 @@ public sealed class WorkerExecutionInvokerTests
         public Task StopBackgroundTasks(CancellationToken cancellationToken)
             => Task.CompletedTask;
 
+        public void NotifyDurableWorkAvailable()
+        {
+        }
+
         public Task<WorkerPersistenceQueueAcceptance> AcceptQueuedWorker(
             WorkerId workerId,
             RegisteredWork registeredWork,

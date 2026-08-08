@@ -5,6 +5,9 @@ internal sealed class WorkQueueService(
     WorkSystemQueueDiagnosticsTracker queueDiagnostics) :
     IWorkQueueService
 {
+    public void NotifyDurableWorkAvailable()
+        => workers.NotifyDurableWorkAvailable();
+
     public Task<IWorkerHandle> Enqueue(
         WorkDefinitionId definitionId,
         WorkInput? input = null,

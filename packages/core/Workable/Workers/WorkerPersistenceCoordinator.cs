@@ -11,6 +11,8 @@ internal interface IWorkerPersistenceCoordinator
 
     Task StopBackgroundTasks(CancellationToken cancellationToken);
 
+    void NotifyDurableWorkAvailable();
+
     Task<WorkerPersistenceQueueAcceptance> AcceptQueuedWorker(
         WorkerId workerId,
         RegisteredWork registeredWork,
@@ -108,6 +110,9 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
 
     public Task StopBackgroundTasks(CancellationToken cancellationToken)
         => this.durability.StopBackgroundTasks(cancellationToken);
+
+    public void NotifyDurableWorkAvailable()
+        => this.durability.SignalReader();
 
     public IWorkerHandle CreateHandle(
         WorkQueueOutcome outcome,

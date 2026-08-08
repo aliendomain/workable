@@ -99,7 +99,7 @@ app.MapWorkableSignalR("/internal/work/realtime");
 
 Browser connections join SignalR groups and share server-side recomputation or event readers when their normalized subscription request and effective read access match. One browser does not get its own private Workable event-stream subscription unless its request shape differs from the other active subscribers.
 
-State-based named views are wake-on-change: the in-memory runtime publishes coalesced change notifications after its read model snapshot advances, and the SignalR broadcaster recomputes the latest view for each matching group. Worker, definition, subject, concurrency-key, and identifier changes are used to avoid recomputing named-view groups whose normalized criteria cannot be affected. Views that depend on time passing still use `PublishInterval`.
+State-based named views are wake-on-change: the in-memory runtime publishes coalesced change notifications after its read model snapshot advances, and the SignalR broadcaster recomputes the latest view for each matching group. Worker, definition, subject, concurrency-key, identifier, and originating-actor changes are used to avoid recomputing named-view groups whose normalized criteria cannot be affected. Views that depend on time passing still use `PublishInterval`.
 
 ## Capability Discovery
 
@@ -139,9 +139,98 @@ When `Workable.SignalR` is not registered:
 }
 ```
 
+## Actor-Scoped Worker Updates
+
+Use `WatchMyWorkers` to keep a user-facing browser synchronized with every worker originated by its authenticated actor. It is a discoverable convenience method over the existing `workers` named view, so it retains the same initial-snapshot and change-stream guarantees without introducing a separate subscription implementation. The server derives the actor id from the SignalR request context, replaces any caller-supplied `actorId`, and fails closed when the principal has no stable actor id. Its criteria may contain only `workerGrid` components; omit the criteria entirely to use the default detailed worker grid.
+
+```javascript
+const subscriptionId = "my-work";
+
+connection.on("workable.view", envelope => {
+  if (envelope.subscriptionId !== subscriptionId) {
+    return;
+  }
+
+  const workerGrid = envelope.result.components.workerGrid;
+  if (workerGrid.status === "ok") {
+    renderWorkers(workerGrid.data.workers);
+  }
+});
+
+await connection.start();
+await connection.invoke(
+  "WatchMyWorkers",
+  subscriptionId,
+  {
+    components: [
+      {
+        id: "workerGrid",
+        type: "workerGrid",
+        shape: "detailed",
+        options: {
+          take: 50
+        }
+      }
+    ]
+  },
+  null
+);
+```
+
+Subscription establishment always sends the current worker-grid snapshot, including an empty grid when the actor has not originated any work yet. The subscription is registered first, then waits for the shared view change stream to be live before querying that snapshot. Group broadcasts wait behind the direct seed, so a newer group update cannot be overtaken by an older initial snapshot. A worker change that races subscription establishment is therefore either already represented by the initial query or causes a later actor-keyed view update; the browser does not need to subscribe to individual workers or raw events.
+
+If the shared view change stream stops and restarts, the broadcaster re-queries every active state-based view group before consuming new changes. This closes changes that may have occurred while the stream was unavailable without requiring clients to recreate their watches.
+
+Each detailed worker row includes `currentIterationSequence`. It is populated only while an iteration is active, which lets a client start `StreamMyIterationStatus` without placing iteration output or message history into every republished grid row. The grid intentionally omits completed-iteration output and `lastIterationSequence`; use the full worker query or durable application state when opening or recovering an already completed conversation.
+
+The scope follows the actor stored on the worker's original request context. Actions later performed by that actor on somebody else's worker do not move that worker into this view. Normal read authorization still applies, so the grid contains only definitions visible to the SignalR caller.
+
+`WatchWorkers` remains available for trusted operator screens. It can intentionally supply another actor's exact id in the `workerGrid` options or omit `actorId` to watch all workers readable by the caller. Actor ids use ordinal matching after surrounding whitespace is removed. Do not use that client-controlled form for an end-user page.
+
+Stop the user-facing subscription with `UnwatchMyWorkers(subscriptionId, systemName)`.
+
+## Iteration Status Streams
+
+Executors can publish ordered application-defined progress through `IWorkExecutionContext.Status`. SignalR clients consume one exact worker iteration with a streaming hub invocation:
+
+```csharp
+var stream = connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+    "StreamMyIterationStatus",
+    [workerId.ToString("D"), iterationSequence, afterSequence, systemName],
+    cancellationToken);
+
+await foreach (var message in stream.WithCancellation(cancellationToken))
+{
+    if (message.Gap is { } gap)
+    {
+        // Reload application state; the missing status range cannot be replayed.
+        break;
+    }
+
+    if (message.Completed is { } completed)
+    {
+        // Apply completed.Status, completed.Output, completed.Messages, and
+        // completed.CancellationOrigin as the authoritative terminal result.
+        break;
+    }
+
+    var item = message.Status!;
+    afterSequence = item.Sequence;
+    // Apply item.Type and item.Data.
+}
+```
+
+The server replays retained items after the exclusive `afterSequence` cursor, then continues live until the iteration status stream completes or the caller cancels the invocation. A successful stream ends with one `completed` message containing generic Workable terminal data: status, retained `WorkOutput`, messages, timing, attempt count, worker revision/state, and cancellation origin. This completion is attached atomically when the iteration stream closes, so a subscriber cannot miss the terminal result between its last status item and a follow-up query.
+
+`StreamMyIterationStatus` additionally requires the worker's originating actor to match the authenticated SignalR actor, and returns an empty stream for another actor's or an unknown worker. `StreamIterationStatus` remains the definition-authorized operator form. Both retain the same cursor and gap behavior.
+
+Iteration status items are delivered individually and are not routed through raw-event batching. If a cursor has fallen behind the retained replay window, SignalR emits one terminal `gap` message containing the requested, first-available, and last-available sequences, then completes the stream normally. The available range is null when system-wide retention evicted the iteration's complete replay window. Core configuration also caps active subscriptions per iteration and per system; reaching either limit returns a client-safe hub error.
+
+See [Iteration Status Streams](../guides/iteration-status-streams.md) for publishing, JavaScript consumption, cursor recovery, current retention and persistence limits, and the SampleHost assistant stream.
+
 ## Worker Overview Updates
 
-Worker detail pages should load their initial worker-overview snapshot through HTTP, then subscribe to the dedicated realtime worker-overview stream.
+Worker detail pages can establish their complete initial state and continue receiving updates through the dedicated realtime worker-overview stream. Register the client callback before invoking `WatchWorkerOverview`. A separate HTTP read is optional for navigation or recovery; it is not required to close the subscription race.
 
 ```csharp
 HubConnection connection = new HubConnectionBuilder()
@@ -159,7 +248,7 @@ connection.On<WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>>(
         return;
     }
 
-    // Merge the partial update into the visible worker overview state.
+    // Apply the synchronized sections to the visible worker overview state.
 });
 
 await connection.StartAsync();
@@ -194,7 +283,7 @@ await connection.InvokeAsync(
 
 `WatchWorkerOverview` immediately sends the current worker-overview state to the caller through `workable.workerOverview`. The payload uses the same `WorkableRealtimeViewEnvelope<T>` wrapper as named views, but the `Result` is a `WorkWorkerOverviewRealtimeUpdate` and `ViewName` is always `"worker-overview"`.
 
-The initial message is a full synchronized snapshot serialized as a worker-overview update. Later messages are also latest-state updates: the server coalesces worker changes over `LiveTimeWindow`, re-queries the current worker-overview state, and pushes the synchronized result.
+The initial message is a full synchronized snapshot serialized as a worker-overview update. The server registers the subscription and starts its worker change stream before querying that snapshot, while group broadcasts wait for the direct seed to finish. A worker change racing establishment is therefore represented by the seed or followed by a later synchronized update instead of being silently missed. Later messages are also latest-state updates: the server coalesces worker changes over `LiveTimeWindow`, re-queries the current worker-overview state, and pushes the synchronized result.
 
 When the worker-overview lane cannot safely continue from its current state, the server can send a `WorkWorkerOverviewRealtimeUpdate` with `RequiresRefresh = true` and an optional `RefreshReason`. Clients should treat that as a resync instruction: reload fresh worker-overview state instead of continuing to apply stale data. Clients may keep the existing watch alive if they can safely resynchronize in place, or recreate it if that is simpler for their UI architecture.
 
@@ -240,7 +329,7 @@ await connection.InvokeAsync(
 
 Raw event subscriptions are for event viewers, diagnostics, and consumers that want low-level `WorkEvent` envelopes rather than worker-overview state updates.
 
-Worker detail pages should generally prefer `WatchWorkerOverview` over raw event handling. Dashboards and state-oriented UI should prefer `WatchView`, `WatchWorkerOverview`, or other change-stream-backed surfaces. Use `WatchEvents` only when the client needs raw event payloads, event types, or event-by-event diagnostic output.
+User-facing worker-list pages should prefer `WatchMyWorkers`; trusted operator lists can use `WatchWorkers`. Worker detail pages should generally prefer `WatchWorkerOverview` over raw event handling. Dashboards and other state-oriented UI should prefer these methods, `WatchView`, or another change-stream-backed surface. Use `WatchEvents` only when the client needs raw event payloads, event types, or event-by-event diagnostic output.
 
 Worker messages are delivered through `workable.event` for single events and `workable.events` for batches.
 
@@ -374,7 +463,7 @@ Use the optional `connectionId` filter when you need to match one browser tab or
 
 ## Component View Updates
 
-Overview-style clients can subscribe to the same component-view request shape used by the HTTP API.
+Overview-style clients can subscribe to the same component-view request shape used by the HTTP API. Use `WatchMyWorkers` for a user's own live worker list, `WatchWorkers` for operator-selected actors, and the generic `WatchView` method for overview dashboards, workflow views, diagnostics, and custom named views.
 
 ```csharp
 const string OverviewSubscriptionId = "overview-main";
@@ -404,9 +493,9 @@ await connection.InvokeAsync(
     (string?)null);
 ```
 
-`WatchView` immediately sends the current `WorkableRealtimeViewEnvelope<WorkComponentQueryResult>` to the caller. The envelope includes the caller-supplied `subscriptionId`, the normalized `viewName`, and the `result`. After that, the server coalesces Workable events and publishes refreshed results on the publish interval.
+`WatchView` immediately sends the current `WorkableRealtimeViewEnvelope<WorkComponentQueryResult>` to the caller. The envelope includes the caller-supplied `subscriptionId`, the normalized `viewName`, and the `result`. After that, state-based groups refresh from relevant coalesced change notifications; only components that depend on time passing use the configured publish interval.
 
-View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, options, and effective read visibility. Connections with the same normalized request and the same readable work set share one server recomputation per publish tick. The client-supplied `subscriptionId` is the logical handle for one live view stream on a SignalR connection. A single SignalR connection can keep multiple view subscriptions active at once as long as each one has its own `subscriptionId`. Reusing the same `subscriptionId` replaces that logical view watch with the new normalized request.
+View subscriptions are grouped by system id, view name, scope, component ids, component types, shapes, options, and effective read visibility. Connections with the same normalized request and the same readable work set share one server recomputation per relevant change or interval tick. The client-supplied `subscriptionId` is the logical handle for one live view stream on a SignalR connection. A single SignalR connection can keep multiple view subscriptions active at once as long as each one has its own `subscriptionId`. Reusing the same `subscriptionId` replaces that logical view watch with the new normalized request.
 
 SignalR view payloads use the same component efficiency contract as HTTP:
 
@@ -556,8 +645,24 @@ The hub exposes these observability methods:
 ```csharp
 Task WatchView(string subscriptionId, string viewName, WorkViewCriteria? criteria = null, string? systemName = null);
 Task UnwatchView(string subscriptionId, string? systemName = null);
+Task WatchWorkers(string subscriptionId, WorkViewCriteria? criteria = null, string? systemName = null);
+Task UnwatchWorkers(string subscriptionId, string? systemName = null);
+Task WatchMyWorkers(string subscriptionId, WorkViewCriteria? criteria = null, string? systemName = null);
+Task UnwatchMyWorkers(string subscriptionId, string? systemName = null);
 Task WatchWorkerOverview(string subscriptionId, string workerId, WorkWorkerOverviewRealtimeCriteria? criteria = null, string? systemName = null);
 Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null);
 Task WatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
 Task UnwatchEvents(WorkableRealtimeEventCriteria? criteria = null, string? systemName = null);
+IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamIterationStatus(
+    string workerId,
+    long iterationSequence,
+    long afterSequence = 0,
+    string? systemName = null,
+    CancellationToken cancellationToken = default);
+IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> StreamMyIterationStatus(
+    string workerId,
+    long iterationSequence,
+    long afterSequence = 0,
+    string? systemName = null,
+    CancellationToken cancellationToken = default);
 ```

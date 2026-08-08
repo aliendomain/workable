@@ -34,7 +34,7 @@ internal static class WorkableHttpQueueRoutes
                 return notFound;
             }
 
-            var requestContext = WorkableHttpRequestContext.Create(
+            var requestContext = await WorkableHttpRequestContext.Create(
                 httpContext,
                 system,
                 requestContexts,

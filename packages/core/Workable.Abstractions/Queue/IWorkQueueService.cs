@@ -5,6 +5,17 @@ namespace Workable;
 public interface IWorkQueueService
 {
     /// <summary>
+    /// Notifies the local durable queue reader that caller-owned transaction work may now be committed and ready.
+    /// </summary>
+    /// <remarks>
+    /// Call this after successfully committing a caller-owned durability transaction. Calls are coalesced while a wake
+    /// remains pending and affect only the local Workable runtime; fallback polling remains responsible for
+    /// cross-process discovery and missed notifications. This is a trusted in-process hint and should not be exposed
+    /// directly to untrusted callers.
+    /// </remarks>
+    void NotifyDurableWorkAvailable();
+
+    /// <summary>
     /// Queues work by definition name using raw <see cref="WorkInput"/>.
     /// </summary>
     /// <param name="name">The registered work definition name to queue.</param>

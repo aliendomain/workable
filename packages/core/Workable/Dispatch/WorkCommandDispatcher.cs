@@ -46,7 +46,7 @@ public sealed class WorkCommandDispatcher(
             return CreateSystemNotFoundResult<TResponse>(systemName);
         }
 
-        var session = workSystem.CreateSession(requestContext);
+        var session = await workSystem.CreateSession(requestContext, cancellationToken);
         var resolvedOptions = options ?? new WorkDispatchOptions();
         var handle = await session.Queue.Enqueue(
             workName,

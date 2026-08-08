@@ -62,7 +62,7 @@ internal sealed class WorkableHostedService(
     private static async Task<SystemShutdownPlan> CreateShutdownPlan(IWorkSystem system)
     {
         var requestContext = CreateSystemAdministratorRequestContext();
-        var session = system.CreateSession(requestContext);
+        var session = await system.CreateSession(requestContext);
         return new(
             system,
             FormatSystemName(system),

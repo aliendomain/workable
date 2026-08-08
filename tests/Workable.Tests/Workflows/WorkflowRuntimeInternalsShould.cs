@@ -1186,7 +1186,7 @@ public sealed class WorkflowRuntimeInternalsShould
             createSession: _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
                 Task.FromResult<IWorkerHandle>(new PendingWorkerHandle(workerId)))),
             createWorkerHandle: id => new PendingWorkerHandle(id));
-        var handle = runtime.Start(
+        var handle = await runtime.Start(
             workflow.Definition.Name,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await TestEventually.Until(
@@ -1214,7 +1214,7 @@ public sealed class WorkflowRuntimeInternalsShould
             createSession: _ => new TestWorkSystemSession(new DelegateQueueService((_, _, _, _) =>
                 Task.FromResult<IWorkerHandle>(new PendingWorkerHandle(childId)))),
             createWorkerHandle: id => new PendingWorkerHandle(id));
-        var handle = runtime.Start(
+        var handle = await runtime.Start(
             workflow.Definition.Name,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await TestEventually.Until(
@@ -1539,7 +1539,7 @@ public sealed class WorkflowRuntimeInternalsShould
                 ["operators"],
                 []),
         };
-        var handle = runtime.Start(workflow.Definition.Name, startContext);
+        var handle = await runtime.Start(workflow.Definition.Name, startContext);
         await TestEventually.Until(
             () => runtime.Get(handle.RunId!.Value)?.Steps.Single().WorkerIds.Contains(childId) == true,
             "Expected the workflow to wait on its child before applying operator control.");
@@ -1654,7 +1654,7 @@ public sealed class WorkflowRuntimeInternalsShould
             createWorkerHandle: id => new PendingWorkerHandle(id),
             getRegisteredWork: CreateRegisteredWork);
         var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
-        var handle = runtime.Start(workflow.Definition.Name, requestContext);
+        var handle = await runtime.Start(workflow.Definition.Name, requestContext);
         await TestEventually.Until(
             () => runtime.Get(handle.RunId!.Value)?.Steps.Single().WorkerIds.Contains(childId) == true,
             "Expected the durable workflow to be waiting on its child.");
@@ -1704,7 +1704,7 @@ public sealed class WorkflowRuntimeInternalsShould
             new WorkActor("pause-operator", "Pause Operator"),
             description: "Pause during cancellation",
             isAuthenticated: true);
-        var handle = runtime.Start(workflow.Definition.Name, cancelContext);
+        var handle = await runtime.Start(workflow.Definition.Name, cancelContext);
         await TestEventually.Until(
             () => runtime.Get(handle.RunId!.Value)?.Steps.Single().WorkerIds.Contains(childId) == true,
             "Expected the durable workflow to be waiting on its child.");
@@ -1766,7 +1766,7 @@ public sealed class WorkflowRuntimeInternalsShould
             new WorkActor("cancel-operator", "Cancel Operator"),
             description: "Cancel while pausing",
             isAuthenticated: true);
-        var handle = runtime.Start(workflow.Definition.Name, pauseContext);
+        var handle = await runtime.Start(workflow.Definition.Name, pauseContext);
         await TestEventually.Until(
             () => runtime.Get(handle.RunId!.Value)?.Steps.Single().WorkerIds.Contains(childId) == true,
             "Expected the workflow to be waiting on its child.");
@@ -1840,7 +1840,7 @@ public sealed class WorkflowRuntimeInternalsShould
             new WorkActor("repeated-cancel-operator", "Repeated Cancel Operator"),
             description: "Repeated cancellation",
             isAuthenticated: true);
-        var handle = runtime.Start(workflow.Definition.Name, startContext);
+        var handle = await runtime.Start(workflow.Definition.Name, startContext);
         await TestEventually.Until(
             () => runtime.Get(handle.RunId!.Value)?.Steps.Single().WorkerIds.Contains(childId) == true,
             "Expected the durable workflow to be waiting on its child.");
@@ -1896,8 +1896,8 @@ public sealed class WorkflowRuntimeInternalsShould
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Expected StartExecution method.");
 
-        startExecution.Invoke(runtime, [run, workflow, false]);
-        var exception = Assert.Throws<TargetInvocationException>(() => startExecution.Invoke(runtime, [run, workflow, false]));
+        startExecution.Invoke(runtime, [run, workflow, false, null]);
+        var exception = Assert.Throws<TargetInvocationException>(() => startExecution.Invoke(runtime, [run, workflow, false, null]));
 
         Assert.IsType<InvalidOperationException>(exception.InnerException);
         Assert.Contains("already executing", exception.InnerException!.Message, StringComparison.Ordinal);
@@ -1928,7 +1928,7 @@ public sealed class WorkflowRuntimeInternalsShould
         await store.FirstUpsertStarted.Task.WaitAsync(CancellationToken.None);
 
         Assert.False(startTask.IsCompleted, "Expected durable workflow start to wait for the initial persisted run.");
-        Assert.Empty(runtime.ListVisible(requestContext, includeFinal: true));
+        Assert.Empty(await runtime.ListVisible(requestContext, includeFinal: true));
 
         store.ReleaseFirstUpsert.TrySetResult();
         var handle = await startTask.WaitAsync(CancellationToken.None);
@@ -1941,7 +1941,7 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
-    public void StartDoesNotRegisterRunWhenInitialDurablePersistenceFails()
+    public async Task StartDoesNotRegisterRunWhenInitialDurablePersistenceFails()
     {
         var workerId = WorkerId.New();
         var workflow = CreateWorkflow(
@@ -1959,10 +1959,11 @@ public sealed class WorkflowRuntimeInternalsShould
             createWorkerHandle: id => new PendingWorkerHandle(id));
         var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
-        var exception = Assert.Throws<InvalidOperationException>(() => runtime.Start(workflow.Definition.Name, requestContext));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => runtime.Start(workflow.Definition.Name, requestContext));
 
         Assert.Equal("boom", exception.Message);
-        Assert.Empty(runtime.ListVisible(requestContext, includeFinal: true));
+        Assert.Empty(await runtime.ListVisible(requestContext, includeFinal: true));
     }
 
     [Fact]
@@ -2232,14 +2233,14 @@ public sealed class WorkflowRuntimeInternalsShould
             "RunExecution",
             BindingFlags.Instance | BindingFlags.NonPublic,
             binder: null,
-            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool)],
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool), typeof(WorkAuthorizationSnapshot)],
             modifiers: null)
             ?? throw new InvalidOperationException("Expected controlled RunExecution method.");
 
         try
         {
             var task = Assert.IsType<Task<WorkflowRunCompletion>>(
-                runExecution.Invoke(runtime, [run, workflow, control, false]));
+                runExecution.Invoke(runtime, [run, workflow, control, false, null]));
             var completion = await task;
 
             Assert.Equal(expectedStatus, completion.Status);
@@ -2290,14 +2291,14 @@ public sealed class WorkflowRuntimeInternalsShould
             "RunExecution",
             BindingFlags.Instance | BindingFlags.NonPublic,
             binder: null,
-            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool)],
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool), typeof(WorkAuthorizationSnapshot)],
             modifiers: null)
             ?? throw new InvalidOperationException("Expected controlled RunExecution method.");
 
         try
         {
             var task = Assert.IsType<Task<WorkflowRunCompletion>>(
-                runExecution.Invoke(runtime, [run, workflow, control, false]));
+                runExecution.Invoke(runtime, [run, workflow, control, false, null]));
             var completion = await task;
 
             Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
@@ -2347,14 +2348,14 @@ public sealed class WorkflowRuntimeInternalsShould
             "RunExecution",
             BindingFlags.Instance | BindingFlags.NonPublic,
             binder: null,
-            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool)],
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool), typeof(WorkAuthorizationSnapshot)],
             modifiers: null)
             ?? throw new InvalidOperationException("Expected controlled RunExecution method.");
 
         try
         {
             var task = Assert.IsType<Task<WorkflowRunCompletion>>(
-                runExecution.Invoke(runtime, [run, workflow, control, false]));
+                runExecution.Invoke(runtime, [run, workflow, control, false, null]));
             var completion = await task;
 
             Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
@@ -2417,14 +2418,14 @@ public sealed class WorkflowRuntimeInternalsShould
             "RunExecution",
             BindingFlags.Instance | BindingFlags.NonPublic,
             binder: null,
-            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool)],
+            types: [typeof(WorkflowRunState), typeof(RegisteredWorkflow), controlType, typeof(bool), typeof(WorkAuthorizationSnapshot)],
             modifiers: null)
             ?? throw new InvalidOperationException("Expected controlled RunExecution method.");
 
         try
         {
             var task = Assert.IsType<Task<WorkflowRunCompletion>>(
-                runExecution.Invoke(runtime, [run, workflow, control, false]));
+                runExecution.Invoke(runtime, [run, workflow, control, false, null]));
             var completion = await task.WaitAsync(TimeSpan.FromSeconds(1));
 
             Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
@@ -2565,7 +2566,7 @@ public sealed class WorkflowRuntimeInternalsShould
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Expected StartExecution method.");
 
-        startExecution.Invoke(runtime, [run, workflow, false]);
+        startExecution.Invoke(runtime, [run, workflow, false, null]);
         runtime.CancelExecutionLifetime();
         await runtime.WaitForExecutions(CancellationToken.None);
         var completion = await run.WaitForCompletion();
@@ -2601,7 +2602,7 @@ public sealed class WorkflowRuntimeInternalsShould
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Expected StartExecution method.");
 
-        startExecution.Invoke(runtime, [run, workflow, false]);
+        startExecution.Invoke(runtime, [run, workflow, false, null]);
         var waitTask = runtime.WaitForExecutions(CancellationToken.None);
         Assert.False(waitTask.IsCompleted);
 
@@ -2634,7 +2635,7 @@ public sealed class WorkflowRuntimeInternalsShould
             ?? throw new InvalidOperationException("Expected StartExecution method.");
 
         var exception = Assert.Throws<TargetInvocationException>(() =>
-            startExecution.Invoke(runtime, [run, workflow, false]));
+            startExecution.Invoke(runtime, [run, workflow, false, null]));
 
         Assert.IsType<InvalidOperationException>(exception.InnerException);
     }
@@ -2652,9 +2653,9 @@ public sealed class WorkflowRuntimeInternalsShould
             createWorkerHandle: _ => throw new NotSupportedException());
         var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
-        var handles = Enumerable.Range(0, 128)
+        var handles = await Task.WhenAll(Enumerable.Range(0, 128)
             .Select(_ => runtime.Start(workflow.Definition.Name, requestContext))
-            .ToArray();
+            .ToArray());
         await Task.WhenAll(handles.Select(handle => handle.WaitForCompletion()));
         await runtime.WaitForExecutions(CancellationToken.None);
 
@@ -2744,7 +2745,7 @@ public sealed class WorkflowRuntimeInternalsShould
             createWorkerHandle: _ => throw new NotSupportedException());
         var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
-        var handle = runtime.Start(workflow.Definition.Name, requestContext);
+        var handle = await runtime.Start(workflow.Definition.Name, requestContext);
         await failedWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var execution = GetExecutions(runtime)[handle.RunId!.Value];
         var publicCompletion = handle.WaitForCompletion();
@@ -2801,7 +2802,7 @@ public sealed class WorkflowRuntimeInternalsShould
             createWorkerHandle: _ => throw new NotSupportedException());
         var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
-        var handle = runtime.Start(workflow.Definition.Name, requestContext);
+        var handle = await runtime.Start(workflow.Definition.Name, requestContext);
         await finalWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var execution = GetExecutions(runtime)[handle.RunId!.Value];
         var publicCompletion = handle.WaitForCompletion();
@@ -2876,7 +2877,7 @@ public sealed class WorkflowRuntimeInternalsShould
                 throw new InvalidOperationException("An empty workflow must not dispatch work."))),
             createWorkerHandle: _ => throw new NotSupportedException());
 
-        var handle = runtime.Start(
+        var handle = await runtime.Start(
             workflow.Definition.Name,
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         var exception = await Assert.ThrowsAsync<BadImageFormatException>(async () =>
@@ -2932,7 +2933,7 @@ public sealed class WorkflowRuntimeInternalsShould
             getRegisteredWork: CreateRegisteredWork);
         var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
 
-        var handle = runtime.Start(workflow.Definition.Name, requestContext);
+        var handle = await runtime.Start(workflow.Definition.Name, requestContext);
         await blockedWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var execution = GetExecutions(runtime)[handle.RunId!.Value];
         var cancellation = runtime.Execute(handle.RunId.Value, WorkflowAction.Cancel, requestContext);
@@ -2959,12 +2960,12 @@ public sealed class WorkflowRuntimeInternalsShould
             requiresAuthorization: false,
             catalog,
             getRegisteredWork ?? (_ => null),
-            createSession,
+            (requestContext, _) => ValueTask.FromResult(createSession(requestContext)),
             createWorkerHandle,
             getAuthoritativeWorker,
             new WorkflowPersistenceCoordinator(persistenceStore, systemName),
             WorkSystemAuthorizationConfiguration.Default,
-            new EmptyGroupProvider());
+            new WorkAuthorizationGroupResolver([], new EmptyGroupProvider()));
 
     private static RegisteredWork CreateRegisteredWork(string name)
         => new(
@@ -3092,8 +3093,12 @@ public sealed class WorkflowRuntimeInternalsShould
 
     private sealed class EmptyGroupProvider : IWorkAuthorizationGroupProvider
     {
-        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
-            => new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlySet<string>>(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase));
     }
 
     private sealed class TestWorkSystemSession(
@@ -3126,6 +3131,10 @@ public sealed class WorkflowRuntimeInternalsShould
         Func<string, WorkInput?, WorkerOptions?, CancellationToken, Task<IWorkerHandle>> enqueue)
         : IWorkQueueService
     {
+        public void NotifyDurableWorkAvailable()
+        {
+        }
+
         public Task<IWorkerHandle> Enqueue(
             string name,
             WorkInput? input = null,

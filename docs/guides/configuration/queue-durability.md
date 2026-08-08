@@ -80,9 +80,11 @@ services.AddWorkableSystem(builder =>
 ## Queue-Time Configuration
 
 ```csharp
-IWorkQueueDurabilityTransaction queueTransaction = ...;
+DbTransaction transaction = ...;
+IWorkQueueDurabilityTransaction queueTransaction = ...; // Store-specific wrapper for transaction.
+IWorkQueueService queue = system.Queue;
 
-var handle = await system.Queue.Enqueue(
+var handle = await queue.Enqueue(
     "orders.capture-payment",
     input: WorkInput.FromValue(new CapturePayment("order-123")),
     options: new WorkerOptions(
@@ -102,6 +104,19 @@ var handle = await system.Queue.Enqueue(
         },
         QueueDurabilityTransaction: queueTransaction));
 ```
+
+When the caller owns that transaction, notify the local queue reader immediately after a successful commit:
+
+```csharp
+await transaction.CommitAsync(cancellationToken);
+queue.NotifyDurableWorkAvailable();
+```
+
+The notification is synchronous and safe to repeat. Calls are coalesced while a wake remains pending; after the reader
+consumes that wake, another call can schedule another drain. Treat it as a trusted in-process hint rather than exposing
+it directly to untrusted clients. Call it only after the commit succeeds. Do not notify after rollback; that produces
+needless store traffic. A notification before commit can be consumed while the durable row is still invisible, leaving
+fallback polling to discover it later unless another notification arrives.
 
 ## Reconfiguration
 
@@ -127,9 +142,9 @@ var outcome = await system.Workers.Reconfigure(
 
 ## Operational Notes
 
-The durable queue reader is signal-first. When this process accepts durable work without a caller-owned transaction, it wakes its local reader and drains the database queue until empty. SQL Server durable enqueues are microbatched, and each reader drain claims configurable batches of up to 7,500 rows by default, so a long durable backlog is pulled into memory batch-by-batch instead of one row at a time.
+The durable queue reader is signal-first. When this process accepts durable work without a caller-owned transaction, it wakes its local reader and drains the database queue until empty. After committing a caller-owned transaction, call `NotifyDurableWorkAvailable()` on that system session's queue to provide the same prompt local wake-up. SQL Server durable enqueues are microbatched, and each reader drain claims configurable batches of up to 7,500 rows by default, so a long durable backlog is pulled into memory batch-by-batch instead of one row at a time.
 
-Polling remains as the cross-process and caller-transaction fallback. If another process enqueues work, or if the enqueue joined a transaction supplied by the caller, readers discover the row on the fallback polling interval after the transaction commits. The default fallback polling interval is five seconds and the minimum is one second.
+Polling remains as the cross-process and missed-notification fallback. If another process enqueues work, or if the caller commits without notifying the local reader, readers discover the row on the fallback polling interval. Waiting on an accepted worker handle issues one immediate reader notification but does not shorten the configured polling interval. The default fallback polling interval is five seconds and the minimum is one second.
 
 Durable queueing does not imply idempotency. `QueueDurably()` persists the queue entry and gives at-least-once acceptance; execution remains recoverable with lease-based replay if a process stops before final cleanup. It also selects persistent coordination storage, so any enabled idempotency or concurrency feature in the same configuration is persistence-backed.
 

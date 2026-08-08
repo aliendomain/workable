@@ -34,7 +34,7 @@ internal static class TransportAuthorizationTestSupport
         return services;
     }
 
-    public static IWorkSystemSession CreateTransportSession(
+    public static ValueTask<IWorkSystemSession> CreateTransportSession(
         IWorkSystem system,
         WorkInvocationChannel channel = WorkInvocationChannel.InProcess,
         WorkActor? actor = null,
@@ -108,10 +108,13 @@ internal static class TransportAuthorizationTestSupport
             groups ?? DefaultGroups(),
             StringComparer.OrdinalIgnoreCase);
 
-        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
-            => actor == WorkActor.Unknown
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlySet<string>>(actor == WorkActor.Unknown
                 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                : this.groups;
+                : this.groups);
     }
 
     private static IEnumerable<Claim> CreateClaims(

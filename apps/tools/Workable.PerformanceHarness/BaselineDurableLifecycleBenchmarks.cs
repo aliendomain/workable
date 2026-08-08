@@ -1,4 +1,6 @@
 using BenchmarkDotNet.Attributes;
+using Microsoft.Data.SqlClient;
+using Workable.SqlServer;
 
 namespace Workable.PerformanceHarness;
 
@@ -32,6 +34,22 @@ public class BaselineDurableLifecycleBenchmarks
         var handle = await this.fixture.Session.Queue.Enqueue(
             this.fixture.DurableFastWorkName,
             WorkableBenchmarkSystem.CreateInput(this.nextWorkerIndex++));
+        return await handle.WaitForCompletion();
+    }
+
+    [Benchmark]
+    public async Task<WorkCompletion> QueueCallerTransactionNotifyAndWaitForCompletion()
+    {
+        await using var connection = new SqlConnection(this.fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        var handle = await this.fixture.Session.Queue.Enqueue(
+            this.fixture.DurableFastWorkName,
+            WorkableBenchmarkSystem.CreateInput(this.nextWorkerIndex++),
+            WorkerOptions.Default.WithSqlServerQueueDurabilityTransaction(connection, transaction));
+
+        await transaction.CommitAsync();
+        this.fixture.Session.Queue.NotifyDurableWorkAvailable();
         return await handle.WaitForCompletion();
     }
 

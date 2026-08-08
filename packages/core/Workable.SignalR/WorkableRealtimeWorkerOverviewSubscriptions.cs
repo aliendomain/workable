@@ -263,13 +263,75 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
                 }
             }
 
-            var changed = isStreaming
+            var streamingStateChanged = isStreaming
                 ? this.streamingGroups.Add(groupName)
                 : this.streamingGroups.Remove(groupName);
-            if (changed)
+            if (streamingStateChanged)
             {
                 SignalChangedLocked();
             }
+        }
+    }
+
+    internal bool IsSeeded(string groupName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            return this.groups.TryGetValue(groupName, out var group) && group.IsSeeded;
+        }
+    }
+
+    internal bool HasPublishedState(string groupName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            return this.groups.TryGetValue(groupName, out var group) && group.HasPublishedState;
+        }
+    }
+
+    internal void SetSeeded(string groupName, bool hasPublishedState)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        lock (this.gate)
+        {
+            if (!this.groups.TryGetValue(groupName, out var group))
+            {
+                return;
+            }
+
+            var seededStateChanged = !group.IsSeeded || (hasPublishedState && !group.HasPublishedState);
+            group.IsSeeded = true;
+            group.HasPublishedState |= hasPublishedState;
+            if (seededStateChanged)
+            {
+                SignalChangedLocked();
+            }
+        }
+    }
+
+    internal async Task WaitForSeed(string groupName, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupName);
+
+        while (true)
+        {
+            Task wait;
+            lock (this.gate)
+            {
+                if (!this.groups.TryGetValue(groupName, out var group) || group.IsSeeded)
+                {
+                    return;
+                }
+
+                wait = this.changed.Task;
+            }
+
+            await wait.WaitAsync(cancellationToken);
         }
     }
 
@@ -430,5 +492,9 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         public DateTimeOffset? StreamingStoppedAt { get; set; }
 
         public Func<WorkChangeSubscriptionDiagnosticsSnapshot>? ChangeStreamDiagnosticsProvider { get; set; }
+
+        public bool IsSeeded { get; set; }
+
+        public bool HasPublishedState { get; set; }
     }
 }

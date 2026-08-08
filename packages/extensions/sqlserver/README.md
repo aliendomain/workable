@@ -80,7 +80,20 @@ Durable workflows use the same SQL Server store for workflow-run snapshots. Work
 
 Persistence-backed concurrency is enforced during durable queue claiming. Configure persistent coordination with `CoordinatePersistently()`, enable durable queueing, and use `WhileExecuting` blocking with `DeferStart` limit behavior when multiple runtimes share the same SQL Server queue.
 
-The queue reader is signal-first. Durable enqueues that Workable commits itself wake the local reader, which coalesces bursts briefly and drains ready rows in configurable batches of 7,500 by default until the queue is empty. A fallback poll remains for rows committed by another process or by a caller-owned transaction. Configure that fallback per durable work definition:
+The queue reader is signal-first. Durable enqueues that Workable commits itself wake the local reader, which coalesces bursts briefly and drains ready rows in configurable batches of 7,500 by default until the queue is empty. After committing a caller-owned transaction, explicitly notify the queue used to enqueue the work so the local reader can start it promptly:
+
+```csharp
+var handle = await session.Queue.Enqueue(
+    "orders.capture-payment",
+    input,
+    WorkerOptions.Default.WithSqlServerQueueDurabilityTransaction(connection, transaction),
+    cancellationToken);
+
+await transaction.CommitAsync(cancellationToken);
+session.Queue.NotifyDurableWorkAvailable();
+```
+
+Call the notification only after `CommitAsync` succeeds. Notifications are synchronous and safe to repeat; calls are coalesced while one wake remains pending, but a later call can schedule another drain after the reader consumes that wake. Treat this as a trusted in-process hint rather than exposing it directly to untrusted clients. Notifications wake only the local runtime; rows committed by another process and missed notifications remain covered by fallback polling. Waiting on the returned worker handle issues one immediate notification but does not lower the configured polling interval. Configure that fallback per durable work definition:
 
 ```csharp
 configuration.QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(5));

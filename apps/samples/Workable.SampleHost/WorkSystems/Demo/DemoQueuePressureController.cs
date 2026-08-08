@@ -210,7 +210,7 @@ public sealed class DemoQueuePressureController(
         foreach (var workerId in this.trackedWorkers.Keys)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var session = registry.Default.CreateSession("Cancel queue-pressure sample work from the sample host.");
+            var session = await registry.Default.CreateSession("Cancel queue-pressure sample work from the sample host.");
             var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
             if (worker is null)
             {

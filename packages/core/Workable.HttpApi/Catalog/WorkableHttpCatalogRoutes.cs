@@ -23,7 +23,7 @@ internal static class WorkableHttpCatalogRoutes
                 return notFound;
             }
 
-            var session = WorkableHttpRequestContext.CreateSession(
+            var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
                 requestContexts);
@@ -43,7 +43,7 @@ internal static class WorkableHttpCatalogRoutes
             return Results.Ok(catalog.GetDefinitions(session));
         });
 
-        group.MapGet("/definitions/{name}", (
+        group.MapGet("/definitions/{name}", async (
             HttpContext httpContext,
             string name,
             WorkableHttpTopologyResolver topology,
@@ -55,7 +55,7 @@ internal static class WorkableHttpCatalogRoutes
                 return notFound;
             }
 
-            var session = WorkableHttpRequestContext.CreateSession(
+            var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
                 requestContexts);
@@ -77,7 +77,7 @@ internal static class WorkableHttpCatalogRoutes
                 return notFound;
             }
 
-            var session = WorkableHttpRequestContext.CreateSession(
+            var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
                 requestContexts);

@@ -19,7 +19,7 @@ internal sealed class InMemoryWorkSystem :
 {
     private readonly IServiceProvider rootServices;
     private readonly ILogger<InMemoryWorkSystem>? logger;
-    private readonly IWorkAuthorizationGroupProvider groupProvider;
+    private readonly IWorkAuthorizationGroupResolver groupResolver;
     private readonly WorkSystemAuthorizationConfiguration authorization;
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
     private readonly IReadOnlyList<Func<IServiceProvider, IStartupWorkSource>> startupWorkSourceFactories;
@@ -35,6 +35,7 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkSystemSessionFactory sessions;
     private readonly InMemoryWorkMetricsSink metrics = new();
     private readonly WorkEventStream events = new();
+    private readonly WorkIterationStatusStream iterationStatuses;
     private readonly WorkChangeStream changes = new();
     private readonly WorkProfileCaptureRuleStore profileCaptureRules = new();
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
@@ -54,6 +55,17 @@ internal sealed class InMemoryWorkSystem :
     {
         this.Id = registration.Id;
         this.Name = registration.Name;
+        this.iterationStatuses = new WorkIterationStatusStream(
+            this.Id,
+            this.Name,
+            retainedItemCapacity: registration.IterationStatuses.ReplayItemCapacity,
+            replayPayloadByteCapacity: registration.IterationStatuses.ReplayPayloadByteCapacity,
+            systemReplayItemCapacity: registration.IterationStatuses.SystemReplayItemCapacity,
+            systemReplayByteCapacity: registration.IterationStatuses.SystemReplayByteCapacity,
+            maximumPayloadBytes: registration.IterationStatuses.MaximumPayloadBytes,
+            maximumTypeBytes: registration.IterationStatuses.MaximumTypeBytes,
+            maximumSubscriptions: registration.IterationStatuses.MaximumSubscriptions,
+            maximumSubscriptionsPerIteration: registration.IterationStatuses.MaximumSubscriptionsPerIteration);
         this.RequiresAuthorization = registration.RequiresAuthorization;
         this.authorization = registration.Authorization;
         this.rootServices = rootServices;
@@ -93,6 +105,7 @@ internal sealed class InMemoryWorkSystem :
             this.Name,
             rootServices,
             this.events,
+            this.iterationStatuses,
             this.readModel,
             registration.ExceptionClassifiers,
             globalExceptionClassifiers,
@@ -109,7 +122,7 @@ internal sealed class InMemoryWorkSystem :
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
         this.queue = new WorkQueueService(this.catalog, this.workers, this.queueDiagnostics);
-        this.groupProvider = rootServices.GetService<IWorkAuthorizationGroupProvider>() ?? EmptyWorkAuthorizationGroupProvider.Instance;
+        this.groupResolver = rootServices.GetRequiredService<IWorkAuthorizationGroupResolver>();
         this.sessions = new WorkSystemSessionFactory(
             this.Id,
             this.Name,
@@ -122,9 +135,10 @@ internal sealed class InMemoryWorkSystem :
             this.workers,
             this.query,
             this.events,
+            this.iterationStatuses,
             this.changes,
             this.authorization,
-            this.groupProvider);
+            this.groupResolver);
         var workflowEvents = new WorkflowEventPublisher(this.Id, this.Name, this.events);
         this.workflowRuntime = new WorkflowRuntime(
             this.Name,
@@ -136,7 +150,7 @@ internal sealed class InMemoryWorkSystem :
             this.workers.GetAuthoritative,
             this.workflowPersistence,
             this.authorization,
-            this.groupProvider,
+            this.groupResolver,
             workflowEvents,
             this.logger);
         this.workers.SetWorkflowChildFinalizationObserver(this.workflowRuntime.ObserveFinalWorkflowChild);
@@ -229,6 +243,15 @@ internal sealed class InMemoryWorkSystem :
         }
     }
 
+    public IWorkIterationStatusStream IterationStatuses
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.iterationStatuses;
+        }
+    }
+
     public IWorkChangeStream Changes
     {
         get
@@ -247,7 +270,9 @@ internal sealed class InMemoryWorkSystem :
         }
     }
 
-    public WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext)
+    public async ValueTask<WorkSystemAccessSummary> DescribeAccess(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
@@ -266,7 +291,7 @@ internal sealed class InMemoryWorkSystem :
                 OperableDefinitionCount: totalDefinitionCount);
         }
 
-        var groups = this.ResolveGroups(requestContext);
+        var groups = await this.groupResolver.GetGroups(requestContext, this.Name, cancellationToken);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.authorization, groups);
         var authorization = new WorkAuthorizationEvaluator(this.catalog, groups, false, systemAuthorization);
         var readableDefinitionCount = this.catalog.Definitions.Count(authorization.CanRead);
@@ -284,14 +309,18 @@ internal sealed class InMemoryWorkSystem :
             operableDefinitionCount);
     }
 
-    public IWorkSystemSession CreateSession(WorkRequestContext requestContext)
+    public ValueTask<IWorkSystemSession> CreateSession(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        return this.sessions.CreateSession(requestContext, this.RequiresAuthorization);
+        return this.sessions.CreateSession(requestContext, this.RequiresAuthorization, cancellationToken);
     }
 
-    bool IWorkSystemBuiltInHttpSurfaceAccess.IsBuiltInHttpSurfaceAllowed(WorkRequestContext requestContext)
+    async ValueTask<bool> IWorkSystemBuiltInHttpSurfaceAccess.IsBuiltInHttpSurfaceAllowed(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
@@ -300,18 +329,18 @@ internal sealed class InMemoryWorkSystem :
             return true;
         }
 
-        var resolvedAuthorization = this.ResolveAuthorization(requestContext);
+        var resolvedAuthorization = await this.ResolveAuthorization(requestContext, cancellationToken);
         return resolvedAuthorization.CanUseBuiltInHttpApiSurface();
     }
 
-    public Task Start(
+    public async Task Start(
         WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        this.EnsureControlSystemAccess(requestContext);
-        return this.StartCore(cancellationToken);
+        await this.EnsureControlSystemAccess(requestContext, cancellationToken);
+        await this.StartCore(cancellationToken);
     }
 
     private void ThrowIfAuthorizationRequiredForDirectAccess()
@@ -322,26 +351,27 @@ internal sealed class InMemoryWorkSystem :
         }
     }
 
-    private void EnsureControlSystemAccess(WorkRequestContext requestContext)
+    private async ValueTask EnsureControlSystemAccess(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
         if (!this.RequiresAuthorization)
         {
             return;
         }
 
-        if (!this.ResolveAuthorization(requestContext).CanControlSystem())
+        if (!(await this.ResolveAuthorization(requestContext, cancellationToken)).CanControlSystem())
         {
             throw new WorkSystemAccessDeniedException(WorkSystemPermission.ControlSystem, this.Id, this.Name);
         }
     }
 
-    private WorkSystemAuthorizationEvaluator ResolveAuthorization(WorkRequestContext requestContext)
-        => new(this.authorization, this.ResolveGroups(requestContext));
-
-    private IReadOnlySet<string> ResolveGroups(WorkRequestContext requestContext)
-        => requestContext.Authorization?.Groups
-            ?? this.groupProvider.GetGroups(requestContext.Actor, this.Name)
-            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private async ValueTask<WorkSystemAuthorizationEvaluator> ResolveAuthorization(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
+        => new(
+            this.authorization,
+            await this.groupResolver.GetGroups(requestContext, this.Name, cancellationToken));
 
     private async Task StartCore(CancellationToken cancellationToken = default)
     {
@@ -428,7 +458,7 @@ internal sealed class InMemoryWorkSystem :
             return await this.StopCore(requestContext, cancellationToken);
         }
 
-        var resolvedAuthorization = this.ResolveAuthorization(requestContext);
+        var resolvedAuthorization = await this.ResolveAuthorization(requestContext, cancellationToken);
         if (!resolvedAuthorization.CanControlSystem())
         {
             throw new WorkSystemAccessDeniedException(WorkSystemPermission.ControlSystem, this.Id, this.Name);
@@ -553,6 +583,7 @@ internal sealed class InMemoryWorkSystem :
         this.lifecycleLock.Dispose();
         await this.readModel.DisposeAsync();
         await this.events.DisposeAsync();
+        await this.iterationStatuses.DisposeAsync();
         await this.changes.DisposeAsync();
     }
 

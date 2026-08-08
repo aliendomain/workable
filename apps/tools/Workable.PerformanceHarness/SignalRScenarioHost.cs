@@ -142,9 +142,12 @@ internal sealed class SignalRScenarioHost : IAsyncDisposable
             groups,
             StringComparer.OrdinalIgnoreCase);
 
-        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
-            => actor == WorkActor.Unknown
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlySet<string>>(actor == WorkActor.Unknown
                 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                : this.groups;
+                : this.groups);
     }
 }

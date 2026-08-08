@@ -38,7 +38,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private readonly TimeSpan defaultReaderPollInterval = readerPollInterval ?? WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval;
     private readonly TimeSpan leaseRenewalInterval = leaseRenewalInterval ?? TimeSpan.FromSeconds(10);
     private readonly TimeSpan retryDelay = retryDelay ?? TimeSpan.FromSeconds(1);
-    private readonly TimeSpan localAcceptedWaiterPollInterval = TimeSpan.FromMilliseconds(50);
     private readonly TimeSpan cleanupDebounce = TimeSpan.FromMilliseconds(50);
     private readonly TimeSpan leaseDuration = leaseDuration ?? TimeSpan.FromMinutes(1);
     private readonly string ownerId = $"{Environment.MachineName}:{Guid.NewGuid():N}";
@@ -442,7 +441,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     }
 
     private Task<bool> WaitForReaderSignalOrFallback(CancellationToken cancellationToken)
-        => this.readerSignal.WaitAsync(this.ReaderWaitInterval, cancellationToken);
+        => this.readerSignal.WaitAsync(this.ReaderPollInterval, cancellationToken);
 
     private void QueueCleanup(WorkerId workerId, WorkQueueDurabilityCleanupKind kind)
     {
@@ -783,17 +782,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
 
     private TimeSpan ReaderPollInterval
         => TimeSpan.FromTicks(Interlocked.Read(ref this.readerPollIntervalTicks));
-
-    private TimeSpan ReaderWaitInterval
-    {
-        get
-        {
-            var configured = this.ReaderPollInterval;
-            return this.acceptedWorkerWaiters.IsEmpty || configured <= this.localAcceptedWaiterPollInterval
-                ? configured
-                : this.localAcceptedWaiterPollInterval;
-        }
-    }
 
     private void HandleLostLeases(IReadOnlyList<WorkQueueDurabilityLease> lostLeases)
     {

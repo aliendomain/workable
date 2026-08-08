@@ -12,12 +12,13 @@ namespace Workable.Tests;
 public sealed class WorkableEntraAuthorizationTests
 {
     [Fact]
-    public void AspNetCoreGroupProviderCanMapEntraScopeClaimToWorkableGroups()
+    public async Task AspNetCoreGroupProviderCanMapEntraScopeClaimToWorkableGroups()
     {
         var httpContext = new DefaultHttpContext
         {
             User = new ClaimsPrincipal(new ClaimsIdentity(
                 [
+                    new Claim("sub", "entra-user"),
                     new Claim(WorkableEntraAuthorizationDefaults.ScopeClaimType, "Workable.Read"),
                     new Claim(WorkableEntraAuthorizationDefaults.RolesClaimType, "Workable.Admin"),
                 ],
@@ -25,6 +26,7 @@ public sealed class WorkableEntraAuthorizationTests
         };
         var provider = new HttpContextClaimsWorkAuthorizationGroupProvider(
             new HttpContextAccessor { HttpContext = httpContext },
+            new HttpContextWorkActorFactory(Options.Create(new WorkableAspNetCoreAuthorizationOptions())),
             Options.Create(new WorkableAspNetCoreAuthorizationOptions
             {
                 GroupClaimTypes =
@@ -35,8 +37,9 @@ public sealed class WorkableEntraAuthorizationTests
                 GroupClaimValueSeparators = [',', ' '],
             }));
 
-        var groups = provider.GetGroups(new WorkActor("entra-user"), systemName: null);
+        var groups = await provider.GetCurrentGroups(new WorkActor("entra-user"), systemName: null);
 
+        Assert.NotNull(groups);
         Assert.Contains(WorkableEntraAuthorizationDefaults.ReadScope, groups);
         Assert.Contains(WorkableEntraAuthorizationDefaults.AdminScope, groups);
     }
@@ -209,7 +212,7 @@ public sealed class WorkableEntraAuthorizationTests
             WorkInvocationChannel.HttpApi,
             new WorkActor("entra-user"),
             "Verify Entra Workable target authorization.");
-        var session = system.CreateSession(requestContext);
+        var session = await system.CreateSession(requestContext);
 
         var definition = Assert.Single(session.Catalog.Definitions);
         await system.Start(requestContext);
@@ -223,8 +226,11 @@ public sealed class WorkableEntraAuthorizationTests
     {
         private readonly IReadOnlySet<string> groups = groups.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
-            => this.groups;
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(this.groups);
     }
 
     private static MessageReceivedContext CreateMessageReceivedContext(
@@ -240,4 +246,3 @@ public sealed class WorkableEntraAuthorizationTests
         return new MessageReceivedContext(httpContext, scheme, options);
     }
 }
-

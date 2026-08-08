@@ -19,6 +19,10 @@ namespace Workable;
 /// <param name="Take">The requested page size.</param>
 /// <param name="Category">An optional definition category filter.</param>
 /// <param name="IncludeSubcategories">Whether category filtering includes descendant categories.</param>
+/// <param name="ActorId">
+/// An optional identifier for the actor in the worker's original request context. This is a query filter within the
+/// caller's existing read authorization, not an authorization boundary.
+/// </param>
 public sealed record WorkableHttpWorkerCriteria(
     string? DefinitionName = null,
     WorkSubjectId? SubjectId = null,
@@ -35,7 +39,8 @@ public sealed record WorkableHttpWorkerCriteria(
     int Skip = 0,
     int Take = WorkerCriteria.DefaultTake,
     string? Category = null,
-    bool IncludeSubcategories = true)
+    bool IncludeSubcategories = true,
+    string? ActorId = null)
 {
     /// <summary>
     /// Converts the HTTP criteria into the core worker-query contract.
@@ -58,5 +63,6 @@ public sealed record WorkableHttpWorkerCriteria(
             Skip: this.Skip,
             Take: this.Take,
             Category: this.Category,
-            IncludeSubcategories: this.IncludeSubcategories);
+            IncludeSubcategories: this.IncludeSubcategories,
+            ActorId: this.ActorId);
 }

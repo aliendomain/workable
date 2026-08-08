@@ -35,7 +35,8 @@ public sealed class WorkableHttpCriteriaShould
             Skip: 12,
             Take: 34,
             Category: "Billing:Close",
-            IncludeSubcategories: false);
+            IncludeSubcategories: false,
+            ActorId: "user-123");
 
         var actual = source.ToWorkerCriteria();
 
@@ -55,6 +56,7 @@ public sealed class WorkableHttpCriteriaShould
         Assert.Equal(34, actual.Take);
         Assert.Equal("Billing:Close", actual.Category);
         Assert.False(actual.IncludeSubcategories);
+        Assert.Equal("user-123", actual.ActorId);
     }
 
     [Fact]

@@ -99,6 +99,21 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public void SystemIterationStatusDefaultsMatchConfiguredValues()
+    {
+        var configuration = WorkSystemIterationStatusConfiguration.Default;
+
+        Assert.Equal(4_096, configuration.ReplayItemCapacity);
+        Assert.Equal(4 * 1_024 * 1_024, configuration.ReplayPayloadByteCapacity);
+        Assert.Equal(65_536, configuration.SystemReplayItemCapacity);
+        Assert.Equal(64 * 1_024 * 1_024, configuration.SystemReplayByteCapacity);
+        Assert.Equal(32 * 1_024, configuration.MaximumPayloadBytes);
+        Assert.Equal(256, configuration.MaximumTypeBytes);
+        Assert.Equal(4_096, configuration.MaximumSubscriptions);
+        Assert.Equal(64, configuration.MaximumSubscriptionsPerIteration);
+    }
+
+    [Fact]
     public void SystemProfilingDefaultsMatchConfiguredValues()
     {
         var profiling = WorkSystemProfilingConfiguration.Default;
@@ -122,6 +137,85 @@ public sealed class WorkSystemLifecycleTests
             .AddWorkableSystem(builder => builder.ConfigureCapacity(maximumWorkers: 0)));
 
         Assert.Contains("maximum workers", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(0, 1, "replay item capacity")]
+    [InlineData(1, 0, "maximum payload bytes")]
+    public void SystemIterationStatusesRejectInvalidLimits(
+        int replayItemCapacity,
+        int maximumPayloadBytes,
+        string expectedMessage)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.ConfigureIterationStatuses(
+                replayItemCapacity: replayItemCapacity,
+                maximumPayloadBytes: maximumPayloadBytes)));
+
+        Assert.Contains(expectedMessage, exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemIterationStatusesRejectInvalidReplacementConfiguration()
+    {
+        Assert.Throws<ArgumentNullException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(null!)));
+        var invalidReplay = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                ReplayItemCapacity = 0,
+            })));
+        var invalidPayload = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                MaximumPayloadBytes = 0,
+            })));
+        var invalidReplayBytes = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                ReplayPayloadByteCapacity = 0,
+            })));
+        var inconsistentPayloadLimits = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                ReplayPayloadByteCapacity = 1_024,
+                MaximumPayloadBytes = 2_048,
+            })));
+        var invalidType = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                MaximumTypeBytes = 0,
+            })));
+        var invalidSystemItems = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                SystemReplayItemCapacity = 1,
+            })));
+        var invalidSystemBytes = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                SystemReplayByteCapacity = 1,
+            })));
+        var invalidIterationSubscriptions = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                MaximumSubscriptionsPerIteration = 0,
+            })));
+        var invalidSystemSubscriptions = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                MaximumSubscriptions = 1,
+            })));
+
+        Assert.Contains("replay item capacity", invalidReplay.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("maximum payload bytes", invalidPayload.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("replay payload byte capacity", invalidReplayBytes.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot be less", inconsistentPayloadLimits.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("maximum type bytes", invalidType.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system replay item capacity", invalidSystemItems.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system replay byte capacity", invalidSystemBytes.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("subscriptions per iteration", invalidIterationSubscriptions.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("maximum subscriptions", invalidSystemSubscriptions.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

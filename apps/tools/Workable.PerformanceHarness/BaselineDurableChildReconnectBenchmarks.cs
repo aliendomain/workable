@@ -56,7 +56,7 @@ public class BaselineDurableChildReconnectBenchmarks
             this.runId = WorkflowBenchmarkReflection.Start(
                 first.System,
                 "perf.workflow.durable.parallel",
-                BenchmarkRequestContexts.CreateAnonymous("Prepare durable child reconnect benchmark."));
+                BenchmarkRequestContexts.CreateAnonymous("Prepare durable child reconnect benchmark.")).GetAwaiter().GetResult();
             if (expectedBlockedChildren > 0)
             {
                 DurableWorkflowBenchmarkSystem.WaitForSignal(

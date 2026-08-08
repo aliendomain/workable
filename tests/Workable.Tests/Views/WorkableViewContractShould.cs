@@ -85,7 +85,7 @@ public sealed class WorkableViewContractShould
         await using var provider = services.BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = TransportAuthorizationTestSupport.CreateTransportSession(
+        var session = await TransportAuthorizationTestSupport.CreateTransportSession(
             system,
             WorkInvocationChannel.InProcess,
             description: "Verify the documented overview component contract.");
@@ -151,7 +151,7 @@ public sealed class WorkableViewContractShould
         await using var provider = services.BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = TransportAuthorizationTestSupport.CreateTransportSession(
+        var session = await TransportAuthorizationTestSupport.CreateTransportSession(
             system,
             WorkInvocationChannel.InProcess,
             description: "Verify documented diagnostics component contracts.");
@@ -216,7 +216,7 @@ public sealed class WorkableViewContractShould
         await using var provider = services.BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var session = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         var result = await new WorkableViewQueryAdapter().Components(
             session,
@@ -246,7 +246,7 @@ public sealed class WorkableViewContractShould
         await using var provider = services.BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var session = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
 
         var result = await new WorkableViewQueryAdapter().Components(
             session,
@@ -279,7 +279,7 @@ public sealed class WorkableViewContractShould
         await using var provider = services.BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var session = TransportAuthorizationTestSupport.CreateTransportSession(system);
+        var session = await TransportAuthorizationTestSupport.CreateTransportSession(system);
         var accountA = new WorkSubjectId("account", "A");
         var accountB = new WorkSubjectId("account", "B");
 

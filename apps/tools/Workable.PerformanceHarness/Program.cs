@@ -289,7 +289,7 @@ static async Task WarmUp(
     WorkableViewQueryAdapter views,
     HarnessOptions options)
 {
-    var session = system.CreateSession(CreateHarnessRequestContext());
+    var session = await system.CreateSession(CreateHarnessRequestContext());
     if (options.WarmupWorkers > 0)
     {
         for (var index = 0; index < options.WarmupWorkers; index++)
@@ -401,7 +401,7 @@ static async Task<ViewFanoutResult> RunOverviewFanout(
     ReadModelLagTracker readModelLag,
     CancellationToken cancellationToken)
 {
-    var session = system.CreateSession(CreateHarnessRequestContext());
+    var session = await system.CreateSession(CreateHarnessRequestContext());
     var durations = new DurationRecorder();
     var payloadBytes = 0L;
     var calls = 0;

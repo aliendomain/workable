@@ -7,17 +7,18 @@ internal sealed class WorkflowRuntime
 {
     private static readonly TimeSpan AutoResumeRetryInitialDelay = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan AutoResumeRetryMaximumDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ControlSessionTimeout = TimeSpan.FromSeconds(30);
     private readonly string? systemName;
     private readonly bool requiresAuthorization;
     private readonly WorkflowCatalog catalog;
     private readonly Func<string, RegisteredWork?> getRegisteredWork;
-    private readonly Func<WorkRequestContext, IWorkSystemSession> createSession;
+    private readonly Func<WorkRequestContext, CancellationToken, ValueTask<IWorkSystemSession>> createSession;
     private readonly Func<WorkerId, IWorkerHandle> createWorkerHandle;
     private readonly Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker;
     private readonly WorkflowPersistenceCoordinator persistence;
     private readonly WorkflowEventPublisher workflowEvents;
     private readonly WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration;
-    private readonly IWorkAuthorizationGroupProvider groupProvider;
+    private readonly IWorkAuthorizationGroupResolver groupResolver;
     private readonly ILogger? logger;
     private readonly NonDurableWorkflowExecutor nonDurable;
     private readonly DurableWorkflowExecutor? durable;
@@ -39,12 +40,12 @@ internal sealed class WorkflowRuntime
         bool requiresAuthorization,
         WorkflowCatalog catalog,
         Func<string, RegisteredWork?> getRegisteredWork,
-        Func<WorkRequestContext, IWorkSystemSession> createSession,
+        Func<WorkRequestContext, CancellationToken, ValueTask<IWorkSystemSession>> createSession,
         Func<WorkerId, IWorkerHandle> createWorkerHandle,
         Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
         WorkflowPersistenceCoordinator persistence,
         WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
-        IWorkAuthorizationGroupProvider groupProvider,
+        IWorkAuthorizationGroupResolver groupResolver,
         WorkflowEventPublisher? workflowEvents = null,
         ILogger? logger = null)
     {
@@ -58,7 +59,7 @@ internal sealed class WorkflowRuntime
         this.persistence = persistence;
         this.workflowEvents = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
         this.systemAuthorizationConfiguration = systemAuthorizationConfiguration;
-        this.groupProvider = groupProvider;
+        this.groupResolver = groupResolver;
         this.logger = logger;
         this.nonDurable = new NonDurableWorkflowExecutor(createSession, createWorkerHandle, this.workflowEvents, getAuthoritativeWorker);
         if (!string.IsNullOrWhiteSpace(systemName))
@@ -70,7 +71,8 @@ internal sealed class WorkflowRuntime
                 createWorkerHandle,
                 persistence,
                 this.workflowEvents,
-                getAuthoritativeWorker);
+                getAuthoritativeWorker,
+                logger);
         }
     }
 
@@ -212,7 +214,7 @@ internal sealed class WorkflowRuntime
         }
     }
 
-    public IWorkflowRunHandle Start(
+    public Task<IWorkflowRunHandle> Start(
         string workflowName,
         WorkRequestContext requestContext,
         CancellationToken cancellationToken = default)
@@ -222,15 +224,12 @@ internal sealed class WorkflowRuntime
             input: null,
             cancellationToken);
 
-    public IWorkflowRunHandle Start(
+    public Task<IWorkflowRunHandle> Start(
         string workflowName,
         WorkRequestContext requestContext,
         WorkInput? input,
         CancellationToken cancellationToken = default)
-        => this.StartCore(workflowName, requestContext, input, cancellationToken)
-            .ConfigureAwait(false)
-            .GetAwaiter()
-            .GetResult();
+        => this.StartCore(workflowName, requestContext, input, cancellationToken);
 
     private async Task<IWorkflowRunHandle> StartCore(
         string workflowName,
@@ -247,7 +246,11 @@ internal sealed class WorkflowRuntime
             return WorkflowRunHandle.Rejected(WorkflowStartOutcome.NotFound(workflowName));
         }
 
-        if (!this.CanOperate(workflow.Definition, requestContext))
+        var operationAuthorization = await this.ResolveOperationAuthorization(
+            workflow.Definition,
+            requestContext,
+            cancellationToken);
+        if (!operationAuthorization.IsAllowed)
         {
             return WorkflowRunHandle.Rejected(WorkflowStartOutcome.Unauthorized(workflow.Definition.Name));
         }
@@ -292,7 +295,7 @@ internal sealed class WorkflowRuntime
         this.runs[run.Id] = run;
         this.AdvanceVersion();
         this.workflowEvents.Started(run.ToSnapshot(), requestContext);
-        this.StartExecution(run, workflow);
+        this.StartExecution(run, workflow, initialAuthorization: operationAuthorization.Authorization);
         return WorkflowRunHandle.Accepted(WorkflowStartOutcome.Accepted(run.Id), run.WaitForCompletion());
     }
 
@@ -301,9 +304,10 @@ internal sealed class WorkflowRuntime
             ? run.ToSnapshot()
             : null;
 
-    internal WorkflowRunState? GetVisibleState(
+    internal async ValueTask<WorkflowRunState?> GetVisibleState(
         WorkflowRunId runId,
-        WorkRequestContext requestContext)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
@@ -313,7 +317,7 @@ internal sealed class WorkflowRuntime
         }
 
         if (!this.catalog.TryGet(run.DefinitionName, out var workflow) ||
-            !this.CanRead(workflow.Definition, requestContext))
+            !await this.CanRead(workflow.Definition, requestContext, cancellationToken))
         {
             return null;
         }
@@ -321,44 +325,63 @@ internal sealed class WorkflowRuntime
         return run;
     }
 
-    internal WorkflowRunSnapshot? GetVisible(
+    internal async ValueTask<WorkflowRunSnapshot?> GetVisible(
         WorkflowRunId runId,
-        WorkRequestContext requestContext)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
     {
-        return this.GetVisibleState(runId, requestContext)?.ToSnapshot();
+        return (await this.GetVisibleState(runId, requestContext, cancellationToken))?.ToSnapshot();
     }
 
-    internal IReadOnlyList<WorkflowRunState> ListVisibleStates(
+    internal async ValueTask<IReadOnlyList<WorkflowRunState>> ListVisibleStates(
         WorkRequestContext requestContext,
         bool includeFinal = false,
-        string? definitionName = null)
+        string? definitionName = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
+
+        IReadOnlySet<string>? groups = null;
+        WorkSystemAuthorizationEvaluator? systemAuthorization = null;
+        if (this.requiresAuthorization)
+        {
+            groups = await this.groupResolver.GetGroups(requestContext, this.systemName, cancellationToken);
+            systemAuthorization = new WorkSystemAuthorizationEvaluator(this.systemAuthorizationConfiguration, groups);
+        }
+
+        var canReadAllWork = !this.requiresAuthorization || systemAuthorization!.HasReadAllWorkAccess();
+        var isKnownActor = requestContext.IsAuthenticated && requestContext.Actor.IsKnown;
+        var readableDefinitionNames = this.catalog.Definitions
+            .Where(workflow => canReadAllWork || workflow.Authorization.CanRead(groups!, isKnownActor))
+            .Select(static workflow => workflow.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return [.. this.runs.Values
             .Where(run =>
                 (includeFinal || !IsFinal(run.ToSnapshot().Status)) &&
                 (string.IsNullOrWhiteSpace(definitionName) || string.Equals(run.DefinitionName, definitionName, StringComparison.OrdinalIgnoreCase)) &&
-                this.catalog.TryGet(run.DefinitionName, out var workflow) &&
-                this.CanRead(workflow.Definition, requestContext))
+                readableDefinitionNames.Contains(run.DefinitionName))
             .OrderByDescending(run => run.CreatedAt)];
     }
 
-    internal IReadOnlyList<WorkflowRunSnapshot> ListVisible(
+    internal async ValueTask<IReadOnlyList<WorkflowRunSnapshot>> ListVisible(
         WorkRequestContext requestContext,
         bool includeFinal = false,
-        string? definitionName = null)
+        string? definitionName = null,
+        CancellationToken cancellationToken = default)
     {
-        return [.. this.ListVisibleStates(requestContext, includeFinal, definitionName)
+        return [.. (await this.ListVisibleStates(requestContext, includeFinal, definitionName, cancellationToken))
             .Select(run => run.ToSnapshot())];
     }
 
     public async Task<WorkflowActionOutcome> Execute(
         WorkflowRunId runId,
         WorkflowAction action,
-        WorkRequestContext requestContext)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
+        cancellationToken.ThrowIfCancellationRequested();
         if (action == WorkflowAction.Start &&
             this.runs.TryGetValue(runId, out var settlingRun) &&
             settlingRun.GetStatus() is WorkflowRunStatus.Paused or WorkflowRunStatus.Blocked &&
@@ -366,7 +389,7 @@ internal sealed class WorkflowRuntime
         {
             try
             {
-                await settlingExecution;
+                await settlingExecution.WaitAsync(cancellationToken);
             }
             catch (Exception exception) when (IsNonCriticalExecutionFailure(exception))
             {
@@ -375,7 +398,7 @@ internal sealed class WorkflowRuntime
         }
 
         var actionGate = this.ReferenceActionGate(runId);
-        await actionGate.Sync.WaitAsync(CancellationToken.None);
+        await actionGate.Sync.WaitAsync(cancellationToken);
         try
         {
 
@@ -409,7 +432,7 @@ internal sealed class WorkflowRuntime
                     "workflow.definition")]);
         }
 
-        if (!this.CanOperate(workflow.Definition, requestContext))
+        if (!await this.CanOperate(workflow.Definition, requestContext, cancellationToken))
         {
             return WorkflowActionOutcome.Unauthorized(action, runId);
         }
@@ -477,12 +500,12 @@ internal sealed class WorkflowRuntime
 
             try
             {
-                var cancelSession = this.createSession(requestContext);
+                var cancelSession = await this.createSession(requestContext, cancellationToken);
                 var childCancellation = await WorkflowExecutionSupport.CancelOutstandingChildren(
                     run,
                     cancelSession,
                     this.getAuthoritativeWorker,
-                    CancellationToken.None);
+                    cancellationToken);
                 if (!childCancellation.IsSuccessful)
                 {
                     return WorkflowActionOutcome.Invalid(action, runId, run.ToSnapshot(), childCancellation.Messages);
@@ -593,7 +616,8 @@ internal sealed class WorkflowRuntime
     private void StartExecution(
         WorkflowRunState run,
         RegisteredWorkflow workflow,
-        bool wasPaused = false)
+        bool wasPaused = false,
+        WorkAuthorizationSnapshot? initialAuthorization = null)
     {
         if (this.executions.ContainsKey(run.Id))
         {
@@ -625,7 +649,13 @@ internal sealed class WorkflowRuntime
         }
 
         _ = Task.Run(
-            () => this.RunRegisteredExecution(run, workflow, control, wasPaused, executionCompletion),
+            () => this.RunRegisteredExecution(
+                run,
+                workflow,
+                control,
+                wasPaused,
+                initialAuthorization,
+                executionCompletion),
             CancellationToken.None);
     }
 
@@ -634,6 +664,7 @@ internal sealed class WorkflowRuntime
         RegisteredWorkflow workflow,
         WorkflowExecutionControl control,
         bool wasPaused,
+        WorkAuthorizationSnapshot? initialAuthorization,
         TaskCompletionSource<WorkflowRunCompletion> executionCompletion)
     {
         WorkflowRunCompletion? result = null;
@@ -641,7 +672,7 @@ internal sealed class WorkflowRuntime
         Exception? failure = null;
         try
         {
-            result = await this.RunExecution(run, workflow, control, wasPaused);
+            result = await this.RunExecution(run, workflow, control, wasPaused, initialAuthorization);
         }
         catch (OperationCanceledException exception)
         {
@@ -707,11 +738,12 @@ internal sealed class WorkflowRuntime
         WorkflowRunState run,
         RegisteredWorkflow workflow,
         WorkflowExecutionControl control,
-        bool wasPaused = false)
+        bool wasPaused = false,
+        WorkAuthorizationSnapshot? initialAuthorization = null)
     {
         try
         {
-            var completion = await this.Execute(run, workflow, control, wasPaused);
+            var completion = await this.Execute(run, workflow, control, wasPaused, initialAuthorization);
             if (control.CancelRequested && !completion.IsFinal)
             {
                 completion = new WorkflowRunCompletion(
@@ -726,7 +758,8 @@ internal sealed class WorkflowRuntime
             {
                 var childCancellation = await WorkflowExecutionSupport.CancelOutstandingChildren(
                     run,
-                    this.createSession(control.CancellationRequestContext ?? run.RequestContext),
+                    await this.CreateControlSession(
+                        control.CancellationRequestContext ?? run.RequestContext),
                     this.getAuthoritativeWorker,
                     CancellationToken.None);
                 if (!childCancellation.IsSuccessful)
@@ -797,7 +830,8 @@ internal sealed class WorkflowRuntime
                 {
                     var childCancellation = await WorkflowExecutionSupport.CancelOutstandingChildren(
                         run,
-                        this.createSession(control.CancellationRequestContext ?? run.RequestContext),
+                        await this.CreateControlSession(
+                            control.CancellationRequestContext ?? run.RequestContext),
                         this.getAuthoritativeWorker,
                         CancellationToken.None);
                     if (!childCancellation.IsSuccessful)
@@ -837,7 +871,7 @@ internal sealed class WorkflowRuntime
 
             await WorkflowExecutionSupport.PauseOutstandingChildren(
                 run,
-                this.createSession(run.RequestContext),
+                await this.CreateControlSession(run.RequestContext),
                 this.getAuthoritativeWorker,
                 CancellationToken.None);
             var paused = run.Pause();
@@ -913,7 +947,8 @@ internal sealed class WorkflowRuntime
         WorkflowRunState run,
         RegisteredWorkflow workflow,
         WorkflowExecutionControl control,
-        bool wasPaused = false)
+        bool wasPaused = false,
+        WorkAuthorizationSnapshot? initialAuthorization = null)
         => workflow.Definition.Coordination.IsDurable
             ? this.durable!.Execute(
                 run,
@@ -921,14 +956,16 @@ internal sealed class WorkflowRuntime
                 wasPaused,
                 () => control.PauseRequested,
                 () => control.CancelRequested,
-                control.Token)
+                control.Token,
+                initialAuthorization)
             : this.nonDurable.Execute(
                 run,
                 workflow,
                 wasPaused,
                 () => control.PauseRequested,
                 () => control.CancelRequested,
-                control.Token);
+                control.Token,
+                initialAuthorization);
 
     private WorkflowRunPersistenceRecord CreatePersistenceRecord(WorkflowRunState run)
         => run.ToPersistenceRecord(this.systemName);
@@ -1338,7 +1375,7 @@ internal sealed class WorkflowRuntime
             {
                 var childCancellation = await WorkflowExecutionSupport.CancelOutstandingChildren(
                     run,
-                    this.createSession(run.RequestContext),
+                    await this.createSession(run.RequestContext, cancellationToken),
                     this.getAuthoritativeWorker,
                     CancellationToken.None);
                 if (!childCancellation.IsSuccessful)
@@ -1453,7 +1490,9 @@ internal sealed class WorkflowRuntime
     {
         var worker = this.getAuthoritativeWorker is not null
             ? await this.getAuthoritativeWorker(workerId, cancellationToken)
-            : await this.createSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess)).Query.Worker(workerId, cancellationToken);
+            : await (await this.createSession(
+                WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+                cancellationToken)).Query.Worker(workerId, cancellationToken);
         return worker;
     }
 
@@ -1497,7 +1536,9 @@ internal sealed class WorkflowRuntime
         {
             try
             {
-                session = this.createSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+                session = await this.createSession(
+                    WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+                    cancellationToken);
             }
             catch (NotSupportedException)
             {
@@ -1570,31 +1611,49 @@ internal sealed class WorkflowRuntime
         return true;
     }
 
-    private bool CanOperate(WorkflowDefinition definition, WorkRequestContext requestContext)
+    private async ValueTask<bool> CanOperate(
+        WorkflowDefinition definition,
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
+        => (await this.ResolveOperationAuthorization(definition, requestContext, cancellationToken)).IsAllowed;
+
+    private async ValueTask<(bool IsAllowed, WorkAuthorizationSnapshot? Authorization)> ResolveOperationAuthorization(
+        WorkflowDefinition definition,
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
         if (!this.requiresAuthorization)
         {
-            return true;
+            return (true, null);
         }
 
-        var groups = requestContext.Authorization?.Groups
-            ?? this.groupProvider.GetGroups(requestContext.Actor, this.systemName)
-            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var groups = await this.groupResolver.GetGroups(requestContext, this.systemName, cancellationToken);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.systemAuthorizationConfiguration, groups);
-        return systemAuthorization.HasOperateAllWorkAccess() ||
+        var isAllowed = systemAuthorization.HasOperateAllWorkAccess() ||
             definition.Authorization.CanOperate(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown);
+        var authorization = requestContext.Authorization is { } snapshot && snapshot.Actor == requestContext.Actor
+            ? snapshot
+            : WorkAuthorizationSnapshot.Create(requestContext.Actor, groups, readableDefinitionIds: null);
+        return (isAllowed, authorization);
     }
 
-    private bool CanRead(WorkflowDefinition definition, WorkRequestContext requestContext)
+    private async ValueTask<IWorkSystemSession> CreateControlSession(WorkRequestContext requestContext)
+    {
+        using var timeout = new CancellationTokenSource(ControlSessionTimeout);
+        return await this.createSession(requestContext, timeout.Token).AsTask().WaitAsync(timeout.Token);
+    }
+
+    private async ValueTask<bool> CanRead(
+        WorkflowDefinition definition,
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
         if (!this.requiresAuthorization)
         {
             return true;
         }
 
-        var groups = requestContext.Authorization?.Groups
-            ?? this.groupProvider.GetGroups(requestContext.Actor, this.systemName)
-            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var groups = await this.groupResolver.GetGroups(requestContext, this.systemName, cancellationToken);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.systemAuthorizationConfiguration, groups);
         return systemAuthorization.HasReadAllWorkAccess() ||
             definition.Authorization.CanRead(groups, requestContext.IsAuthenticated && requestContext.Actor.IsKnown);

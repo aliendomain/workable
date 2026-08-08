@@ -935,7 +935,7 @@ internal static class ScenarioBenchmarkSuite
         {
             for (var index = 0; index < runCount; index++)
             {
-                runIds.Add(WorkflowBenchmarkReflection.Start(
+                runIds.Add(await WorkflowBenchmarkReflection.Start(
                     first.System,
                     "perf.workflow.durable.parallel",
                     requestContext,
@@ -1861,7 +1861,7 @@ internal static class ScenarioBenchmarkSuite
             async index =>
             {
                 var queueStopwatch = Stopwatch.StartNew();
-                var handle = await host.System.CreateSession(requestContext).Queue.Enqueue(
+                var handle = await (await host.System.CreateSession(requestContext)).Queue.Enqueue(
                     "perf.transport.queued",
                     WorkableBenchmarkSystem.CreateInput(index)
                         .WithIdentifier(new WorkIdentifier("batch", batchValue)),

@@ -4,6 +4,9 @@ internal sealed class SessionWorkQueueService(
     WorkQueueService inner,
     WorkRequestContext requestContext) : IWorkQueueService
 {
+    public void NotifyDurableWorkAvailable()
+        => inner.NotifyDurableWorkAvailable();
+
     public Task<IWorkerHandle> Enqueue(
         string name,
         WorkInput? input = null,

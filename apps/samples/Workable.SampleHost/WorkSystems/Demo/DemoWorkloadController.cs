@@ -693,7 +693,7 @@ public sealed class DemoWorkloadController(
             cancellationToken.ThrowIfCancellationRequested();
             foreach (var system in registry.Systems)
             {
-                var session = system.CreateSession("Cancel tracked sample workload from the sample host.");
+                var session = await system.CreateSession("Cancel tracked sample workload from the sample host.");
                 var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
                 if (worker is null)
                 {
@@ -726,7 +726,7 @@ public sealed class DemoWorkloadController(
             var found = false;
             foreach (var system in registry.Systems)
             {
-                var session = system.CreateSession("Read tracked sample workload from the sample host.");
+                var session = await system.CreateSession("Read tracked sample workload from the sample host.");
                 var worker = await session.Query.Worker(workerId, cancellationToken: cancellationToken);
                 if (worker is null)
                 {

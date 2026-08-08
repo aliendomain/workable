@@ -226,7 +226,7 @@ internal sealed class TransportBenchmarkHost : IAsyncDisposable
         WorkInput? input = null,
         CancellationToken cancellationToken = default)
     {
-        var handle = await this.System.CreateSession(this.CreateTransportRequestContext("Queue direct transport benchmark worker."))
+        var handle = await (await this.System.CreateSession(this.CreateTransportRequestContext("Queue direct transport benchmark worker.")))
             .Queue.Enqueue(
                 "perf.transport.queued",
                 input ?? WorkableBenchmarkSystem.CreateInput(Environment.TickCount & int.MaxValue),
@@ -241,7 +241,7 @@ internal sealed class TransportBenchmarkHost : IAsyncDisposable
         WorkInput? input = null,
         CancellationToken cancellationToken = default)
     {
-        var handle = await this.System.CreateSession(this.CreateTransportRequestContext("Queue direct running transport benchmark worker."))
+        var handle = await (await this.System.CreateSession(this.CreateTransportRequestContext("Queue direct running transport benchmark worker.")))
             .Queue.Enqueue(
                 "perf.transport.running",
                 input ?? WorkableBenchmarkSystem.CreateInput(Environment.TickCount & int.MaxValue),
@@ -257,7 +257,7 @@ internal sealed class TransportBenchmarkHost : IAsyncDisposable
         int startIndex = 0,
         CancellationToken cancellationToken = default)
     {
-        var session = this.System.CreateSession(this.CreateTransportRequestContext("Seed transport benchmark workers."));
+        var session = await this.System.CreateSession(this.CreateTransportRequestContext("Seed transport benchmark workers."));
         var workerIds = new List<WorkerId>(workerCount);
         var criteria = new WorkerCriteria(DefinitionName: "perf.transport.queued");
         for (var index = 0; index < workerCount; index++)
@@ -324,15 +324,17 @@ internal sealed class TransportBenchmarkHost : IAsyncDisposable
             ?? throw new InvalidOperationException("Expected MCP workflow run id.")));
     }
 
-    public WorkflowRunId StartDirectWorkflow(string workflowName, CancellationToken cancellationToken = default)
-        => new(WorkflowBenchmarkReflection.Start(
+    public async Task<WorkflowRunId> StartDirectWorkflow(
+        string workflowName,
+        CancellationToken cancellationToken = default)
+        => new(await WorkflowBenchmarkReflection.Start(
             this.System,
             workflowName,
             this.CreateTransportRequestContext($"Start direct transport benchmark workflow '{workflowName}'."),
             cancellationToken));
 
     public async Task<WorkerSnapshot> GetWorker(WorkerId workerId, CancellationToken cancellationToken = default)
-        => await this.System.CreateSession(this.CreateTransportRequestContext("Read transport benchmark worker."))
+        => await (await this.System.CreateSession(this.CreateTransportRequestContext("Read transport benchmark worker.")))
             .Query.Worker(workerId, cancellationToken)
             ?? throw new InvalidOperationException($"Expected worker '{workerId.Value:D}'.");
 
@@ -340,7 +342,7 @@ internal sealed class TransportBenchmarkHost : IAsyncDisposable
         string definitionName,
         CancellationToken cancellationToken = default)
     {
-        var result = await this.System.CreateSession(this.CreateTransportRequestContext("Read transport benchmark worker version."))
+        var result = await (await this.System.CreateSession(this.CreateTransportRequestContext("Read transport benchmark worker version.")))
             .Query.Workers(
                 new WorkerCriteria(
                     DefinitionName: definitionName,

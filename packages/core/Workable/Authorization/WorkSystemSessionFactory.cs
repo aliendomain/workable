@@ -12,11 +12,15 @@ internal sealed class WorkSystemSessionFactory(
     WorkerOperations workers,
     WorkSystemReadModelQueryService query,
     WorkEventStream events,
+    WorkIterationStatusStream iterationStatuses,
     WorkChangeStream changes,
     WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
-    IWorkAuthorizationGroupProvider groupProvider)
+    IWorkAuthorizationGroupResolver groupResolver)
 {
-    public IWorkSystemSession CreateSession(WorkRequestContext requestContext, bool requiresAuthorization)
+    public async ValueTask<IWorkSystemSession> CreateSession(
+        WorkRequestContext requestContext,
+        bool requiresAuthorization,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
@@ -26,6 +30,7 @@ internal sealed class WorkSystemSessionFactory(
         var sessionWorkers = new SessionWorkerOperations(workers, requestContext);
         var sessionQuery = new SessionWorkQueryService(query, requestContext);
         var sessionEvents = new SessionWorkEventStream(events, requestContext);
+        var sessionIterationStatuses = new SessionWorkIterationStatusStream(iterationStatuses, requestContext);
         var sessionChanges = new SessionWorkChangeStream(changes, requestContext);
         if (!requiresAuthorization)
         {
@@ -39,12 +44,11 @@ internal sealed class WorkSystemSessionFactory(
                 sessionWorkers,
                 sessionQuery,
                 sessionEvents,
+                sessionIterationStatuses,
                 sessionChanges);
         }
 
-        var groups = requestContext.Authorization?.Groups
-            ?? groupProvider.GetGroups(requestContext.Actor, systemName)
-            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var groups = await groupResolver.GetGroups(requestContext, systemName, cancellationToken);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, groups);
         var canViewDiagnostics = systemAuthorization.CanViewDiagnostics();
         var authorization = new WorkAuthorizationEvaluator(
@@ -77,6 +81,7 @@ internal sealed class WorkSystemSessionFactory(
             new AuthorizedWorkerOperations(catalog, sessionWorkers, sessionQuery, authorization, requestContext, canViewDiagnostics),
             new AuthorizedWorkQueryService(sessionCatalog, sessionQuery, authorization, canViewDiagnostics),
             new AuthorizedWorkEventStream(sessionEvents, readableDefinitionNames),
+            new AuthorizedWorkIterationStatusStream(iterationStatuses, readableDefinitionNames),
             new AuthorizedWorkChangeStream(sessionChanges, authorization, canViewDiagnostics));
     }
 }

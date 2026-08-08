@@ -194,7 +194,7 @@ Workflow-started child work stores actor, origin, and authentication state from 
 
 Stored child-worker request contexts do not retain precomputed authorization snapshots.
 
-If code later creates a new `IWorkSystemSession` from a stored workflow-run or worker `WorkRequestContext`, Workable resolves groups for the retained actor through the configured group provider when no authorization snapshot is present.
+If code later creates a new `IWorkSystemSession` from a stored workflow-run or worker `WorkRequestContext`, Workable asynchronously resolves groups for the retained actor through the configured `IWorkAuthorizationGroupProvider` when no authorization snapshot is present. This path does not require an active HTTP request.
 
 ### Read And Operate Rules
 
@@ -389,7 +389,7 @@ Hosts can inspect system access explicitly through `IWorkSystem`.
 - `CanOperateAllWork`
 - total, readable, and operable definition counts
 
-`DescribeAccess(...).HasAnyAccess()` answers whether the caller has enough real access for the system to appear in transport discovery or to be selected by name through transport adapters.
+`(await DescribeAccess(...)).HasAnyAccess()` answers whether the caller has enough real access for the system to appear in transport discovery or to be selected by name through transport adapters.
 
 This is especially useful for custom UIs, capability negotiation, or host-specific feature gating before a caller attempts the broader session surface.
 
@@ -435,7 +435,8 @@ That session composition is why the caller-scoped surface stays coherent. The sa
 Authorization data comes from either:
 
 - `WorkRequestContext.Authorization`, when the caller already has a trusted authorization snapshot
-- `IWorkAuthorizationGroupProvider`, when groups should be resolved for the current request
+- `IWorkAuthorizationGroupProvider.GetGroups(...)`, when groups should be resolved from the retained actor
+- an adapter-provided invocation context, such as matching claims from the current HTTP user, when one applies
 
 For the built-in `Workable.HttpApi` adapter, those group and access resolutions are coordinated through a request-scoped cache instead of each step resolving independently. The adapter reuses that cached state across the outer gate, inner gate, host discovery, named-system selection, and request-context creation for the selected system.
 

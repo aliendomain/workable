@@ -5,38 +5,43 @@ namespace Workable;
 
 internal static class WorkableHttpRequestContext
 {
-    internal static WorkRequestContext Create(
+    internal static ValueTask<WorkRequestContext> Create(
         HttpContext httpContext,
         IWorkRequestContextFactory requestContexts,
-        string? description = null)
+        string? description = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(httpContext);
 
         return httpContext.RequestServices
             .GetRequiredService<WorkableHttpRequestAccessContext>()
-            .Create(systemName: null, description);
+            .Create(systemName: null, description, cancellationToken);
     }
 
-    internal static WorkRequestContext Create(
+    internal static ValueTask<WorkRequestContext> Create(
         HttpContext httpContext,
         IWorkSystem system,
         IWorkRequestContextFactory requestContexts,
-        string? description = null)
+        string? description = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(system);
 
         return httpContext.RequestServices
             .GetRequiredService<WorkableHttpRequestAccessContext>()
-            .Create(system.Name, description);
+            .Create(system.Name, description, cancellationToken);
     }
 
-    internal static IWorkSystemSession CreateSession(
+    internal static async ValueTask<IWorkSystemSession> CreateSession(
         HttpContext httpContext,
         IWorkSystem system,
         IWorkRequestContextFactory requestContexts,
-        string? description = null)
+        string? description = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(system);
-        return system.CreateSession(Create(httpContext, system, requestContexts, description));
+        return await system.CreateSession(
+            await Create(httpContext, system, requestContexts, description, cancellationToken),
+            cancellationToken);
     }
 }

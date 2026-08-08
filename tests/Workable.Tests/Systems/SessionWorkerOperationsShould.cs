@@ -24,7 +24,7 @@ public sealed class SessionWorkerOperationsShould
             new WorkActor("session-worker-user", "Session Worker User"),
             "Operate worker through a session.",
             "https://workable.test/workers");
-        var session = system.CreateSession(requestContext);
+        var session = await system.CreateSession(requestContext);
         var changes = new WorkerReconfiguration(ProfilingEnabled: true);
 
         var reconfigure = await session.Workers.Reconfigure(worker.Version, changes);

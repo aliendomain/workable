@@ -5,7 +5,7 @@ namespace Workable;
 internal sealed class WorkableHttpRequestAccessContext(
     IHttpContextAccessor httpContextAccessor,
     IWorkRequestContextFactory requestContexts,
-    IWorkAuthorizationGroupProvider groupProvider)
+    IWorkAuthorizationGroupResolver groupResolver)
 {
     private const string DefaultSystemCacheKey = "<default>";
 
@@ -18,26 +18,31 @@ internal sealed class WorkableHttpRequestAccessContext(
     private readonly Dictionary<string, bool> builtInSurfaceAccessBySystem = new(StringComparer.OrdinalIgnoreCase);
     private WorkRequestContext? baseContext;
 
-    internal WorkRequestContext Create(
+    internal async ValueTask<WorkRequestContext> Create(
         string? systemName = null,
-        string? description = null)
+        string? description = null,
+        CancellationToken cancellationToken = default)
     {
         var requestContext = this.GetBaseContext();
         return requestContext with
         {
             Description = description,
-            Authorization = this.GetAuthorization(systemName, requestContext.Actor),
+            Authorization = await this.GetAuthorization(systemName, requestContext.Actor, cancellationToken),
         };
     }
 
-    internal bool HasAnyRequiredSurfaceGroup(IReadOnlySet<string> requiredGroups)
+    internal async ValueTask<bool> HasAnyRequiredSurfaceGroup(
+        IReadOnlySet<string> requiredGroups,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requiredGroups);
 
-        return this.GetGroups(systemName: null).Any(requiredGroups.Contains);
+        return (await this.GetGroups(systemName: null, cancellationToken)).Any(requiredGroups.Contains);
     }
 
-    internal bool IsBuiltInSurfaceAllowed(IWorkSystem system)
+    internal async ValueTask<bool> IsBuiltInSurfaceAllowed(
+        IWorkSystem system,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(system);
 
@@ -54,29 +59,33 @@ internal sealed class WorkableHttpRequestAccessContext(
             return true;
         }
 
-        var requestContext = this.Create(system.Name);
+        var requestContext = await this.Create(system.Name, cancellationToken: cancellationToken);
         if (system is IWorkSystemBuiltInHttpSurfaceAccess fastPath)
         {
-            allowed = fastPath.IsBuiltInHttpSurfaceAllowed(requestContext);
+            allowed = await fastPath.IsBuiltInHttpSurfaceAllowed(requestContext, cancellationToken);
             this.builtInSurfaceAccessBySystem[cacheKey] = allowed;
             return allowed;
         }
 
-        access = system.DescribeAccess(requestContext);
+        access = await system.DescribeAccess(requestContext, cancellationToken);
         this.accessBySystem[cacheKey] = access;
         allowed = WorkableHttpBuiltInSurfaceAccess.IsAllowed(access);
         this.builtInSurfaceAccessBySystem[cacheKey] = allowed;
         return allowed;
     }
 
-    internal bool HasAnySystemAccess(IWorkSystem system)
+    internal async ValueTask<bool> HasAnySystemAccess(
+        IWorkSystem system,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(system);
 
-        return this.DescribeAccess(system).HasAnyAccess();
+        return (await this.DescribeAccess(system, cancellationToken)).HasAnyAccess();
     }
 
-    internal WorkSystemAccessSummary DescribeAccess(IWorkSystem system)
+    internal async ValueTask<WorkSystemAccessSummary> DescribeAccess(
+        IWorkSystem system,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(system);
 
@@ -86,7 +95,9 @@ internal sealed class WorkableHttpRequestAccessContext(
             return access;
         }
 
-        access = system.DescribeAccess(this.Create(system.Name));
+        access = await system.DescribeAccess(
+            await this.Create(system.Name, cancellationToken: cancellationToken),
+            cancellationToken);
         this.accessBySystem[cacheKey] = access;
         if (WorkableHttpBuiltInSurfaceAccess.IsAllowed(access))
         {
@@ -110,9 +121,10 @@ internal sealed class WorkableHttpRequestAccessContext(
         return this.baseContext;
     }
 
-    private WorkAuthorizationSnapshot GetAuthorization(
+    private async ValueTask<WorkAuthorizationSnapshot> GetAuthorization(
         string? systemName,
-        WorkActor actor)
+        WorkActor actor,
+        CancellationToken cancellationToken)
     {
         var cacheKey = GetCacheKey(systemName);
         if (this.authorizationBySystem.TryGetValue(cacheKey, out var authorization))
@@ -122,13 +134,15 @@ internal sealed class WorkableHttpRequestAccessContext(
 
         authorization = WorkAuthorizationSnapshot.Create(
             actor,
-            this.GetGroups(systemName),
+            await this.GetGroups(systemName, cancellationToken),
             readableDefinitionIds: null);
         this.authorizationBySystem[cacheKey] = authorization;
         return authorization;
     }
 
-    private IReadOnlySet<string> GetGroups(string? systemName)
+    private async ValueTask<IReadOnlySet<string>> GetGroups(
+        string? systemName,
+        CancellationToken cancellationToken)
     {
         var cacheKey = GetCacheKey(systemName);
         if (this.groupsBySystem.TryGetValue(cacheKey, out var groups))
@@ -136,17 +150,13 @@ internal sealed class WorkableHttpRequestAccessContext(
             return groups;
         }
 
-        groups = NormalizeGroups(groupProvider.GetGroups(this.GetBaseContext().Actor, systemName));
+        groups = await groupResolver.GetGroups(
+            this.GetBaseContext(),
+            systemName,
+            cancellationToken);
         this.groupsBySystem[cacheKey] = groups;
         return groups;
     }
-
-    private static IReadOnlySet<string> NormalizeGroups(IEnumerable<string>? groups)
-        => groups?
-            .Where(static group => !string.IsNullOrWhiteSpace(group))
-            .Select(static group => group.Trim())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase)
-            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     private static string GetCacheKey(string? systemName)
         => string.IsNullOrWhiteSpace(systemName) ? DefaultSystemCacheKey : systemName;

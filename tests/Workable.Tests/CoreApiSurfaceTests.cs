@@ -63,6 +63,16 @@ public sealed class CoreApiSurfaceTests
     }
 
     [Fact]
+    public void WorkQueueExposesSynchronousDurableWorkNotification()
+    {
+        var method = typeof(IWorkQueueService).GetMethod(nameof(IWorkQueueService.NotifyDurableWorkAvailable));
+
+        Assert.NotNull(method);
+        Assert.Equal(typeof(void), method.ReturnType);
+        Assert.Empty(method.GetParameters());
+    }
+
+    [Fact]
     public void WorkerHandleExposesRawAndTypedCompletionMethods()
     {
         var methods = typeof(IWorkerHandle)

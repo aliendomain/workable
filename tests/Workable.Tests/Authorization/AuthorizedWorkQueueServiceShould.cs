@@ -66,6 +66,23 @@ public sealed class AuthorizedWorkQueueServiceShould
     }
 
     [Fact]
+    public void ForwardDurableWorkNotificationsToInnerQueue()
+    {
+        var queue = CreateQueueService(
+            groups: ["visible.operate"],
+            works:
+            [
+                CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate")),
+            ],
+            out _,
+            out var inner);
+
+        queue.NotifyDurableWorkAvailable();
+
+        Assert.Equal(1, inner.DurableWorkNotifications);
+    }
+
+    [Fact]
     public async Task ApplyCommonOperateRequirementsToQueueing()
     {
         var visible = CreateRegisteredWork(
@@ -282,6 +299,11 @@ public sealed class AuthorizedWorkQueueServiceShould
     private sealed class RecordingWorkQueueService : IWorkQueueService
     {
         public List<RecordedQueueCall> Calls { get; } = [];
+
+        public int DurableWorkNotifications { get; private set; }
+
+        public void NotifyDurableWorkAvailable()
+            => this.DurableWorkNotifications++;
 
         public Task<IWorkerHandle> Enqueue(
             string name,

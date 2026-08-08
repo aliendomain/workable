@@ -63,7 +63,8 @@ public sealed record WorkViewWorkerGridDetailed(
     DateTimeOffset UpdatedAt,
     TimeSpan TotalExecutionDuration,
     WorkSubjectId? SubjectId,
-    IReadOnlySet<WorkIdentifier> Identifiers);
+    IReadOnlySet<WorkIdentifier> Identifiers,
+    long? CurrentIterationSequence = null);
 
 /// <summary>
 /// Compact overview component for iteration status counts.

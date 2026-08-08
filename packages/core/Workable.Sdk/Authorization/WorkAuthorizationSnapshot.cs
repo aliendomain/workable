@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -30,11 +31,7 @@ public sealed record WorkAuthorizationSnapshot(
 
         return new(
             actor,
-            groups?
-                .Where(static group => !string.IsNullOrWhiteSpace(group))
-                .Select(static group => group.Trim())
-                .ToHashSet(StringComparer.OrdinalIgnoreCase)
-                ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            WorkAuthorizationGroups.Normalize(groups),
             CreateReadFingerprint(readableDefinitionIds));
     }
 
@@ -49,5 +46,31 @@ public sealed record WorkAuthorizationSnapshot(
             ?? Array.Empty<string>());
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+}
+
+internal static class WorkAuthorizationGroups
+{
+    private static readonly IReadOnlySet<string> Empty =
+        Array.Empty<string>().ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    internal static IReadOnlySet<string> Normalize(IEnumerable<string>? groups)
+    {
+        if (groups is null)
+        {
+            return Empty;
+        }
+
+        if (groups is FrozenSet<string> frozen &&
+            frozen.Comparer.Equals(StringComparer.OrdinalIgnoreCase) &&
+            frozen.All(static group => !string.IsNullOrWhiteSpace(group) && group == group.Trim()))
+        {
+            return frozen;
+        }
+
+        return groups
+            .Where(static group => !string.IsNullOrWhiteSpace(group))
+            .Select(static group => group.Trim())
+            .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     }
 }

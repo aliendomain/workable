@@ -6,7 +6,7 @@ namespace Workable;
 /// </summary>
 /// <remarks>
 /// Direct access to several members requires authorization to be disabled for the system. When authorization is enabled,
-/// callers should create a session with <see cref="CreateSession(WorkRequestContext)"/> so access can be evaluated
+/// callers should create a session with <see cref="CreateSession(WorkRequestContext, CancellationToken)"/> so access can be evaluated
 /// against the supplied request context.
 /// </remarks>
 public interface IWorkSystem : IAsyncDisposable
@@ -77,6 +77,16 @@ public interface IWorkSystem : IAsyncDisposable
     IWorkEventStream Events { get; }
 
     /// <summary>
+    /// Gets the direct iteration status-stream surface for the system.
+    /// </summary>
+    /// <remarks>
+    /// This member is intended for open systems. When authorization is required, access may throw because no request
+    /// context is available for evaluation; use <see cref="IWorkSystemSession.IterationStatuses"/> instead.
+    /// </remarks>
+    IWorkIterationStatusStream IterationStatuses
+        => throw new NotSupportedException("This work system does not expose iteration status streams.");
+
+    /// <summary>
     /// Gets the direct change-stream surface for the system.
     /// </summary>
     /// <remarks>
@@ -98,8 +108,11 @@ public interface IWorkSystem : IAsyncDisposable
     /// Describes the caller's effective system-level access for the supplied request context.
     /// </summary>
     /// <param name="requestContext">The caller context to evaluate against the system authorization rules.</param>
+    /// <param name="cancellationToken">A token that cancels authorization-group resolution.</param>
     /// <returns>A summary of the caller's effective system and work-wide access.</returns>
-    WorkSystemAccessSummary DescribeAccess(WorkRequestContext requestContext);
+    ValueTask<WorkSystemAccessSummary> DescribeAccess(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Creates a caller-scoped session over the system surfaces.
@@ -107,8 +120,11 @@ public interface IWorkSystem : IAsyncDisposable
     /// <param name="requestContext">
     /// The caller context whose identity, origin, and authorization snapshot should govern the returned session.
     /// </param>
+    /// <param name="cancellationToken">A token that cancels authorization-group resolution.</param>
     /// <returns>A session whose catalog, queue, query, worker, event, and diagnostics access is scoped to the caller.</returns>
-    IWorkSystemSession CreateSession(WorkRequestContext requestContext);
+    ValueTask<IWorkSystemSession> CreateSession(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Starts the system using a caller-scoped request context.

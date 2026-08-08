@@ -334,7 +334,7 @@ CREATE TABLE workable.WorkEntries
         var system = namedSystem!;
         await system.Start();
 
-        var handle = StartWorkflow(system, "workflow.durable.dispatch");
+        var handle = await StartWorkflow(system, "workflow.durable.dispatch");
         var completion = await WaitForWorkflowCompletion(handle);
 
         Assert.True(IsWorkflowAccepted(handle));
@@ -404,7 +404,7 @@ FROM workable.WorkEntries;
         var firstSystem = firstNamedSystem!;
         await firstSystem.Start();
 
-        var handle = StartWorkflow(firstSystem, workflowName);
+        var handle = await StartWorkflow(firstSystem, workflowName);
         var runId = RequiredWorkflowRunId(handle);
         await WaitWithTimeout(alphaStarted.Task);
         await WaitWithTimeout(betaStarted.Task);
@@ -571,7 +571,7 @@ WHERE WorkSystemName = N'workflow-tests';
         var system = namedSystem!;
         await system.Start();
 
-        var handle = StartWorkflow(system, workflowName);
+        var handle = await StartWorkflow(system, workflowName);
         var runId = RequiredWorkflowRunId(handle);
         await WaitWithTimeout(slowStarted.Task);
 
@@ -658,7 +658,7 @@ WHERE RunId = @RunId;
         var firstSystem = firstNamedSystem!;
         await firstSystem.Start();
 
-        var handle = StartWorkflow(firstSystem, workflowName);
+        var handle = await StartWorkflow(firstSystem, workflowName);
         var runId = RequiredWorkflowRunId(handle);
         await TestEventually.Until(
             () => WorkflowStepWorkerIds(firstSystem, runId, "join").Count == 1,
@@ -779,7 +779,7 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
         var firstSystem = firstNamedSystem!;
         await firstSystem.Start();
 
-        var handle = StartWorkflow(firstSystem, workflowName);
+        var handle = await StartWorkflow(firstSystem, workflowName);
         var runId = RequiredWorkflowRunId(handle);
         await TestEventually.Until(
             () => WorkflowStepWorkerIds(firstSystem, runId, "join").Count == 1,
@@ -1114,7 +1114,7 @@ FROM workable.WorkflowRuns;
         var firstSystem = firstNamedSystem!;
         await firstSystem.Start();
 
-        var handle = StartWorkflow(firstSystem, workflowName);
+        var handle = await StartWorkflow(firstSystem, workflowName);
         var runId = RequiredWorkflowRunId(handle);
         await TestEventually.Until(
             () => WorkflowStatus(firstSystem, runId) == WorkflowRunStatus.Running.ToString(),
@@ -2094,7 +2094,7 @@ WHERE SubjectType = N'order'
     }
 
     [Fact]
-    public async Task DurableQueueUsingExistingTransactionStartsOnlyAfterCommit()
+    public async Task DurableQueueUsingExistingTransactionStartsPromptlyWhenNotifiedAfterCommit()
     {
         if (this.SkipIfUnavailable())
         {
@@ -2128,7 +2128,9 @@ WHERE SubjectType = N'order'
         Assert.Null(await system.Query.Worker(RequiredWorkerId(handle)));
 
         await transaction.CommitAsync();
+        system.Queue.NotifyDurableWorkAvailable();
 
+        await WaitWithTimeout(ran.Task);
         var completion = await WaitForCompletion(handle);
         await system.Stop();
 
@@ -2410,6 +2412,13 @@ SET ANSI_NULLS OFF;
         }
 
         await transaction.RollbackAsync();
+
+        var claimAttempts = system.Diagnostics.Durability.ClaimAttemptCount;
+        system.Queue.NotifyDurableWorkAvailable();
+        await TestEventually.Until(
+            () => system.Diagnostics.Durability.ClaimAttemptCount > claimAttempts,
+            "Expected the explicit durable queue notification to trigger an empty claim after rollback.",
+            timeout: TimeSpan.FromSeconds(2));
 
         var rows = await CountRowsForSubject(connection, "rollback");
         await system.Stop();
@@ -3948,13 +3957,13 @@ WHERE WorkerId = @WorkerId;
             async () => await CountRowsForSubject(connection, subjectValue) == expected,
             $"Expected SQL Server work entry count for subject '{subjectValue}' to become {expected}.");
 
-    private static object StartWorkflow(IWorkSystem system, string workflowName)
+    private static async Task<object> StartWorkflow(IWorkSystem system, string workflowName)
     {
         var runtime = system.GetType()
             .GetProperty("WorkflowRuntime", BindingFlags.Instance | BindingFlags.NonPublic)?
             .GetValue(system)
             ?? throw new InvalidOperationException("Expected workflow runtime property.");
-        return runtime.GetType()
+        var startTask = (Task)(runtime.GetType()
             .GetMethod(
                 "Start",
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
@@ -3964,6 +3973,9 @@ WHERE WorkerId = @WorkerId;
             .Invoke(
                 runtime,
                 [workflowName, WorkRequestContext.Create(WorkInvocationChannel.InProcess), CancellationToken.None])
+            ?? throw new InvalidOperationException("Expected workflow start task."));
+        await startTask;
+        return startTask.GetType().GetProperty("Result")?.GetValue(startTask)
             ?? throw new InvalidOperationException("Expected workflow start handle.");
     }
 
@@ -3986,15 +3998,16 @@ WHERE WorkerId = @WorkerId;
                 }
 
                 var parameters = method.GetParameters();
-                return parameters.Length == 3 &&
+                return parameters.Length == 4 &&
                     parameters[0].ParameterType == typeof(WorkflowRunId) &&
-                    parameters[2].ParameterType == typeof(WorkRequestContext);
+                    parameters[2].ParameterType == typeof(WorkRequestContext) &&
+                    parameters[3].ParameterType == typeof(CancellationToken);
             });
         var actionParameterType = executeMethod.GetParameters()[1].ParameterType;
         var action = Enum.Parse(actionParameterType, actionName, ignoreCase: false);
         var task = (Task)executeMethod.Invoke(
             runtime,
-            [runId, action, WorkRequestContext.Create(WorkInvocationChannel.InProcess)])!;
+            [runId, action, WorkRequestContext.Create(WorkInvocationChannel.InProcess), CancellationToken.None])!;
         await task.WaitAsync(CancellationToken.None);
         return task.GetType().GetProperty("Result")?.GetValue(task)
             ?? throw new InvalidOperationException("Expected workflow action outcome.");

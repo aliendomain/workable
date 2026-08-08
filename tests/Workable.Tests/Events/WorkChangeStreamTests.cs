@@ -317,7 +317,7 @@ public sealed class WorkChangeStreamTests
     public async Task InMemoryWorkSystemSessionExposesOwnedChangeStream()
     {
         await using var system = CreateInMemorySystem();
-        var session = system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var session = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         await using var subscription = session.Changes.Subscribe();
         await using var reader = subscription.Read().GetAsyncEnumerator();
         var key = WorkChangeKey.System();

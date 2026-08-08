@@ -112,7 +112,7 @@ The realtime criteria is `WorkWorkerOverviewRealtimeCriteria`:
 The realtime transport uses two more types:
 
 - `WorkWorkerOverviewRealtimeState`: the full current worker-overview state used to seed a subscription
-- `WorkWorkerOverviewRealtimeUpdate`: a partial delta envelope that carries only the sections that changed
+- `WorkWorkerOverviewRealtimeUpdate`: a synchronized latest-state envelope whose populated sections follow the requested panel shapes
 
 This worker-overview contract exists because the detail screen has needs that do not fit the generic component map well:
 
@@ -261,7 +261,7 @@ This lets a custom UI reuse the same component names for global dashboards, one 
 Most components need only `id`, `type`, and `shape`. A few also accept JSON options:
 
 - `throughput`: `windowSeconds` and `bucketSeconds`
-- `workerGrid`: `states`, `configuration`, `skip`, `take`, and optional `keyKind`, `keyType`, and `keyValue`
+- `workerGrid`: `states`, `configuration`, `skip`, `take`, optional `keyKind`, `keyType`, and `keyValue`, and optional `actorId` for workers originated by one actor. The actor id is a query filter, not an authorization boundary; user-facing SignalR clients should use `WatchMyWorkers` so the server supplies it from the authenticated request context.
 - `iterationGrid`: `statuses`, `skip`, `take`, and optional `keyKind`, `keyType`, and `keyValue`
 - `workerDetail` and `workerCurrentIteration`: `workerId`
 - `workflowRuns`: `includeFinal`, `definitionName`, and `childSampleSize`
@@ -292,6 +292,7 @@ That approach keeps the stringly-typed surface manageable and gives you room to 
 `Workable.HttpApi` and `Workable.SignalR` both reuse this package's view model rather than inventing transport-specific dashboard contracts.
 
 - See [HTTP API](../adapters/http-api.md#views-and-components) for the HTTP route shape.
+- See [Realtime](../adapters/realtime.md#actor-scoped-worker-updates) for the dedicated `WatchMyWorkers` user-facing method and `WatchWorkers` operator method over the same `workers` named view.
 - See [Realtime](../adapters/realtime.md#component-view-updates) for live pushed named-view updates over SignalR.
 - See [Realtime](../adapters/realtime.md#worker-overview-updates) for the dedicated worker-overview stream.
 

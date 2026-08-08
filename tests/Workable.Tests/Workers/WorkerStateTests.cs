@@ -298,19 +298,28 @@ public sealed class WorkerStateTests
     {
         var definition = WorkDefinition.Create("purgeable", "Can be purged.");
         var system = CreateSystem(definition, (context, input, cancellationToken) =>
-            Task.FromResult(WorkExecutionResult.Success()));
+        {
+            context.Status.Publish("purgeable.progress", 1);
+            return Task.FromResult(WorkExecutionResult.Success());
+        });
 
         await system.Start();
 
         var handle = await system.Queue.Enqueue("purgeable");
         var completed = await handle.WaitForCompletion();
         var completedWorker = RequiredCompletionWorker(completed);
+        var iteration = new WorkerIterationReference(
+            completedWorker.Id,
+            completedWorker.LastIterationSequence ?? throw new InvalidOperationException("Expected an iteration."));
+
+        Assert.Single(await ReadIterationStatuses(system.IterationStatuses.Subscribe(iteration)));
 
         var purge = await system.Workers.Execute(completedWorker.Version, WorkAction.Purge);
         var snapshot = await system.Query.Worker(completedWorker.Id);
 
         Assert.True(purge.IsAccepted);
         Assert.Null(snapshot);
+        Assert.Throws<KeyNotFoundException>(() => system.IterationStatuses.Subscribe(iteration));
         Assert.DoesNotContain("Purged", Enum.GetNames<WorkerState>());
     }
 
@@ -349,7 +358,10 @@ public sealed class WorkerStateTests
                 },
             });
         var system = CreateSystem(definition, (context, input, cancellationToken) =>
-            Task.FromResult(WorkExecutionResult.Success()));
+        {
+            context.Status.Publish("retention.progress", 1);
+            return Task.FromResult(WorkExecutionResult.Success());
+        });
 
         await system.Start();
 
@@ -417,8 +429,26 @@ public sealed class WorkerStateTests
 
         Assert.Equal(2, await CountExistingWorkers(system, workers));
         Assert.Null(await system.Query.Worker(first.Id));
+        Assert.Throws<KeyNotFoundException>(() => system.IterationStatuses.Subscribe(new WorkerIterationReference(
+            first.Id,
+            first.LastIterationSequence ?? throw new InvalidOperationException("Expected an iteration."))));
         Assert.NotNull(await system.Query.Worker(second.Id));
         Assert.NotNull(await system.Query.Worker(third.Id));
+    }
+
+    private static async Task<IReadOnlyList<WorkIterationStatusItem>> ReadIterationStatuses(
+        IWorkIterationStatusSubscription subscription)
+    {
+        await using (subscription)
+        {
+            var items = new List<WorkIterationStatusItem>();
+            await foreach (var item in subscription.Read())
+            {
+                items.Add(item);
+            }
+
+            return items;
+        }
     }
 
     [Fact]

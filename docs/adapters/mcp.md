@@ -163,7 +163,9 @@ Worker action tool calls record a `WorkOrigin` with `WorkInvocationChannel.Mcp`.
 Use `GetMcpToolDescriptors` on an `IWorkSystemSession` to describe the work available to the current caller in one Workable system.
 
 ```csharp
-IWorkSystemSession session = workSystem.CreateSession(requestContext);
+IWorkSystemSession session = await workSystem.CreateSession(
+    requestContext,
+    cancellationToken);
 
 IReadOnlyList<WorkableMcpToolDescriptor> tools =
     session.GetMcpToolDescriptors();
@@ -212,7 +214,9 @@ Set `FallbackInputSchemaJson` when definitions without a compatible JSON input s
 Use `InvokeMcpTool` on an `IWorkSystemSession` to queue work by Workable work name.
 
 ```csharp
-IWorkSystemSession session = workSystem.CreateSession(requestContext);
+IWorkSystemSession session = await workSystem.CreateSession(
+    requestContext,
+    cancellationToken);
 using var input = JsonDocument.Parse("""{"userId":"user-123"}""");
 
 WorkableMcpInvocationResult result =

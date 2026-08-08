@@ -39,7 +39,7 @@ public sealed class WorkerActionHistoryTests
             description: "Operate the worker through the HTTP API.",
             url: "https://workable.test/workers/cancel",
             isAuthenticated: true);
-        var session = system.CreateSession(sessionRequestContext);
+        var session = await system.CreateSession(sessionRequestContext);
 
         var outcome = await session.Workers.Execute(
             worker.Version,

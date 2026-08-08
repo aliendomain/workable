@@ -46,6 +46,8 @@ That keeps multi-system discovery on the public contract without forcing consume
 - `Workers`
 - `Query`
 - `Events`
+- `IterationStatuses`
+- `Changes`
 - `Diagnostics`
 - `DescribeAccess(...)`
 - `CreateSession(...)`
@@ -66,12 +68,14 @@ var requestContext = new WorkRequestContext(
     url: "/workable/workers",
     isAuthenticated: true);
 
-IWorkSystemSession session = workSystem.CreateSession(requestContext);
+IWorkSystemSession session = await workSystem.CreateSession(
+    requestContext,
+    cancellationToken);
 
 WorkerQueryResult workers = await session.Query.Workers(cancellationToken: cancellationToken);
 ```
 
-That session-bound model is the most important mental model in this package: the same catalog, queue, worker, query, event, and diagnostics contracts still exist, but they can now be filtered or rejected according to the bound caller.
+That session-bound model is the most important mental model in this package: the same catalog, queue, worker, query, event, iteration-status, change-stream, and diagnostics contracts still exist, but they can now be filtered or rejected according to the bound caller.
 
 For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also part of that bound caller state. Workable uses it together with a known actor to evaluate rules such as `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, and `AllowOperationsToKnownAuthenticatedUsers(...)`.
 
@@ -79,7 +83,7 @@ For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also par
 
 `DescribeAccess(...)` lets a host or custom adapter reason about access before creating a broader session experience.
 
-`DescribeAccess(...).HasAnyAccess()` is the simple yes-or-no check for "does this caller have enough real access for this system to be visible or selected by name through a transport-facing surface?"
+`(await DescribeAccess(...)).HasAnyAccess()` is the simple yes-or-no check for "does this caller have enough real access for this system to be visible or selected by name through a transport-facing surface?"
 
 `DescribeAccess(...)` returns a `WorkSystemAccessSummary`:
 
@@ -131,6 +135,10 @@ System-boundary failures are where `WorkSystemAuthorizationRequiredException` an
 ## Queue Surface
 
 `IWorkQueueService` accepts work by definition name, with either raw `WorkInput` or typed CLR input.
+
+After committing work enqueued with a caller-owned durability transaction, callers can use
+`NotifyDurableWorkAvailable()` to wake that system's local durable reader without waiting for fallback polling. The
+notification is a trusted in-process hint; cross-process and missed-signal correctness still comes from polling.
 
 Queueing always returns an `IWorkerHandle`, even when the request is rejected. The handle bridges two moments:
 

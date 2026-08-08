@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
@@ -8,7 +9,8 @@ namespace Workable;
 /// </summary>
 public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
     IHttpContextAccessor httpContextAccessor,
-    IOptions<WorkableAspNetCoreAuthorizationOptions> options) : IWorkAuthorizationGroupProvider
+    IWorkActorFactory actors,
+    IOptions<WorkableAspNetCoreAuthorizationOptions> options) : IWorkAuthorizationGroupContextProvider
 {
     private static readonly object GroupsCacheKey = new();
     private const string DefaultSystemCacheKey = "<default>";
@@ -18,17 +20,27 @@ public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
     /// </summary>
     /// <param name="actor">The actor being authorized.</param>
     /// <param name="systemName">The system name being authorized, or <see langword="null"/> for the default unnamed system.</param>
+    /// <param name="cancellationToken">A token that cancels group resolution.</param>
     /// <returns>The resolved group values for the current authenticated user.</returns>
-    public IReadOnlySet<string> GetGroups(WorkActor actor, string? systemName)
+    public ValueTask<IReadOnlySet<string>?> GetCurrentGroups(
+        WorkActor actor,
+        string? systemName,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var httpContext = httpContextAccessor.HttpContext;
         var cacheKey = string.IsNullOrWhiteSpace(systemName) ? DefaultSystemCacheKey : systemName;
         if (httpContext is null || httpContext.User.Identity?.IsAuthenticated != true)
         {
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            return ValueTask.FromResult<IReadOnlySet<string>?>(null);
         }
 
         var user = httpContext.User;
+        if (actors.Create(user) != actor)
+        {
+            return ValueTask.FromResult<IReadOnlySet<string>?>(null);
+        }
+
         Dictionary<string, IReadOnlySet<string>>? cache = null;
         if (httpContext.Items[GroupsCacheKey] is Dictionary<string, IReadOnlySet<string>> existingCache)
         {
@@ -37,7 +49,7 @@ public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
 
         if (cache is not null && cache.TryGetValue(cacheKey, out var cachedGroups))
         {
-            return cachedGroups;
+            return ValueTask.FromResult<IReadOnlySet<string>?>(cachedGroups);
         }
 
         var groups = user.Claims
@@ -45,13 +57,13 @@ public sealed class HttpContextClaimsWorkAuthorizationGroupProvider(
             .SelectMany(claim => SplitGroups(claim.Value, options.Value.GroupClaimValueSeparators))
             .Where(group => !string.IsNullOrWhiteSpace(group))
             .Select(group => group.Trim())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
         cache ??= new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
         cache[cacheKey] = groups;
         httpContext.Items[GroupsCacheKey] = cache;
 
-        return groups;
+        return ValueTask.FromResult<IReadOnlySet<string>?>(groups);
     }
 
     private static string[] SplitGroups(

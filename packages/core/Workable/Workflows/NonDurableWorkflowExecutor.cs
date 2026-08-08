@@ -1,11 +1,24 @@
 namespace Workable;
 
 internal sealed class NonDurableWorkflowExecutor(
-    Func<WorkRequestContext, IWorkSystemSession> createSession,
+    Func<WorkRequestContext, CancellationToken, ValueTask<IWorkSystemSession>> createSession,
     Func<WorkerId, IWorkerHandle>? createWorkerHandle = null,
     WorkflowEventPublisher? workflowEvents = null,
     Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null)
 {
+    internal NonDurableWorkflowExecutor(
+        Func<WorkRequestContext, IWorkSystemSession> createSession,
+        Func<WorkerId, IWorkerHandle>? createWorkerHandle = null,
+        WorkflowEventPublisher? workflowEvents = null,
+        Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null)
+        : this(
+            (requestContext, _) => ValueTask.FromResult(createSession(requestContext)),
+            createWorkerHandle,
+            workflowEvents,
+            getAuthoritativeWorker)
+    {
+    }
+
     public Task<WorkflowRunCompletion> Execute(
         WorkflowRunState run,
         RegisteredWorkflow workflow,
@@ -18,7 +31,8 @@ internal sealed class NonDurableWorkflowExecutor(
         bool wasPaused,
         Func<bool>? isPauseRequested = null,
         Func<bool>? isCancelRequested = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        WorkAuthorizationSnapshot? initialAuthorization = null)
     {
         var workerHandleFactory = createWorkerHandle
             ?? (_ => throw new InvalidOperationException("A worker-handle factory is required to wait on non-durable workflow children."));
@@ -26,11 +40,16 @@ internal sealed class NonDurableWorkflowExecutor(
         isPauseRequested ??= static () => false;
         isCancelRequested ??= static () => false;
         var activeHandles = new System.Collections.Concurrent.ConcurrentDictionary<WorkerId, IWorkerHandle>();
+        IWorkSystemSession? session = null;
 
         try
         {
             run.MarkRunning();
-            var session = createSession(run.RequestContext);
+            session = await createSession(
+                initialAuthorization is null
+                    ? run.RequestContext
+                    : run.RequestContext with { Authorization = initialAuthorization },
+                cancellationToken);
             if (wasPaused)
             {
                 await WorkflowExecutionSupport.ResumeOutstandingChildren(run, session, getAuthoritativeWorker, cancellationToken);
@@ -86,8 +105,14 @@ internal sealed class NonDurableWorkflowExecutor(
                 return new WorkflowRunCompletion(WorkflowRunStatus.Canceled, null, []);
             }
 
-            var session = createSession(run.RequestContext);
-            await WorkflowExecutionSupport.PauseOutstandingChildren(run, session, getAuthoritativeWorker, CancellationToken.None);
+            if (session is not null)
+            {
+                await WorkflowExecutionSupport.PauseOutstandingChildren(
+                    run,
+                    session,
+                    getAuthoritativeWorker,
+                    CancellationToken.None);
+            }
             return run.Pause();
         }
         catch (Exception exception) when (ShouldHandleExecutionException(exception))

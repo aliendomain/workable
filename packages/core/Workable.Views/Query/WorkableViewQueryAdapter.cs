@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 
@@ -572,6 +573,30 @@ public class WorkableViewQueryAdapter
         return requests is null
             ? query
             : new WorkViewCriteria(query.Scope, [.. requests.Select(NormalizeComponentRequest)]);
+    }
+
+    /// <summary>
+    /// Normalizes the built-in workers view and forces every worker-grid component to one originating actor.
+    /// </summary>
+    public WorkViewCriteria NormalizeActorWorkerViewCriteria(
+        WorkViewCriteria? criteria,
+        string actorId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actorId);
+        var normalized = this.NormalizeViewCriteria("workers", criteria);
+        var components = normalized.Components ?? [];
+        if (components.Any(request =>
+            !string.Equals(request.Type, "workerGrid", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException(
+                "Actor-scoped worker watches support only workerGrid components.",
+                nameof(criteria));
+        }
+
+        return normalized with
+        {
+            Components = [.. components.Select(request => ScopeWorkerGridToActor(request, actorId.Trim()))],
+        };
     }
 
     /// <summary>
@@ -1870,7 +1895,8 @@ public class WorkableViewQueryAdapter
             worker.UpdatedAt,
             worker.TotalExecutionDuration,
             worker.SubjectId,
-            worker.Identifiers);
+            worker.Identifiers,
+            worker.CurrentIterationSequence);
 
     private static WorkViewIterationGridDetailed CreateIterationGridDetailed(WorkerIterationOverviewItem iteration)
         => new(
@@ -2012,6 +2038,43 @@ public class WorkableViewQueryAdapter
         return request with { Shape = shape };
     }
 
+    private static WorkComponentRequest ScopeWorkerGridToActor(
+        WorkComponentRequest request,
+        string actorId)
+    {
+        JsonObject options;
+        if (request.Options is null)
+        {
+            options = [];
+        }
+        else if (request.Options.Value.ValueKind == JsonValueKind.Object &&
+            JsonNode.Parse(request.Options.Value.GetRawText()) is JsonObject parsed)
+        {
+            options = parsed;
+        }
+        else
+        {
+            throw new ArgumentException(
+                "Actor-scoped worker-grid options must be a JSON object.",
+                nameof(request));
+        }
+
+        var suppliedActorProperties = options
+            .Select(static property => property.Key)
+            .Where(key => string.Equals(key, "actorId", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        foreach (var suppliedActorProperty in suppliedActorProperties)
+        {
+            options.Remove(suppliedActorProperty);
+        }
+
+        options["actorId"] = actorId;
+        return request with
+        {
+            Options = JsonSerializer.SerializeToElement(options, ComponentOptionsJson),
+        };
+    }
+
     private static bool ComponentRequiresIntervalPublish(WorkComponentRequest request)
         => ComponentDescriptors.TryGetValue(request.Type.Trim(), out var descriptor) &&
             descriptor.RequiresIntervalPublish;
@@ -2094,6 +2157,7 @@ public class WorkableViewQueryAdapter
 
         var criteria = createCriteria(scope, options);
         return ScopedWorkMayChange(scope, changes) &&
+            (criteria.ActorId is null || changes.ContainsActor(criteria.ActorId)) &&
             (!HasKeyFilter(criteria.KeyKind, criteria.KeyType, criteria.KeyValue) ||
                 changes.ContainsStructuredKey(criteria.KeyKind, criteria.KeyType, criteria.KeyValue));
     }
@@ -2191,6 +2255,7 @@ public class WorkableViewQueryAdapter
         var keyKind = query.KeyKind;
         var keyType = NormalizeQueryText(query.KeyType);
         var keyValue = NormalizeQueryText(query.KeyValue);
+        var actorId = NormalizeActorIdOption(query.ActorId);
         return new WorkViewWorkerGridCriteria(
             ApplyExactWorkerKeyCriteria(
                 new WorkerCriteria(
@@ -2203,13 +2268,15 @@ public class WorkableViewQueryAdapter
                     Skip: skip,
                     Take: take,
                     Category: scope?.Category,
-                    IncludeSubcategories: scope?.IncludeSubcategories ?? true),
+                    IncludeSubcategories: scope?.IncludeSubcategories ?? true,
+                    ActorId: actorId),
                 keyKind,
                 keyType,
                 keyValue),
             keyKind,
             keyType,
-            keyValue);
+            keyValue,
+            actorId);
     }
 
     private static WorkViewIterationGridCriteria CreateIterationGridCriteria(
@@ -2261,6 +2328,21 @@ public class WorkableViewQueryAdapter
         => string.IsNullOrWhiteSpace(value)
             ? null
             : value.Trim();
+
+    private static string? NormalizeActorIdOption(string? actorId)
+    {
+        if (actorId is null)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(actorId))
+        {
+            throw new ArgumentException("Worker-grid actorId must not be empty.", nameof(actorId));
+        }
+
+        return actorId.Trim();
+    }
 
     private static async Task<TComponent> CreateGridComponent<TCriteria, TComponent>(
         TCriteria criteria,
@@ -2456,19 +2538,25 @@ public class WorkableViewQueryAdapter
         string? KeyType { get; }
 
         string? KeyValue { get; }
+
+        string? ActorId { get; }
     }
 
     private sealed record WorkViewWorkerGridCriteria(
         WorkerCriteria Criteria,
         WorkKeyKind? KeyKind,
         string? KeyType,
-        string? KeyValue) : IWorkViewGridChangeCriteria;
+        string? KeyValue,
+        string? ActorId) : IWorkViewGridChangeCriteria;
 
     private sealed record WorkViewIterationGridCriteria(
         WorkerIterationCriteria Criteria,
         WorkKeyKind? KeyKind,
         string? KeyType,
-        string? KeyValue) : IWorkViewGridChangeCriteria;
+        string? KeyValue) : IWorkViewGridChangeCriteria
+    {
+        public string? ActorId => null;
+    }
 
     private sealed record WorkViewWorkerOptions(
         string? WorkerId = null);
@@ -2477,6 +2565,7 @@ public class WorkableViewQueryAdapter
         WorkKeyKind? KeyKind = null,
         string? KeyType = null,
         string? KeyValue = null,
+        string? ActorId = null,
         IReadOnlyList<WorkerState>? States = null,
         WorkerConfigurationCriteria? Configuration = null,
         int Skip = 0,
@@ -2541,6 +2630,18 @@ public class WorkableViewQueryAdapter
                 string.Equals(key.Value, definitionName.Trim(), StringComparison.OrdinalIgnoreCase));
         }
 
+        public bool ContainsActor(string actorId)
+        {
+            if (string.IsNullOrWhiteSpace(actorId))
+            {
+                return false;
+            }
+
+            return this.keys.Any(key =>
+                key.Kind == WorkChangeKind.Actor &&
+                string.Equals(key.Value, actorId.Trim(), StringComparison.Ordinal));
+        }
+
         public bool ContainsStructuredKey(WorkKeyKind? keyKind, string? keyType, string? keyValue)
         {
             var changeKind = ToChangeKind(keyKind);
@@ -2558,7 +2659,8 @@ public class WorkableViewQueryAdapter
                 WorkChangeKind.Definition or
                 WorkChangeKind.Subject or
                 WorkChangeKind.ConcurrencyKey or
-                WorkChangeKind.Identifier;
+                WorkChangeKind.Identifier or
+                WorkChangeKind.Actor;
 
         private static bool IsStructuredKey(WorkChangeKind kind)
             => kind is WorkChangeKind.Subject or WorkChangeKind.ConcurrencyKey or WorkChangeKind.Identifier;

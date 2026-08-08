@@ -55,18 +55,19 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     /// <param name="options">Optional server settings that control which tool categories are exposed.</param>
     /// <param name="systemName">The Workable system name to expose, or <see langword="null"/> for the default unnamed system.</param>
     /// <returns>The MCP tools visible to the caller.</returns>
-    public IReadOnlyList<WorkableMcpServerToolDescriptor> GetTools(
+    public async ValueTask<IReadOnlyList<WorkableMcpServerToolDescriptor>> GetTools(
         WorkRequestContext requestContext,
         WorkableMcpServerOptions? options = null,
-        string? systemName = null)
+        string? systemName = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requestContext);
 
         options ??= WorkableMcpServerOptions.Default;
         var tools = new List<WorkableMcpServerToolDescriptor>();
         var system = ResolveSystem(systemName);
-        EnsureCanAccessNamedSystem(system, systemName, requestContext);
-        var session = system.CreateSession(requestContext);
+        await EnsureCanAccessNamedSystem(system, systemName, requestContext, cancellationToken);
+        var session = await system.CreateSession(requestContext, cancellationToken);
 
         if (options.IncludeWorkTools)
         {
@@ -115,18 +116,19 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 return systemError;
             }
 
-            EnsureCanAccessNamedSystem(system, systemName, requestContext);
-            var session = system.CreateSession(requestContext);
+            await EnsureCanAccessNamedSystem(system, systemName, requestContext, cancellationToken);
+            var session = await system.CreateSession(requestContext, cancellationToken);
             var workTools = options.IncludeWorkTools
                 ? CreateWorkTools(session, options.ToolCatalog)
                 : [];
 
             if (TryGetWorkToolName(workTools, toolName, out var workName))
             {
-                var invocation = await system.CreateSession(WithDescription(
+                var invocationSession = await system.CreateSession(WithDescription(
                         requestContext,
-                        ReadWorkToolInvocationDescription(arguments)))
-                    .InvokeMcpTool(
+                        ReadWorkToolInvocationDescription(arguments)),
+                    cancellationToken);
+                var invocation = await invocationSession.InvokeMcpTool(
                         workName,
                         ReadWorkToolInvocationInput(arguments),
                         options.Invocation,
@@ -143,7 +145,7 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                         var workflowName = ReadRequiredString(arguments, "name");
                         var workflowRequestContext = WithDescription(requestContext, ReadString(arguments, "description"));
                         var runtime = ResolveWorkflowRuntime(system);
-                        var handle = runtime.Start(
+                        var handle = await runtime.Start(
                             workflowName,
                             workflowRequestContext,
                             ReadWorkflowStartInput(arguments),
@@ -311,7 +313,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                                 PauseWorkflowTool or StopWorkflowTool => WorkflowAction.Pause,
                                 _ => WorkflowAction.Cancel,
                             },
-                            actionRequestContext);
+                            actionRequestContext,
+                            cancellationToken);
                         return ToToolResult(outcome);
                     }
                     case StartWorkerTool:
@@ -331,7 +334,9 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                             PushWorkerTool => WorkAction.Push,
                             _ => WorkAction.Purge,
                         };
-                        var actionSession = system.CreateSession(WithDescription(requestContext, ReadString(arguments, "description")));
+                        var actionSession = await system.CreateSession(
+                            WithDescription(requestContext, ReadString(arguments, "description")),
+                            cancellationToken);
                         return ToToolResult(await actionSession.Workers.Execute(version, action, cancellationToken));
                     }
                     case ReconfigureWorkDefinitionTool:
@@ -344,7 +349,9 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                                 : new WorkDefinitionReconfiguration(
                                     DefaultOptions: ReadObject<WorkerOptions>(arguments, "defaultOptions"),
                                     Configuration: ReadObject<WorkConfiguration>(arguments, "configuration"));
-                        var reconfigureSession = system.CreateSession(WithDescription(requestContext, ReadString(arguments, "description")));
+                        var reconfigureSession = await system.CreateSession(
+                            WithDescription(requestContext, ReadString(arguments, "description")),
+                            cancellationToken);
                         if (!reconfigureSession.Catalog.TryGet(definitionName, out var definition))
                         {
                             return ToToolResult(WorkDefinitionReconfigurationOutcome.NotFound(definitionName));
@@ -712,12 +719,14 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         return false;
     }
 
-    private static void EnsureCanAccessNamedSystem(
+    private static async ValueTask EnsureCanAccessNamedSystem(
         IWorkSystem system,
         string? systemName,
-        WorkRequestContext requestContext)
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(systemName) || system.DescribeAccess(requestContext).HasAnyAccess())
+        if (string.IsNullOrWhiteSpace(systemName) ||
+            (await system.DescribeAccess(requestContext, cancellationToken)).HasAnyAccess())
         {
             return;
         }

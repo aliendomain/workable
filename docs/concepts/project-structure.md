@@ -82,7 +82,7 @@ Adapter packages reference `Workable.Views` when they need to expose the compone
 `packages/core/Workable.AspNetCore` contains ASP.NET Core integration that does not expose routes:
 
 - `IWorkActorFactory` and `IWorkRequestContextFactory`
-- default claims-based `IWorkAuthorizationGroupProvider`
+- default claims-based `IWorkAuthorizationGroupContextProvider`
 - `AddWorkableAspNetCoreAuthorization`
 
 ASP.NET Core applications reference `Workable.AspNetCore` when their own controllers, minimal API routes, or custom transports need authenticated `WorkRequestContext` values and default claims-based group resolution from `HttpContext`.
@@ -109,7 +109,7 @@ Applications reference `Workable.Mcp` when they want to expose Workable systems 
 
 `packages/core/Workable.SignalR` contains the realtime adapter surface:
 
-- SignalR hub mapping for raw event, named view, and worker-overview subscriptions
+- SignalR hub mapping for raw event, worker-list, named-view, and worker-overview subscriptions
 - shared subscription registries keyed by normalized request shape and read visibility
 - raw event broadcasting
 - worker-overview change handling and coalesced worker-overview broadcasting
