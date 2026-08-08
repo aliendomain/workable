@@ -2656,16 +2656,11 @@ public sealed class WorkableSignalRTests
             return false;
         }
 
-        foreach (var candidate in data.GetProperty("workers").EnumerateArray())
-        {
-            if (candidate.GetProperty("id").GetProperty("value").GetGuid() == workerId.Value)
-            {
-                worker = candidate;
-                return true;
-            }
-        }
-
-        return false;
+        worker = data.GetProperty("workers")
+            .EnumerateArray()
+            .FirstOrDefault(candidate =>
+                candidate.GetProperty("id").GetProperty("value").GetGuid() == workerId.Value);
+        return worker.ValueKind != JsonValueKind.Undefined;
     }
 
     private static async Task<IReadOnlyList<T>> ReadStream<T>(IAsyncEnumerable<T> stream)
@@ -2682,8 +2677,9 @@ public sealed class WorkableSignalRTests
     private static async Task<Exception> ReadStreamFailure<T>(IAsyncEnumerable<T> stream)
         => await Assert.ThrowsAnyAsync<Exception>(async () =>
         {
-            await foreach (var _ in stream)
+            await foreach (var item in stream)
             {
+                _ = item;
             }
         });
 

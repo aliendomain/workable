@@ -349,18 +349,12 @@ internal sealed class WorkflowRuntime
             systemAuthorization = new WorkSystemAuthorizationEvaluator(this.systemAuthorizationConfiguration, groups);
         }
 
-        var readableDefinitionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var workflow in this.catalog.Definitions)
-        {
-            if (!this.requiresAuthorization ||
-                systemAuthorization!.HasReadAllWorkAccess() ||
-                workflow.Authorization.CanRead(
-                    groups!,
-                    requestContext.IsAuthenticated && requestContext.Actor.IsKnown))
-            {
-                readableDefinitionNames.Add(workflow.Name);
-            }
-        }
+        var canReadAllWork = !this.requiresAuthorization || systemAuthorization!.HasReadAllWorkAccess();
+        var isKnownActor = requestContext.IsAuthenticated && requestContext.Actor.IsKnown;
+        var readableDefinitionNames = this.catalog.Definitions
+            .Where(workflow => canReadAllWork || workflow.Authorization.CanRead(groups!, isKnownActor))
+            .Select(static workflow => workflow.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return [.. this.runs.Values
             .Where(run =>

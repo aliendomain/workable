@@ -263,10 +263,10 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
                 }
             }
 
-            var changed = isStreaming
+            var streamingStateChanged = isStreaming
                 ? this.streamingGroups.Add(groupName)
                 : this.streamingGroups.Remove(groupName);
-            if (changed)
+            if (streamingStateChanged)
             {
                 SignalChangedLocked();
             }
@@ -304,10 +304,10 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
                 return;
             }
 
-            var changed = !group.IsSeeded || (hasPublishedState && !group.HasPublishedState);
+            var seededStateChanged = !group.IsSeeded || (hasPublishedState && !group.HasPublishedState);
             group.IsSeeded = true;
             group.HasPublishedState |= hasPublishedState;
-            if (changed)
+            if (seededStateChanged)
             {
                 SignalChangedLocked();
             }

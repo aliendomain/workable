@@ -64,8 +64,9 @@ public sealed class WorkIterationStatusStreamTests
 
         var exception = await Assert.ThrowsAsync<WorkIterationStatusGapException>(async () =>
         {
-            await foreach (var _ in subscription.Read())
+            await foreach (var item in subscription.Read())
             {
+                _ = item;
             }
         });
 
@@ -372,8 +373,9 @@ public sealed class WorkIterationStatusStreamTests
 
         var liveGap = await Assert.ThrowsAsync<WorkIterationStatusGapException>(async () =>
         {
-            await foreach (var _ in liveSubscription.Read())
+            await foreach (var item in liveSubscription.Read())
             {
+                _ = item;
             }
         });
         var gap = Assert.Throws<WorkIterationStatusGapException>(() => stream.Subscribe(first));
@@ -761,14 +763,16 @@ public sealed class WorkIterationStatusStreamTests
         stream.Complete(iteration);
         await using var subscription = stream.Subscribe(iteration);
 
-        await foreach (var _ in subscription.Read())
+        await foreach (var item in subscription.Read())
         {
+            _ = item;
         }
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
-            await foreach (var _ in subscription.Read())
+            await foreach (var item in subscription.Read())
             {
+                _ = item;
             }
         });
     }

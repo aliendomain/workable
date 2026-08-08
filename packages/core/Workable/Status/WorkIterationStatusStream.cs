@@ -310,12 +310,9 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
     internal void Forget(WorkerId workerId)
     {
         var subscriptions = new List<WorkIterationStatusSubscription>();
-        foreach (var pair in this.buffers)
+        foreach (var pair in this.buffers.Where(pair => pair.Key.WorkerId == workerId))
         {
-            if (pair.Key.WorkerId == workerId)
-            {
-                subscriptions.AddRange(this.Forget(pair.Value));
-            }
+            subscriptions.AddRange(this.Forget(pair.Value));
         }
 
         this.CompactRetentionIndex();

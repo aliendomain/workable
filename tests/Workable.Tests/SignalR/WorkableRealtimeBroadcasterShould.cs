@@ -639,9 +639,13 @@ public sealed class WorkableRealtimeBroadcasterShould
 
     private sealed class ManualTimerFactory : IWorkableRealtimeTimerFactory
     {
-        public ManualTimer Timer { get; } = new();
+        public ManualTimer Timer { get; private set; } = new();
 
-        public IWorkableRealtimeTimer Create(TimeSpan interval) => this.Timer;
+        public IWorkableRealtimeTimer Create(TimeSpan interval)
+        {
+            this.Timer = new ManualTimer();
+            return this.Timer;
+        }
     }
 
     private sealed class ManualTimer : IWorkableRealtimeTimer
@@ -653,7 +657,15 @@ public sealed class WorkableRealtimeBroadcasterShould
         public async ValueTask<bool> WaitForNextTickAsync(CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref this.waitCount);
-            return await this.ticks.Reader.ReadAsync(cancellationToken);
+            while (await this.ticks.Reader.WaitToReadAsync(cancellationToken))
+            {
+                if (this.ticks.Reader.TryRead(out var tick))
+                {
+                    return tick;
+                }
+            }
+
+            return false;
         }
 
         public void Tick() => this.ticks.Writer.TryWrite(true);
