@@ -332,7 +332,7 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
         };
     }
 
-    private static CapturedUri CaptureUri(string? uriValue)
+    private static CapturedUriInput CaptureUriInput(string? uriValue)
     {
         if (string.IsNullOrEmpty(uriValue))
         {
@@ -360,25 +360,51 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
             return new(null, hasQueryString, inspectionTruncated);
         }
 
-        var candidate = uriValue.Length <= inspectionLength
-            ? uriValue
-            : sanitized.ToString();
-        if (!Uri.TryCreate(candidate, UriKind.RelativeOrAbsolute, out var uri))
+        var schemeSeparator = sanitized.IndexOf("://", StringComparison.Ordinal);
+        var authorityStart = schemeSeparator >= 0
+            ? schemeSeparator + 3
+            : sanitized.StartsWith("//", StringComparison.Ordinal)
+                ? 2
+                : -1;
+        if (authorityStart >= 0)
         {
-            return new(null, hasQueryString, inspectionTruncated);
+            var authority = sanitized[authorityStart..];
+            var authorityEnd = authority.IndexOf('/');
+            var authorityOnly = authorityEnd < 0 ? authority : authority[..authorityEnd];
+            var userInfoSeparator = authorityOnly.LastIndexOf('@');
+            if (userInfoSeparator >= 0)
+            {
+                return new(
+                    string.Concat(
+                        sanitized[..authorityStart],
+                        sanitized[(authorityStart + userInfoSeparator + 1)..]),
+                    hasQueryString,
+                    inspectionTruncated);
+            }
+        }
+
+        return new(sanitized.ToString(), hasQueryString, inspectionTruncated);
+    }
+
+    private static CapturedUri CaptureUri(CapturedUriInput input)
+    {
+        if (input.Value is null ||
+            !Uri.TryCreate(input.Value, UriKind.RelativeOrAbsolute, out var uri))
+        {
+            return new(null, input.HasQueryString, input.InspectionTruncated);
         }
 
         if (!uri.IsAbsoluteUri)
         {
-            if (LooksLikeAuthorityUri(sanitized))
+            if (LooksLikeAuthorityUri(input.Value))
             {
-                return new(null, hasQueryString, inspectionTruncated);
+                return new(null, input.HasQueryString, input.InspectionTruncated);
             }
 
             return new(
-                Truncate(separator < 0 ? uri.OriginalString : sanitized.ToString()),
-                hasQueryString,
-                inspectionTruncated);
+                Truncate(uri.OriginalString),
+                input.HasQueryString,
+                input.InspectionTruncated);
         }
 
         var host = uri.HostNameType == UriHostNameType.IPv6
@@ -387,8 +413,8 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
         var port = uri.IsDefaultPort ? string.Empty : $":{uri.Port}";
         return new(
             Truncate($"{uri.Scheme}://{host}{port}{uri.AbsolutePath}"),
-            hasQueryString,
-            inspectionTruncated);
+            input.HasQueryString,
+            input.InspectionTruncated);
     }
 
     private static bool LooksLikeAuthorityUri(ReadOnlySpan<char> value)
@@ -422,7 +448,12 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
             : value[..MaximumCapturedTextLength];
 
     internal static string? CaptureUriForBenchmark(string? uriValue)
-        => CaptureUri(uriValue).Value;
+        => CaptureUri(CaptureUriInput(uriValue)).Value;
+
+    private readonly record struct CapturedUriInput(
+        string? Value,
+        bool? HasQueryString,
+        bool InspectionTruncated);
 
     private readonly record struct CapturedUri(
         string? Value,
@@ -494,8 +525,15 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
 
     private sealed class HttpClientProfileContext
     {
+        private readonly object capturedUriLock = new();
         private bool methodObserved;
         private bool uriObserved;
+        private string? method;
+        private string? protocolVersion;
+        private string? exceptionType;
+        private CapturedUriInput uriInput;
+        private CapturedUri capturedUri;
+        private bool uriCaptured;
 
         private HttpClientProfileContext()
         {
@@ -503,15 +541,15 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
 
         public string Provider { get; } = ActivitySourceName;
 
-        public string? Method { get; private set; }
+        public string? Method => this.method;
 
-        public string? Uri { get; private set; }
+        public string? Uri => this.GetCapturedUri().Value;
 
-        public bool? HasQueryString { get; private set; }
+        public bool? HasQueryString => this.GetCapturedUri().HasQueryString;
 
-        public bool UriInspectionTruncated { get; private set; }
+        public bool UriInspectionTruncated => this.GetCapturedUri().InspectionTruncated;
 
-        public string? ProtocolVersion { get; private set; }
+        public string? ProtocolVersion => this.protocolVersion;
 
         public int? StatusCode { get; private set; }
 
@@ -519,7 +557,7 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
 
         public string Outcome { get; private set; } = "Pending";
 
-        public string? ExceptionType { get; private set; }
+        public string? ExceptionType => this.exceptionType;
 
         public static HttpClientProfileContext Start(Activity activity)
         {
@@ -531,13 +569,13 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
         public void Complete(Activity activity)
         {
             this.ReadRequest(activity);
-            this.ProtocolVersion = TruncateNullable(GetStringTag(activity, "network.protocol.version", "http.flavor"));
+            this.protocolVersion = TruncateNullable(GetStringTag(activity, "network.protocol.version", "http.flavor"));
             this.StatusCode = GetInt32Tag(activity, "http.response.status_code", "http.status_code");
             this.IsSuccessStatusCode = this.StatusCode is >= 200 and <= 299;
-            this.ExceptionType = TruncateNullable(GetStringTag(activity, "error.type"));
-            this.Outcome = IsCancellation(this.ExceptionType)
+            this.exceptionType = TruncateNullable(GetStringTag(activity, "error.type"));
+            this.Outcome = IsCancellation(this.exceptionType)
                 ? "Canceled"
-                : activity.Status == ActivityStatusCode.Error || this.ExceptionType is not null
+                : activity.Status == ActivityStatusCode.Error || this.exceptionType is not null
                     ? "Faulted"
                     : "Completed";
         }
@@ -552,7 +590,7 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
                 var method = GetStringTag(activity, "http.request.method", "http.method");
                 if (method is not null)
                 {
-                    this.Method = Truncate(method);
+                    this.method = Truncate(method);
                     this.methodObserved = true;
                 }
             }
@@ -562,12 +600,24 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
                 var uriValue = GetStringTag(activity, "url.full", "http.url");
                 if (uriValue is not null)
                 {
-                    var captured = CaptureUri(uriValue);
-                    this.Uri = captured.Value;
-                    this.HasQueryString = captured.HasQueryString;
-                    this.UriInspectionTruncated = captured.InspectionTruncated;
+                    this.uriInput = CaptureUriInput(uriValue);
                     this.uriObserved = true;
                 }
+            }
+        }
+
+        private CapturedUri GetCapturedUri()
+        {
+            lock (this.capturedUriLock)
+            {
+                if (!this.uriCaptured)
+                {
+                    this.capturedUri = CaptureUri(this.uriInput);
+                    this.uriInput = default;
+                    this.uriCaptured = true;
+                }
+
+                return this.capturedUri;
             }
         }
 

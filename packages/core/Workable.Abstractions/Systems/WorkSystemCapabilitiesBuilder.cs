@@ -21,6 +21,11 @@ public sealed class WorkSystemCapabilitiesBuilder
     public bool HttpClientProfilingAvailable { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether execution diagnostics persistence is available.
+    /// </summary>
+    public bool ExecutionDiagnosticsPersistenceAvailable { get; set; }
+
+    /// <summary>
     /// Creates an immutable snapshot from the current capability values.
     /// </summary>
     /// <returns>The immutable system capability snapshot.</returns>
@@ -28,5 +33,6 @@ public sealed class WorkSystemCapabilitiesBuilder
         => new(this.PersistentCoordinationAvailable, this.SqlProfilingAvailable)
         {
             HttpClientProfilingAvailable = this.HttpClientProfilingAvailable,
+            ExecutionDiagnosticsPersistenceAvailable = this.ExecutionDiagnosticsPersistenceAvailable,
         };
 }

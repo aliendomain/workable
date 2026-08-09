@@ -26,6 +26,10 @@ public sealed class WorkConfigurationBuilderShould
                 backoff: WorkRetryBackoff.None)
             .AutoCancelFailedWorkersAfter(TimeSpan.FromSeconds(6))
             .ConfigureLogging(isEnabled: false, LogLevel.Warning, maximumBufferedEntries: 7)
+            .PersistExecutionDiagnostics(
+                TimeSpan.FromHours(2),
+                LogLevel.Debug,
+                WorkProfileCaptureMode.Full)
             .ConfigureRetention(purgeInterval: TimeSpan.FromSeconds(8), maximumFinalWorkers: 9)
             .LimitConcurrency(
                 maximumCapacity: 3,
@@ -57,6 +61,10 @@ public sealed class WorkConfigurationBuilderShould
         Assert.False(configuration.Logging.IsEnabled);
         Assert.Equal(LogLevel.Warning, configuration.Logging.Level);
         Assert.Equal(7, configuration.Logging.MaximumBufferedEntries);
+        Assert.True(configuration.ExecutionDiagnostics.IsEnabled);
+        Assert.Equal(TimeSpan.FromHours(2), configuration.ExecutionDiagnostics.Retention);
+        Assert.Equal(LogLevel.Debug, configuration.ExecutionDiagnostics.MinimumLogLevel);
+        Assert.Equal(WorkProfileCaptureMode.Full, configuration.ExecutionDiagnostics.ProfileCaptureMode);
         Assert.Equal(TimeSpan.FromSeconds(8), configuration.Retention.PurgeInterval);
         Assert.Equal(9, configuration.Retention.MaximumFinalWorkers);
         Assert.True(configuration.Coordination.Concurrency.IsEnabled);
@@ -69,6 +77,29 @@ public sealed class WorkConfigurationBuilderShould
         Assert.Equal(WorkIdempotencyConflictPolicy.RejectDuplicates, configuration.Coordination.Idempotency.ConflictPolicy);
         Assert.True(configuration.Invocation.Allows(WorkInvocationChannel.Mcp));
         Assert.True(configuration.Invocation.Allows(WorkInvocationChannel.SignalR));
+    }
+
+    [Fact]
+    public void UseAndDisableExecutionDiagnosticsPersistence()
+    {
+        var builder = new WorkConfigurationBuilder(WorkConfiguration.Default);
+        var persistence = new WorkExecutionDiagnosticsPersistenceConfiguration
+        {
+            IsEnabled = true,
+            Retention = TimeSpan.FromHours(3),
+            MinimumLogLevel = LogLevel.Warning,
+            ProfileCaptureMode = WorkProfileCaptureMode.Bounded,
+        };
+
+        var returned = builder.UseExecutionDiagnosticsPersistence(persistence);
+
+        Assert.Same(builder, returned);
+        Assert.Same(persistence, builder.Build().ExecutionDiagnostics);
+
+        builder.DisableExecutionDiagnosticsPersistence();
+
+        Assert.False(builder.Build().ExecutionDiagnostics.IsEnabled);
+        Assert.Equal(TimeSpan.FromHours(3), builder.Build().ExecutionDiagnostics.Retention);
     }
 
     [Fact]
@@ -115,6 +146,7 @@ public sealed class WorkConfigurationBuilderShould
         Assert.Throws<ArgumentNullException>(() => builder.UseTransientRetry(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseFailedWorker(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseLogging(null!));
+        Assert.Throws<ArgumentNullException>(() => builder.UseExecutionDiagnosticsPersistence(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseRetention(null!));
         Assert.Throws<ArgumentNullException>(() => builder.UseInvocation(null!));
         Assert.Throws<ArgumentNullException>(() => builder.WithAutomaticStart<object>(null!));

@@ -168,6 +168,12 @@ internal sealed class WorkAuthorizationEvaluator(
             return WorkOperateAuthorizationDecision.Deny();
         }
 
+        if (ChangesExecutionDiagnostics(registeredWork.Definition, changes) &&
+            systemAuthorization?.CanControlSystem() != true)
+        {
+            return WorkOperateAuthorizationDecision.Deny();
+        }
+
         if (systemAuthorization?.HasOperateAllWorkAccess() == true)
         {
             return WorkOperateAuthorizationDecision.Allow();
@@ -227,6 +233,12 @@ internal sealed class WorkAuthorizationEvaluator(
             HasExplicitProfilingCaptureMode: true,
             ProfilingCaptureMode: WorkProfileCaptureMode.Full,
         };
+
+    private static bool ChangesExecutionDiagnostics(
+        WorkDefinition definition,
+        WorkDefinitionReconfiguration changes)
+        => changes.Configuration is { } configuration &&
+            configuration.ExecutionDiagnostics != definition.Configuration.ExecutionDiagnostics;
 
     private bool CanAttempt(RegisteredWork registeredWork, WorkOperationPermissions permission)
         => registeredWork.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser) &&

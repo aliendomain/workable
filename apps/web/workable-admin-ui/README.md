@@ -47,6 +47,17 @@ A matching rule enables profiling and sets the worker's capture mode to `Full`. 
 
 The UI needs access to the built-in Workable HTTP surface and diagnostics access to list, create, or delete the rules. The capture card is hidden when the selected system reports that the caller lacks diagnostics access. A system administrator has diagnostics permission by default but still cannot queue work unless separately authorized for that work definition. Rule creation and queueing are intentionally separate operations.
 
+## Persistent Execution Diagnostics Capture
+
+Persistent capture is a separate control from targeted full profile capture. It writes expiring iteration logs and, optionally, profiles to a registered execution-diagnostics repository so an agent can inspect the evidence after the in-memory worker snapshot is gone.
+
+- Open a system overview and use **Persistent execution diagnostics** to capture all work temporarily.
+- Open **Catalog**, select a definition, and use the same card to capture only that work type.
+- Choose logs-only, `Bounded`, or `Full` profile capture, plus separate active and artifact-retention lifetimes. Both lifetimes must be between one minute and 30 days.
+- Stop a rule to prevent future matching iterations from being captured. Existing artifacts retain their original expiry.
+
+The control is usable only when the selected system reports `executionDiagnosticsPersistenceAvailable`. Viewing the state requires diagnostics access; changing it requires `ControlSystem`. The UI manages capture policy, while agents and developers query the resulting evidence through the Workable MCP or HTTP execution-diagnostics APIs. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md) for registration, production behavior, data limits, and interpretation guidance.
+
 ## Admin UI Security Defaults
 
 The admin UI is default-deny. The page and `/api/workable/*` proxy require authentication unless you explicitly opt into anonymous local use. The proxy does not implement its own operation-level role map; the hosted Workable API remains the authority for whether the current caller may read, operate, configure, run lifecycle actions, or inspect diagnostics.

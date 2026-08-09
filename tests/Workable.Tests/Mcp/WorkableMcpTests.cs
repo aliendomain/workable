@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -16,6 +17,141 @@ namespace Workable.Tests;
 [Trait("Category", "Mcp")]
 public sealed class WorkableMcpTests
 {
+    [Fact]
+    public async Task McpServerExposesAndCallsPersistentExecutionDiagnosticTools()
+    {
+        var repository = new TestExecutionDiagnosticsRepository();
+        var now = DateTimeOffset.UtcNow;
+        repository.QueryResult = new WorkExecutionDiagnosticQueryResult(
+        [
+            new WorkExecutionDiagnosticSummary(
+                Guid.NewGuid(),
+                WorkSystemId.New(),
+                null,
+                WorkerId.New(),
+                1,
+                WorkDefinitionId.New(),
+                "diagnostic-work",
+                WorkCompletionStatus.Completed,
+                1,
+                now.AddSeconds(-1),
+                now,
+                TimeSpan.FromSeconds(1),
+                WorkExecutionDiagnosticCaptureSource.WorkConfiguration,
+                WorkProfileCaptureMode.Bounded,
+                new WorkExecutionDiagnosticInstrumentationAvailability(
+                    SqlClientProfilingAvailable: true,
+                    HttpClientProfilingAvailable: false),
+                false,
+                0,
+                0,
+                now.AddDays(1),
+                []),
+        ]);
+        var summary = Assert.Single(repository.QueryResult.Items);
+        repository.Artifact = new WorkExecutionDiagnosticArtifact(
+            summary,
+            [
+                new WorkExecutionDiagnosticLogRecord(
+                    summary.DiagnosticId,
+                    0,
+                    now,
+                    LogLevel.Warning,
+                    "diagnostic.category",
+                    new EventId(9, "McpDiagnostic"),
+                    "MCP persisted warning",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null),
+            ],
+            null);
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
+            .AddSingleton<IWorkExecutionDiagnosticsRepository>(repository)
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.ConfigureTransportSystemAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("diagnostic-work", configuration: AllowMcp()),
+                    SuccessfulWork);
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = CreateMcpRequestContext("Inspect persisted execution evidence.");
+
+        var tools = await router.GetTools(requestContext);
+        using var arguments = JsonDocument.Parse(
+            """{"definitionName":"diagnostic-work","minimumLogLevel":"Warning","take":12}""");
+        var result = await router.CallTool(
+            "workable_query_execution_diagnostics",
+            arguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext);
+        using var getArguments = JsonDocument.Parse(
+            $$"""{"workerId":"{{summary.WorkerId.Value:D}}","sequence":{{summary.IterationSequence}}}""");
+        var getResult = await router.CallTool(
+            "workable_get_execution_diagnostic",
+            getArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext);
+
+        Assert.Contains(tools, tool => tool.ToolName == "workable_query_execution_diagnostics");
+        Assert.Contains(tools, tool => tool.ToolName == "workable_get_execution_diagnostic");
+        Assert.False(result.IsError);
+        Assert.Contains("\"sqlClientProfilingAvailable\":true", result.Json, StringComparison.Ordinal);
+        Assert.Contains("\"httpClientProfilingAvailable\":false", result.Json, StringComparison.Ordinal);
+        Assert.Contains("\"profileDropped\":false", result.Json, StringComparison.Ordinal);
+        Assert.Equal("diagnostic-work", repository.LastCriteria?.DefinitionName);
+        Assert.Equal(LogLevel.Warning, repository.LastCriteria?.MinimumLogLevel);
+        Assert.Equal(12, repository.LastCriteria?.Take);
+        Assert.False(getResult.IsError);
+        Assert.Contains("MCP persisted warning", getResult.Json, StringComparison.Ordinal);
+        Assert.Equal(summary.WorkerId, repository.LastGetRequest?.WorkerId);
+        Assert.Equal(summary.IterationSequence, repository.LastGetRequest?.IterationSequence);
+    }
+
+    [Fact]
+    public async Task McpPersistentExecutionDiagnosticToolsRequireDiagnosticsAccessEvenWhenCalledDirectly()
+    {
+        var repository = new TestExecutionDiagnosticsRepository();
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization(TransportAuthorizationTestSupport.ReadGroups)
+            .AddSingleton<IWorkExecutionDiagnosticsRepository>(repository)
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.ConfigureTransportSystemAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("diagnostic-read-auth", configuration: AllowMcp()),
+                    SuccessfulWork);
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = CreateMcpRequestContext("Attempt diagnostics without permission.");
+
+        var tools = await router.GetTools(requestContext);
+        using var arguments = JsonDocument.Parse("""{"take":10}""");
+        var result = await router.CallTool(
+            "workable_query_execution_diagnostics",
+            arguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext);
+
+        Assert.DoesNotContain(tools, tool =>
+            tool.ToolName is "workable_query_execution_diagnostics" or "workable_get_execution_diagnostic");
+        Assert.True(result.IsError);
+        Assert.Contains("workable.mcp.authorization_denied", result.Json, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ToolDescriptorsUseDefinitionSchemasAndMetadata()
     {
@@ -173,6 +309,8 @@ public sealed class WorkableMcpTests
             tool.Kind == WorkableMcpServerToolKind.Query &&
             tool.ToolName == "workable_query_worker_iterations" &&
             tool.Description?.Contains("transient retries", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.DoesNotContain(tools, tool =>
+            tool.ToolName is "workable_query_execution_diagnostics" or "workable_get_execution_diagnostic");
         Assert.Contains(tools, tool =>
             tool.Kind == WorkableMcpServerToolKind.Query &&
             tool.ToolName == "workable_query_worker_keys" &&

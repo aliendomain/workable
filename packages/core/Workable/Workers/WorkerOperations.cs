@@ -40,6 +40,7 @@ internal sealed class WorkerOperations :
     private readonly WorkProfileCaptureRuleStore profileCaptureRules;
     private readonly ILogger? logger;
     private readonly bool persistenceStoreAvailable;
+    private readonly WorkExecutionDiagnosticsCoordinator? executionDiagnostics;
     private CancellationTokenSource systemExecutionLifetime = new();
     private volatile bool acceptingWork;
     private long workerCount;
@@ -65,7 +66,8 @@ internal sealed class WorkerOperations :
         InMemoryWorkMetricsSink metrics,
         WorkSystemQueueDiagnosticsTracker queueDiagnostics,
         WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics,
-        IWorkPersistenceStore? persistenceStore)
+        IWorkPersistenceStore? persistenceStore,
+        WorkExecutionDiagnosticsCoordinator? executionDiagnostics)
     {
         this.catalog = catalog;
         this.getSystemState = getSystemState;
@@ -76,6 +78,7 @@ internal sealed class WorkerOperations :
         this.metrics = metrics;
         this.queueDiagnostics = queueDiagnostics;
         this.persistenceStoreAvailable = persistenceStore is not null;
+        this.executionDiagnostics = executionDiagnostics;
         this.readModel = readModel;
         this.concurrency = new WorkConcurrencyCoordinator();
         var persistenceLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Persistence");
@@ -109,7 +112,8 @@ internal sealed class WorkerOperations :
             this.AddIdentifier,
             new WorkInitializationExecutor(rootServices),
             iterationStatuses: iterationStatusStream,
-            profilingConfiguration: profilingConfiguration);
+            profilingConfiguration: profilingConfiguration,
+            executionDiagnostics: executionDiagnostics);
         var exceptionHandler = new WorkerExecutionExceptionHandler(
             new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, this.logger),
             this.logger);
@@ -198,6 +202,15 @@ internal sealed class WorkerOperations :
             return this.RejectQueue(WorkQueueOutcome.Invalid(persistenceStoreErrors));
         }
 
+        if (this.executionDiagnostics is null &&
+            runtimePlan.Configuration.ExecutionDiagnostics.IsEnabled == true)
+        {
+            var executionDiagnosticsErrors = WorkConfigurationValidator.ValidateExecutionDiagnosticsRepository(
+                runtimePlan.Configuration,
+                repositoryAvailable: false);
+            return this.RejectQueue(WorkQueueOutcome.Invalid(executionDiagnosticsErrors));
+        }
+
         var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
             coordination: runtimePlan.Configuration.Coordination,
             input: input);
@@ -247,10 +260,15 @@ internal sealed class WorkerOperations :
     }
 
     private static WorkerOptions ForceFullProfileCapture(WorkerOptions? options)
+        => ForceProfileCapture(options, WorkProfileCaptureMode.Full);
+
+    private static WorkerOptions ForceProfileCapture(
+        WorkerOptions? options,
+        WorkProfileCaptureMode captureMode)
         => (options ?? WorkerOptions.Default) with
         {
             ProfilingEnabled = true,
-            ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+            ProfilingCaptureMode = captureMode,
         };
 
     internal IWorkerHandle RejectQueue(WorkQueueOutcome rejection)
@@ -313,6 +331,12 @@ internal sealed class WorkerOperations :
     {
         if (this.workers.ContainsKey(iteration.Worker.Id))
         {
+            if (this.executionDiagnostics is not null &&
+                this.workers.TryGetValue(iteration.Worker.Id, out var worker))
+            {
+                this.executionDiagnostics.ObserveIteration(worker, iteration.Snapshot);
+            }
+
             var reference = iteration.Iteration.Reference;
             this.iterationStatusStream.Begin(reference, iteration.Worker.DefinitionName);
             if (this.TryRecordIterationStatus(reference, iteration.Iteration.Status))

@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace Workable;
 internal static class WorkConfigurationValidator
 {
@@ -21,6 +23,7 @@ internal static class WorkConfigurationValidator
         ValidateTransientRetry(configuration.TransientRetry, messages);
         ValidateFailedWorker(configuration.FailedWorker, configuration.Recurrence, messages);
         ValidateLogging(configuration.Logging, messages);
+        ValidateExecutionDiagnostics(configuration.ExecutionDiagnostics, messages);
         ValidateRetention(configuration.Retention, messages);
         ValidateCoordination(configuration.Coordination, configuration.Recurrence, messages);
         ValidateInvocation(configuration.Invocation, messages);
@@ -43,6 +46,25 @@ internal static class WorkConfigurationValidator
                 "workable.configuration.coordination.persistence_store_required",
                 "Persistent coordination requires a registered Workable persistence store.",
                 "configuration.coordination.storage"),
+        ];
+    }
+
+    public static IReadOnlyList<WorkMessage> ValidateExecutionDiagnosticsRepository(
+        WorkConfiguration configuration,
+        bool repositoryAvailable)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (repositoryAvailable || configuration.ExecutionDiagnostics.IsEnabled != true)
+        {
+            return [];
+        }
+
+        return
+        [
+            WorkMessage.Error(
+                "workable.configuration.execution_diagnostics.repository_required",
+                "Persistent execution diagnostics require a registered execution diagnostics repository.",
+                "configuration.executionDiagnostics.isEnabled"),
         ];
     }
 
@@ -190,6 +212,37 @@ internal static class WorkConfigurationValidator
                 "workable.configuration.logging.maximum_buffered_entries_negative",
                 "Logging maximum buffered entries cannot be negative.",
                 "configuration.logging.maximumBufferedEntries"));
+        }
+    }
+
+    private static void ValidateExecutionDiagnostics(
+        WorkExecutionDiagnosticsPersistenceConfiguration persistence,
+        List<WorkMessage> messages)
+    {
+        if (persistence.Retention < WorkExecutionDiagnosticsPersistenceConfiguration.MinimumRetention ||
+            persistence.Retention > WorkExecutionDiagnosticsPersistenceConfiguration.MaximumRetention)
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.execution_diagnostics.retention_out_of_range",
+                "Execution diagnostics retention must be between one minute and 30 days.",
+                "configuration.executionDiagnostics.retention"));
+        }
+
+        if (persistence.IsEnabled == true &&
+            (persistence.MinimumLogLevel == LogLevel.None || !Enum.IsDefined(persistence.MinimumLogLevel)))
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.execution_diagnostics.log_level_required",
+                "Enabled execution diagnostics require a persistent log level other than None.",
+                "configuration.executionDiagnostics.minimumLogLevel"));
+        }
+
+        if (persistence.IsEnabled == true && !Enum.IsDefined(persistence.ProfileCaptureMode))
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.execution_diagnostics.profile_capture_mode_invalid",
+                "Enabled execution diagnostics require a valid profile capture mode.",
+                "configuration.executionDiagnostics.profileCaptureMode"));
         }
     }
 

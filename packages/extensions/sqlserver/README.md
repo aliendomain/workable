@@ -1,15 +1,29 @@
 # Workable SQL Server Integration
 
-`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, persistence-backed concurrency, and durable workflow-run persistence.
+`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, persistence-backed concurrency, durable workflow-run persistence, and expiring execution diagnostics.
 
 See also:
 
 - [Documentation Index](../../../docs/README.md)
 - [Getting Started](../../../docs/guides/getting-started.md)
+- [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md)
 - [Queue Durability Configuration](../../../docs/guides/configuration/queue-durability.md)
 - [Configuration Interactions](../../../docs/guides/configuration/interactions.md)
 
 ## Runtime Configuration
+
+Register SQL Server for persistent iteration logs, profiles, instrumentation summaries, and temporary capture rules without enabling durable queueing:
+
+```csharp
+services.AddWorkableSqlServerPersistence(
+    connectionString,
+    schemaName: "workable",
+    persistenceScope: "my-application");
+```
+
+This is host-level service registration: one SQL connection/schema pair supplies the repository for all Workable systems in the service collection. The persistence scope and logical Workable system name form each system's stable, isolated query boundary across application restarts. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md) for work/system policy, expiry, background writing, and query surfaces.
+
+Durable queue registration also registers this diagnostics repository:
 
 ```csharp
 services.AddWorkableSqlServerDurableQueue(
@@ -17,7 +31,9 @@ services.AddWorkableSqlServerDurableQueue(
     schemaName: "workable");
 ```
 
-By default, the SQL Server integration auto-deploys the required schema when the Workable system starts. Startup fails if SQL Server rejects the deployment because of permissions, connectivity, or another SQL error.
+When both methods are used, they must identify the same SQL Server connection and schema. The explicit `AddWorkableSqlServerPersistence(...)` options supply the diagnostics persistence scope regardless of registration order; conflicting stores or conflicting explicit persistence configurations fail during service registration.
+
+By default, the SQL Server integration auto-deploys the required schema when the Workable system starts. Execution diagnostics uses the shared `SchemaVersion` table with its own component version, separate from queue durability and workflow persistence. Startup fails if SQL Server rejects the deployment because of permissions, connectivity, or another SQL error.
 
 Disable runtime schema deployment when schema changes are managed outside the app:
 
@@ -174,7 +190,7 @@ dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema apply --project
 
 `--project` can be repeated, and `--solution` scans all non-test projects in the solution. Pass `--include-tests` when a test project is intentionally part of the scan. `schema apply` also accepts repeated `--connection-string` values so the same detected schema requirements can be deployed to multiple databases.
 
-The scanner looks for durable queue configuration, persistence-backed idempotency configuration, persistence-backed concurrency configuration, and durable workflow configuration. If connection strings or schema names are supplied dynamically through application configuration, pass them to the CLI explicitly; literal `AddWorkableSqlServerDurableQueue("...", schemaName: "...")` values can be discovered automatically.
+The scanner looks for durable queue configuration, persistence-backed idempotency configuration, persistence-backed concurrency configuration, durable workflow configuration, and execution-diagnostics persistence registration or work configuration. If connection strings or schema names are supplied dynamically through application configuration, pass them to the CLI explicitly; literal `AddWorkableSqlServerPersistence("...", schemaName: "...")` and `AddWorkableSqlServerDurableQueue("...", schemaName: "...")` values can be discovered automatically.
 
 You can also provide the connection string with `WORKABLE_SQLSERVER_CONNECTION_STRING`:
 

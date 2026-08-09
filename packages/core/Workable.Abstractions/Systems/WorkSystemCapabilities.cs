@@ -19,6 +19,11 @@ public sealed record WorkSystemCapabilities(
     public bool HttpClientProfilingAvailable { get; init; }
 
     /// <summary>
+    /// Gets whether the system can persist and query iteration logs and profiles.
+    /// </summary>
+    public bool ExecutionDiagnosticsPersistenceAvailable { get; init; }
+
+    /// <summary>
     /// Gets a capability snapshot with every known capability disabled.
     /// </summary>
     public static WorkSystemCapabilities None { get; } = new(false, false);

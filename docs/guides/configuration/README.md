@@ -31,7 +31,7 @@ Some registration-time behavior is attached with the same fluent builder but is 
 Workable exposes configuration in four related shapes:
 
 - `WorkerOptions`: queue-time or definition-default worker options such as `ProfilingEnabled`, `ProfilingCaptureMode`, `Configuration`, and `QueueDurabilityTransaction`. `Bounded` is the normal automatic-instrumentation mode; temporary diagnostic capture rules resolve selected workers to `Full`. On authorization-enabled systems, caller-supplied `Full` queue options or definition defaults also require diagnostics permission in addition to the corresponding work-operation permission.
-- `WorkConfiguration`: per-definition and per-worker runtime behavior with `Start`, `Coordination`, `Recurrence`, `TransientRetry`, `FailedWorker`, `Logging`, `Retention`, and `Invocation`.
+- `WorkConfiguration`: per-definition and per-worker runtime behavior with `Start`, `Coordination`, `Recurrence`, `TransientRetry`, `FailedWorker`, `Logging`, `ExecutionDiagnostics`, `Retention`, and `Invocation`.
 - Nested coordination facets inside `WorkCoordinationConfiguration`: `Idempotency`, `Concurrency`, and `Durability`.
 - System bootstrap configuration on `IWorkSystemBuilder`: `WorkSystemRetentionConfiguration`, `WorkSystemCapacityConfiguration`, `WorkSystemIterationStatusConfiguration`, `WorkSystemProfilingConfiguration`, and shutdown grace period settings.
 
@@ -88,6 +88,7 @@ The rest of the direct setters follow the same pattern:
 - `UseTransientRetry(new WorkTransientRetryConfiguration { ... })`
 - `UseFailedWorker(new WorkFailedWorkerConfiguration { ... })`
 - `UseLogging(new WorkLoggingConfiguration { ... })`
+- `UseExecutionDiagnosticsPersistence(new WorkExecutionDiagnosticsPersistenceConfiguration { ... })`
 - `UseRetention(new WorkRetentionConfiguration { ... })`
 - `UseInvocation(new WorkInvocationConfiguration { ... })`
 - system `UseCapacity(new WorkSystemCapacityConfiguration { ... })`
@@ -99,6 +100,7 @@ The rest of the direct setters follow the same pattern:
 - [Transient Retry Configuration](transient-retry.md): transient exception classification and retry behavior.
 - [Failed-Worker Handling Configuration](failed-worker.md): opt into auto-cancel for failed non-recurring workers and control runtime overrides.
 - [Logging Configuration](logging.md): worker-scoped logging behavior.
+- [Persistent Execution Diagnostics](execution-diagnostics-persistence.md): expiring iteration logs and profiles for developer and agent analysis.
 - [Retention Configuration](retention.md): automatic purge timing and background count-target cleanup for completed and canceled workers.
 - [System Settings](system-settings.md): startup-only limits for admission capacity, retained final workers, iteration status replay, payload size, subscriptions, and profiling.
 - [Concurrency Configuration](concurrency.md): capacity limits by definition, subject, or concurrency key.

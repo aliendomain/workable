@@ -74,6 +74,18 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         return this;
     }
 
+    public IWorkConfigurationBuilder UseExecutionDiagnosticsPersistence(
+        WorkExecutionDiagnosticsPersistenceConfiguration persistence)
+    {
+        ArgumentNullException.ThrowIfNull(persistence);
+
+        this.configuration = this.configuration with
+        {
+            ExecutionDiagnostics = persistence,
+        };
+        return this;
+    }
+
     public IWorkConfigurationBuilder UseRetention(WorkRetentionConfiguration retention)
     {
         ArgumentNullException.ThrowIfNull(retention);
@@ -206,6 +218,33 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
                 Level = level,
                 MaximumBufferedEntries = maximumBufferedEntries,
             },
+        };
+        return this;
+    }
+
+    public IWorkConfigurationBuilder PersistExecutionDiagnostics(
+        TimeSpan retention,
+        LogLevel minimumLogLevel = LogLevel.Information,
+        WorkProfileCaptureMode profileCaptureMode = WorkProfileCaptureMode.Bounded)
+    {
+        this.configuration = this.configuration with
+        {
+            ExecutionDiagnostics = new WorkExecutionDiagnosticsPersistenceConfiguration
+            {
+                IsEnabled = true,
+                Retention = retention,
+                MinimumLogLevel = minimumLogLevel,
+                ProfileCaptureMode = profileCaptureMode,
+            },
+        };
+        return this;
+    }
+
+    public IWorkConfigurationBuilder DisableExecutionDiagnosticsPersistence()
+    {
+        this.configuration = this.configuration with
+        {
+            ExecutionDiagnostics = this.configuration.ExecutionDiagnostics with { IsEnabled = false },
         };
         return this;
     }

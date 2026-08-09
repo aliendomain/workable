@@ -7,6 +7,7 @@ public static class WorkableSqlServerSchema
 {
     private const int SchemaVersion = 3;
     private const int WorkflowSchemaVersion = 4;
+    private const int ExecutionDiagnosticsSchemaVersion = 7;
     private const string RequiredSetOptions = """
 SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
@@ -30,6 +31,10 @@ SET NUMERIC_ROUNDABORT OFF;
         var entriesTable = $"{schema}.[WorkEntries]";
         var queueTable = $"{schema}.[WorkQueueEntries]";
         var workflowRunsTable = $"{schema}.[WorkflowRuns]";
+        var diagnosticsTable = $"{schema}.[WorkIterationDiagnostics]";
+        var diagnosticLogsTable = $"{schema}.[WorkIterationDiagnosticLogs]";
+        var instrumentationTable = $"{schema}.[WorkIterationInstrumentation]";
+        var captureRulesTable = $"{schema}.[WorkDiagnosticCaptureRules]";
         var versionTable = $"{schema}.[SchemaVersion]";
         var escapedSchemaName = EscapeLiteral(schemaName);
 
@@ -128,12 +133,236 @@ BEGIN
 END
 """,
             $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NULL
+BEGIN
+    CREATE TABLE {diagnosticsTable}
+    (
+        DiagnosticId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkIterationDiagnostics PRIMARY KEY,
+        PersistenceScope nvarchar(450) NOT NULL,
+        WorkSystemId uniqueidentifier NOT NULL,
+        WorkSystemName nvarchar(256) NOT NULL,
+        WorkerId uniqueidentifier NOT NULL,
+        IterationSequence bigint NOT NULL,
+        DefinitionId uniqueidentifier NOT NULL,
+        DefinitionName nvarchar(450) NOT NULL,
+        Status nvarchar(64) NULL,
+        AttemptCount int NULL,
+        StartedAt datetimeoffset NOT NULL,
+        CompletedAt datetimeoffset NULL,
+        DurationMilliseconds bigint NULL,
+        CaptureSource nvarchar(64) NOT NULL,
+        ProfileCaptureMode nvarchar(32) NULL,
+        SqlClientProfilingAvailable bit NOT NULL,
+        HttpClientProfilingAvailable bit NOT NULL,
+        ProfileJson nvarchar(max) NULL,
+        PayloadSchemaVersion int NOT NULL CONSTRAINT DF_WorkableWorkIterationDiagnostics_PayloadSchemaVersion DEFAULT (1),
+        ProfileNodeCount int NOT NULL CONSTRAINT DF_WorkableWorkIterationDiagnostics_ProfileNodeCount DEFAULT (0),
+        ProfileDropped bit NOT NULL CONSTRAINT DF_WorkableWorkIterationDiagnostics_ProfileDropped DEFAULT (0),
+        PersistedLogCount bigint NOT NULL CONSTRAINT DF_WorkableWorkIterationDiagnostics_PersistedLogCount DEFAULT (0),
+        DroppedLogCount bigint NOT NULL CONSTRAINT DF_WorkableWorkIterationDiagnostics_DroppedLogCount DEFAULT (0),
+        RetentionSeconds int NOT NULL,
+        CapturedAt datetimeoffset NOT NULL,
+        UpdatedAt datetimeoffset NOT NULL,
+        ExpiresAt datetimeoffset NULL,
+        CONSTRAINT UX_WorkableWorkIterationDiagnostics_Iteration UNIQUE
+            (PersistenceScope, WorkSystemName, WorkerId, IterationSequence)
+    );
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnosticLogs', N'U') IS NULL
+BEGIN
+    CREATE TABLE {diagnosticLogsTable}
+    (
+        DiagnosticId uniqueidentifier NOT NULL,
+        Ordinal bigint NOT NULL,
+        OccurredAt datetimeoffset NOT NULL,
+        Level nvarchar(16) NOT NULL,
+        Category nvarchar(512) NOT NULL,
+        EventId int NOT NULL,
+        EventName nvarchar(256) NULL,
+        Message nvarchar(max) NOT NULL,
+        PropertiesJson nvarchar(max) NULL,
+        ExceptionType nvarchar(512) NULL,
+        ExceptionMessage nvarchar(max) NULL,
+        ExceptionStack nvarchar(max) NULL,
+        TraceId nvarchar(32) NULL,
+        SpanId nvarchar(16) NULL,
+        CONSTRAINT PK_WorkableWorkIterationDiagnosticLogs PRIMARY KEY (DiagnosticId, Ordinal),
+        CONSTRAINT FK_WorkableWorkIterationDiagnosticLogs_Diagnostics FOREIGN KEY (DiagnosticId)
+            REFERENCES {diagnosticsTable}(DiagnosticId) ON DELETE CASCADE
+    );
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationInstrumentation', N'U') IS NULL
+BEGIN
+    CREATE TABLE {instrumentationTable}
+    (
+        DiagnosticId uniqueidentifier NOT NULL,
+        Instrumentation nvarchar(128) NOT NULL,
+        NodeCount int NOT NULL,
+        TimingCount int NOT NULL,
+        TotalTimingMilliseconds bigint NOT NULL,
+        MaximumTimingMilliseconds bigint NOT NULL,
+        OmittedNodeCount int NOT NULL,
+        CONSTRAINT PK_WorkableWorkIterationInstrumentation PRIMARY KEY (DiagnosticId, Instrumentation),
+        CONSTRAINT FK_WorkableWorkIterationInstrumentation_Diagnostics FOREIGN KEY (DiagnosticId)
+            REFERENCES {diagnosticsTable}(DiagnosticId) ON DELETE CASCADE
+    );
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkDiagnosticCaptureRules', N'U') IS NULL
+BEGIN
+    CREATE TABLE {captureRulesTable}
+    (
+        RuleId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkDiagnosticCaptureRules PRIMARY KEY,
+        PersistenceScope nvarchar(450) NOT NULL,
+        WorkSystemName nvarchar(256) NOT NULL,
+        DefinitionName nvarchar(450) NULL,
+        MinimumLogLevel nvarchar(16) NOT NULL,
+        ProfileCaptureMode nvarchar(32) NULL,
+        ArtifactRetentionSeconds int NOT NULL,
+        CreatedAt datetimeoffset NOT NULL,
+        ActiveUntil datetimeoffset NOT NULL,
+        CreatedByJson nvarchar(max) NOT NULL
+    );
+END
+""",
+            $"""
 IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
    AND COL_LENGTH(N'{escapedSchemaName}.WorkflowRuns', N'DefinitionFingerprint') IS NULL
 BEGIN
     ALTER TABLE {workflowRunsTable}
         ADD DefinitionFingerprint nvarchar(64) NOT NULL
             CONSTRAINT DF_WorkableWorkflowRuns_DefinitionFingerprint DEFAULT (N'');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkIterationDiagnostics', N'SqlClientProfilingAvailable') IS NULL
+BEGIN
+    ALTER TABLE {diagnosticsTable}
+        ADD SqlClientProfilingAvailable bit NOT NULL
+            CONSTRAINT DF_WorkableWorkIterationDiagnostics_SqlClientProfilingAvailable DEFAULT (0);
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND EXISTS (
+       SELECT 1 FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       INNER JOIN sys.index_columns index_columns
+           ON index_columns.object_id = indexes.object_id
+          AND index_columns.index_id = indexes.index_id
+          AND index_columns.key_ordinal = 1
+       INNER JOIN sys.columns columns
+           ON columns.object_id = index_columns.object_id
+          AND columns.column_id = index_columns.column_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkIterationDiagnostics'
+         AND indexes.name = N'IX_WorkableWorkIterationDiagnostics_RecentWork'
+         AND columns.name = N'PersistenceScope')
+BEGIN
+    DROP INDEX IX_WorkableWorkIterationDiagnostics_RecentWork ON {diagnosticsTable};
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkIterationDiagnostics'
+         AND indexes.name = N'IX_WorkableWorkIterationDiagnostics_RecentSystem')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkIterationDiagnostics_RecentSystem ON {diagnosticsTable} (PersistenceScope, WorkSystemName, CompletedAt DESC, DiagnosticId) INCLUDE (DefinitionName, WorkerId, IterationSequence, Status, ExpiresAt);');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkDiagnosticCaptureRules', N'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkDiagnosticCaptureRules'
+         AND indexes.name = N'IX_WorkableWorkDiagnosticCaptureRules_System')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkDiagnosticCaptureRules_System ON {captureRulesTable} (PersistenceScope, WorkSystemName, ActiveUntil, RuleId) INCLUDE (DefinitionName, CreatedAt);');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkIterationDiagnostics', N'HttpClientProfilingAvailable') IS NULL
+BEGIN
+    ALTER TABLE {diagnosticsTable}
+        ADD HttpClientProfilingAvailable bit NOT NULL
+            CONSTRAINT DF_WorkableWorkIterationDiagnostics_HttpClientProfilingAvailable DEFAULT (0);
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{escapedSchemaName}.WorkIterationDiagnostics', N'ProfileDropped') IS NULL
+BEGIN
+    ALTER TABLE {diagnosticsTable}
+        ADD ProfileDropped bit NOT NULL
+            CONSTRAINT DF_WorkableWorkIterationDiagnostics_ProfileDropped DEFAULT (0);
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkIterationDiagnostics'
+         AND indexes.name = N'IX_WorkableWorkIterationDiagnostics_RecentWork')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkIterationDiagnostics_RecentWork ON {diagnosticsTable} (WorkSystemName, DefinitionName, CompletedAt DESC, DiagnosticId) INCLUDE (PersistenceScope, WorkerId, IterationSequence, Status, ExpiresAt);');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkIterationDiagnostics'
+         AND indexes.name = N'IX_WorkableWorkIterationDiagnostics_Worker')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkIterationDiagnostics_Worker ON {diagnosticsTable} (PersistenceScope, WorkSystemName, WorkerId, IterationSequence) INCLUDE (CompletedAt, ExpiresAt);');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkIterationDiagnostics'
+         AND indexes.name = N'IX_WorkableWorkIterationDiagnostics_ExpirationByScope')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkIterationDiagnostics_ExpirationByScope ON {diagnosticsTable} (PersistenceScope, ExpiresAt, DiagnosticId) WHERE ExpiresAt IS NOT NULL;');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkIterationDiagnostics', N'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'{escapedSchemaName}'
+         AND tables.name = N'WorkIterationDiagnostics'
+         AND indexes.name = N'IX_WorkableWorkIterationDiagnostics_IncompleteByScope')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkIterationDiagnostics_IncompleteByScope ON {diagnosticsTable} (PersistenceScope, UpdatedAt, DiagnosticId) INCLUDE (RetentionSeconds) WHERE CompletedAt IS NULL;');
 END
 """,
             $"""
@@ -394,6 +623,13 @@ WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Comp
             $"""
 MERGE {versionTable} WITH (HOLDLOCK) AS target
 USING (SELECT N'WorkflowPersistence' AS Component, {WorkflowSchemaVersion} AS Version) AS source
+ON target.Component = source.Component
+WHEN MATCHED THEN UPDATE SET Version = source.Version, UpdatedAt = SYSDATETIMEOFFSET()
+WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Component, source.Version, SYSDATETIMEOFFSET());
+""",
+            $"""
+MERGE {versionTable} WITH (HOLDLOCK) AS target
+USING (SELECT N'ExecutionDiagnostics' AS Component, {ExecutionDiagnosticsSchemaVersion} AS Version) AS source
 ON target.Component = source.Component
 WHEN MATCHED THEN UPDATE SET Version = source.Version, UpdatedAt = SYSDATETIMEOFFSET()
 WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Component, source.Version, SYSDATETIMEOFFSET());
@@ -686,6 +922,117 @@ WHERE schemas.name = @SchemaName
         }
     }
 
+    public static async Task ValidateExecutionDiagnosticsInstalled(
+        string connectionString,
+        string schemaName = "workable",
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schemaName);
+
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var requiredColumns = new Dictionary<string, string[]>
+        {
+            ["SchemaVersion"] = ["Component", "Version", "UpdatedAt"],
+            ["WorkIterationDiagnostics"] =
+            [
+                "DiagnosticId", "PersistenceScope", "WorkSystemId", "WorkSystemName", "WorkerId",
+                "IterationSequence", "DefinitionId", "DefinitionName", "Status", "AttemptCount",
+                "StartedAt", "CompletedAt", "DurationMilliseconds", "CaptureSource", "ProfileCaptureMode",
+                "SqlClientProfilingAvailable", "HttpClientProfilingAvailable", "ProfileJson",
+                "PayloadSchemaVersion", "ProfileNodeCount", "ProfileDropped", "PersistedLogCount",
+                "DroppedLogCount", "RetentionSeconds", "CapturedAt", "UpdatedAt", "ExpiresAt",
+            ],
+            ["WorkIterationDiagnosticLogs"] =
+            [
+                "DiagnosticId", "Ordinal", "OccurredAt", "Level", "Category", "EventId", "EventName",
+                "Message", "PropertiesJson", "ExceptionType", "ExceptionMessage", "ExceptionStack",
+                "TraceId", "SpanId",
+            ],
+            ["WorkIterationInstrumentation"] =
+            [
+                "DiagnosticId", "Instrumentation", "NodeCount", "TimingCount", "TotalTimingMilliseconds",
+                "MaximumTimingMilliseconds", "OmittedNodeCount",
+            ],
+            ["WorkDiagnosticCaptureRules"] =
+            [
+                "RuleId", "PersistenceScope", "WorkSystemName", "DefinitionName", "MinimumLogLevel",
+                "ProfileCaptureMode", "ArtifactRetentionSeconds", "CreatedAt", "ActiveUntil", "CreatedByJson",
+            ],
+        };
+        var missing = new List<string>();
+        foreach (var (table, columns) in requiredColumns)
+        {
+            if (await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.tables tables
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = @SchemaName AND tables.name = @Name;
+""", schemaName, cancellationToken, table) == 0)
+            {
+                missing.Add($"{schemaName}.{table}");
+            }
+
+            var existingColumns = await ReadExistingColumns(connection, schemaName, table, cancellationToken);
+            foreach (var column in columns.Where(column => !existingColumns.Contains(column)))
+            {
+                missing.Add($"{schemaName}.{table}.{column}");
+            }
+        }
+
+        var requiredIndexes = new Dictionary<string, string[]>
+        {
+            ["WorkIterationDiagnostics"] =
+            [
+                "IX_WorkableWorkIterationDiagnostics_RecentSystem",
+                "IX_WorkableWorkIterationDiagnostics_RecentWork",
+                "IX_WorkableWorkIterationDiagnostics_Worker",
+                "IX_WorkableWorkIterationDiagnostics_ExpirationByScope",
+                "IX_WorkableWorkIterationDiagnostics_IncompleteByScope",
+            ],
+            ["WorkDiagnosticCaptureRules"] = ["IX_WorkableWorkDiagnosticCaptureRules_System"],
+        };
+        foreach (var (table, indexes) in requiredIndexes)
+        {
+            var missingIndexes = new List<string>();
+            foreach (var index in indexes)
+            {
+                if (await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = @SchemaName AND tables.name = @Name AND indexes.name = @IndexName;
+""", schemaName, cancellationToken, table, index) == 0)
+                {
+                    missingIndexes.Add(index);
+                }
+            }
+
+            missing.AddRange(missingIndexes);
+        }
+
+        if (!missing.Any(item => item.StartsWith($"{schemaName}.SchemaVersion", StringComparison.Ordinal)))
+        {
+            var installedVersion = await Scalar<int>(connection, $"""
+SELECT COALESCE(MAX(Version), 0)
+FROM {QuoteIdentifier(schemaName)}.[SchemaVersion]
+WHERE Component = @Name;
+""", schemaName, cancellationToken, "ExecutionDiagnostics");
+            if (installedVersion < ExecutionDiagnosticsSchemaVersion)
+            {
+                missing.Add($"ExecutionDiagnostics schema version {ExecutionDiagnosticsSchemaVersion} (installed: {installedVersion})");
+            }
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Workable SQL Server execution diagnostics schema '{schemaName}' is not installed or is incomplete. Missing: {string.Join(", ", missing)}.");
+        }
+    }
+
     internal static string QuoteIdentifier(string identifier)
         => $"[{identifier.Replace("]", "]]", StringComparison.Ordinal)}]";
 
@@ -697,7 +1044,8 @@ WHERE schemas.name = @SchemaName
         string commandText,
         string schemaName,
         CancellationToken cancellationToken,
-        string? name = null)
+        string? name = null,
+        string? indexName = null)
     {
         await using var command = connection.CreateCommand();
         command.CommandText = commandText;
@@ -705,6 +1053,11 @@ WHERE schemas.name = @SchemaName
         if (name is not null)
         {
             command.Parameters.AddWithValue("@Name", name);
+        }
+
+        if (indexName is not null)
+        {
+            command.Parameters.AddWithValue("@IndexName", indexName);
         }
 
         var value = await command.ExecuteScalarAsync(cancellationToken);

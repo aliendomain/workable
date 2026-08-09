@@ -6,6 +6,84 @@ namespace Workable.SqlServer;
 public static class WorkableSqlServerServiceCollectionExtensions
 {
     /// <summary>
+    /// Registers SQL Server storage for persistent execution diagnostics and future shared persistence features.
+    /// </summary>
+    public static IServiceCollection AddWorkableSqlServerPersistence(
+        this IServiceCollection services,
+        string connectionString,
+        string schemaName = "workable",
+        string persistenceScope = "default",
+        bool autoDeploySchema = true)
+        => services.AddWorkableSqlServerPersistence(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = connectionString,
+            SchemaName = schemaName,
+            PersistenceScope = persistenceScope,
+            AutoDeploySchema = autoDeploySchema,
+        });
+
+    /// <summary>
+    /// Registers SQL Server storage for persistent execution diagnostics and future shared persistence features.
+    /// </summary>
+    public static IServiceCollection AddWorkableSqlServerPersistence(
+        this IServiceCollection services,
+        WorkableSqlServerPersistenceOptions options)
+        => AddWorkableSqlServerPersistence(services, options, isExplicitRegistration: true);
+
+    private static IServiceCollection AddWorkableSqlServerPersistence(
+        IServiceCollection services,
+        WorkableSqlServerPersistenceOptions options,
+        bool isExplicitRegistration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.ConnectionString);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.SchemaName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.PersistenceScope);
+
+        var existing = services
+            .LastOrDefault(descriptor =>
+                descriptor.ServiceType == typeof(WorkableSqlServerPersistenceRegistration))
+            ?.ImplementationInstance as WorkableSqlServerPersistenceRegistration;
+        if (existing is not null)
+        {
+            if (!SameStore(existing.Options, options))
+            {
+                throw new InvalidOperationException(
+                    "Workable SQL Server persistence is already registered with a different connection string or schema.");
+            }
+
+            if (existing.IsExplicitRegistration && isExplicitRegistration && existing.Options != options)
+            {
+                throw new InvalidOperationException(
+                    "Workable SQL Server persistence is already registered with different options.");
+            }
+
+            if (!existing.IsExplicitRegistration && isExplicitRegistration)
+            {
+                services.Replace(ServiceDescriptor.Singleton(
+                    new WorkableSqlServerPersistenceRegistration(options, IsExplicitRegistration: true)));
+            }
+
+            return services;
+        }
+
+        services.AddSingleton(new WorkableSqlServerPersistenceRegistration(options, isExplicitRegistration));
+        services.AddSingleton(serviceProvider =>
+            serviceProvider.GetRequiredService<WorkableSqlServerPersistenceRegistration>().Options);
+        services.TryAddSingleton<WorkableSqlServerExecutionDiagnosticsRepository>();
+        services.TryAddSingleton<IWorkExecutionDiagnosticsRepository>(serviceProvider =>
+            serviceProvider.GetRequiredService<WorkableSqlServerExecutionDiagnosticsRepository>());
+        return services;
+    }
+
+    private static bool SameStore(
+        WorkableSqlServerPersistenceOptions left,
+        WorkableSqlServerPersistenceOptions right)
+        => string.Equals(left.ConnectionString, right.ConnectionString, StringComparison.Ordinal) &&
+            string.Equals(left.SchemaName, right.SchemaName, StringComparison.Ordinal);
+
+    /// <summary>
     /// Captures <c>Microsoft.Data.SqlClient</c> command execution inside active Workable profiles.
     /// </summary>
     /// <remarks>
@@ -93,6 +171,17 @@ public static class WorkableSqlServerServiceCollectionExtensions
         });
         services.AddSingleton<WorkableSqlServerQueueDurabilityStore>();
         services.AddSingleton<IWorkPersistenceStore>(services => services.GetRequiredService<WorkableSqlServerQueueDurabilityStore>());
+        AddWorkableSqlServerPersistence(services, new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = options.ConnectionString,
+            SchemaName = options.SchemaName,
+            PersistenceScope = "default",
+            AutoDeploySchema = options.AutoDeploySchema,
+        }, isExplicitRegistration: false);
         return services;
     }
 }
+
+internal sealed record WorkableSqlServerPersistenceRegistration(
+    WorkableSqlServerPersistenceOptions Options,
+    bool IsExplicitRegistration);

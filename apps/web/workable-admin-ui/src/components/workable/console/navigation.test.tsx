@@ -133,6 +133,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
         id: "default-existing",
         name: "Default",
         capabilities: {
+          executionDiagnosticsPersistenceAvailable: false,
           httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: true,
           sqlProfilingAvailable: false,
@@ -144,6 +145,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
         id: "ops-existing",
         name: "Ops",
         capabilities: {
+          executionDiagnosticsPersistenceAvailable: false,
           httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: false,
           sqlProfilingAvailable: false,

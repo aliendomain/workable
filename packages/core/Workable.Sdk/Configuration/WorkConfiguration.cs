@@ -26,6 +26,12 @@ public sealed record WorkConfiguration(
     WorkInvocationConfiguration Invocation)
 {
     /// <summary>
+    /// Gets the persistent execution-diagnostics policy for this work definition.
+    /// </summary>
+    public WorkExecutionDiagnosticsPersistenceConfiguration ExecutionDiagnostics { get; init; } =
+        WorkExecutionDiagnosticsPersistenceConfiguration.Default;
+
+    /// <summary>
     /// Gets the default configuration used when no explicit work configuration is supplied.
     /// </summary>
     public static WorkConfiguration Default { get; } = new(
@@ -57,6 +63,8 @@ public sealed record WorkConfiguration(
                 FailedWorker = overrides.FailedWorker,
                 Logging = overrides.Logging,
                 Retention = overrides.Retention,
+                // Persistent execution diagnostics are definition-scoped. Queue-time and worker-level
+                // overrides must not enable or disable capture for an individual worker.
                 // Invocation is intentionally excluded. Allowed invocation channels are a
                 // design-time contract for the work definition, not a runtime worker option.
             };

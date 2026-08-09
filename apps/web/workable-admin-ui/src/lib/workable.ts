@@ -2,6 +2,7 @@ export const DEFAULT_WORKABLE_API_URL = "http://localhost:61932/workable";
 
 export type WorkableConnection = {
   apiUrl: string;
+  executionDiagnosticsPersistenceAvailable?: boolean;
   realtimeHubPath?: string | null;
   systemName?: string;
 };
@@ -60,6 +61,7 @@ export type WorkableHttpHostCapabilities = {
 };
 
 export type WorkableHttpSystemCapabilities = {
+  executionDiagnosticsPersistenceAvailable?: boolean;
   httpClientProfilingAvailable: boolean;
   persistentCoordinationAvailable: boolean;
   sqlProfilingAvailable: boolean;
@@ -67,6 +69,7 @@ export type WorkableHttpSystemCapabilities = {
 
 export function createDefaultWorkableHttpSystemCapabilities(): WorkableHttpSystemCapabilities {
   return {
+    executionDiagnosticsPersistenceAvailable: false,
     httpClientProfilingAvailable: false,
     persistentCoordinationAvailable: false,
     sqlProfilingAvailable: false,
@@ -77,6 +80,7 @@ export function normalizeWorkableHttpSystemCapabilities(
   value?: Partial<WorkableHttpSystemCapabilities> | null
 ): WorkableHttpSystemCapabilities {
   return {
+    executionDiagnosticsPersistenceAvailable: Boolean(value?.executionDiagnosticsPersistenceAvailable),
     httpClientProfilingAvailable: Boolean(value?.httpClientProfilingAvailable),
     persistentCoordinationAvailable: Boolean(value?.persistentCoordinationAvailable),
     sqlProfilingAvailable: Boolean(value?.sqlProfilingAvailable),
@@ -381,6 +385,22 @@ export type WorkableProfilingCaptureRule = {
 export type WorkableProfilingCaptureState = {
   maximumAutomaticInstrumentationNodes: number;
   rules: WorkableProfilingCaptureRule[];
+};
+
+export type WorkableExecutionDiagnosticCaptureRule = {
+  id: string;
+  definitionName?: string | null;
+  minimumLogLevel: "Trace" | "Debug" | "Information" | "Warning" | "Error" | "Critical";
+  profileCaptureMode?: "Bounded" | "Full" | null;
+  artifactRetention: string;
+  createdAt: string;
+  activeUntil: string;
+  createdBy: WorkableRealtimeOriginActor;
+};
+
+export type WorkableExecutionDiagnosticCaptureState = {
+  persistenceAvailable: boolean;
+  rules: WorkableExecutionDiagnosticCaptureRule[];
 };
 
 export type WorkConfiguration = {

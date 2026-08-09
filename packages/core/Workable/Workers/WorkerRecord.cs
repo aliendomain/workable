@@ -910,6 +910,36 @@ internal sealed class WorkerRecord(
         }
     }
 
+    public void RecordIterationProfile(long targetIterationSequence, WorkProfileSnapshot profile)
+    {
+        lock (this.sync)
+        {
+            if (this.currentIteration?.Sequence == targetIterationSequence)
+            {
+                this.profile = profile;
+                this.pendingIterationProfile = profile;
+                this.MarkUpdated();
+                return;
+            }
+
+            for (var index = this.retainedIterations.Count - 1; index >= 0; index--)
+            {
+                var iteration = this.retainedIterations[index];
+                if (iteration.Sequence != targetIterationSequence)
+                {
+                    continue;
+                }
+
+                var profiled = iteration with { Profile = profile };
+                this.profile = profile;
+                this.retainedIterations[index] = profiled;
+                this.MarkUpdated();
+                this.IterationRecorded?.Invoke(this.CreateReadModelIterationUpdateLocked(profiled));
+                return;
+            }
+        }
+    }
+
     public void RecordActionHistory(WorkActionOutcome outcome, WorkRequestContext requestContext)
     {
         ArgumentNullException.ThrowIfNull(outcome);

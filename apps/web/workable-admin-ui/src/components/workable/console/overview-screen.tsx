@@ -57,6 +57,7 @@ import {
   formatQueueAge,
 } from "@/components/workable/console/console-format";
 import { ErrorPanel } from "@/components/workable/console/feedback-panel";
+import { ExecutionDiagnosticsCaptureCard } from "@/components/workable/console/execution-diagnostics-capture-card";
 import {
   CompactIterationStrip,
   IterationStatusStrip,
@@ -722,6 +723,11 @@ export function OverviewView({
             actionError,
             ...componentErrors,
           ]}
+        />
+        <ExecutionDiagnosticsCaptureCard
+          canControlSystem={access?.canControlSystem ?? false}
+          canViewDiagnostics={access?.canViewDiagnostics ?? false}
+          connection={connection}
         />
         {lacksReadableWorkAccess && (
           <Card>

@@ -11,25 +11,36 @@ internal sealed class WorkerExecutionInvoker(
     Action<WorkerRecord, WorkIdentifier> identifierDiscovered,
     WorkInitializationExecutor initialization,
     WorkIterationStatusStream? iterationStatuses = null,
-    WorkSystemProfilingConfiguration? profilingConfiguration = null)
+    WorkSystemProfilingConfiguration? profilingConfiguration = null,
+    WorkExecutionDiagnosticsCoordinator? executionDiagnostics = null)
 {
     public async Task<WorkerExecutionInvocationResult> Execute(WorkerRecord worker, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var activeProfile = worker.Options.ProfilingEnabled
+        var profileCaptureMode = executionDiagnostics?.ResolveProfileCaptureMode(worker) ??
+            (worker.Options.ProfilingEnabled ? worker.Options.ProfilingCaptureMode : null);
+        var executionOptions = profileCaptureMode is { } effectiveProfileCaptureMode &&
+            (!worker.Options.ProfilingEnabled || worker.Options.ProfilingCaptureMode != effectiveProfileCaptureMode)
+                ? worker.Options with
+                {
+                    ProfilingEnabled = true,
+                    ProfilingCaptureMode = effectiveProfileCaptureMode,
+                }
+                : worker.Options;
+        var activeProfile = profileCaptureMode is { } captureMode
             ? new WorkProfile(
                 $"Worker {worker.Id.Value} {worker.Work.Definition.Name}",
                 (profilingConfiguration ?? WorkSystemProfilingConfiguration.Default)
                     .MaximumAutomaticInstrumentationNodes,
-                worker.Options.ProfilingCaptureMode)
+                captureMode)
             : null;
         using var profileContext = WorkProfilerContext.Begin(workSystemId, activeProfile);
-        using var logCapture = WorkableLogCaptureContext.Begin(worker, workerEvents);
+        using var logCapture = WorkableLogCaptureContext.Begin(worker, workerEvents, executionDiagnostics);
         try
         {
             IWorkExecutionContext CreateDurableContext(WorkerRecord contextWorker, IServiceProvider services)
-                => this.CreateContext(contextWorker, services);
+                => this.CreateContext(contextWorker, services, executionOptions);
 
             var initializationResult = await initialization.Initialize(worker, CreateDurableContext, cancellationToken);
             if (initializationResult.HasErrors)
@@ -40,7 +51,7 @@ internal sealed class WorkerExecutionInvoker(
             cancellationToken.ThrowIfCancellationRequested();
 
             await using var scope = rootServices.CreateAsyncScope();
-            var context = this.CreateContext(worker, scope.ServiceProvider);
+            var context = this.CreateContext(worker, scope.ServiceProvider, executionOptions);
             var executor = worker.Work.ExecutorFactory(scope.ServiceProvider);
             using var executionScope = activeProfile?.CreateMethodScope(
                 executor.GetType(),
@@ -74,14 +85,18 @@ internal sealed class WorkerExecutionInvoker(
         {
             if (activeProfile is not null)
             {
-                worker.RecordProfile(activeProfile.ToSnapshot());
+                if (executionDiagnostics?.TryCaptureProfile(worker, activeProfile) != true)
+                {
+                    worker.RecordProfile(activeProfile.ToSnapshot());
+                }
             }
         }
     }
 
     private WorkExecutionContext CreateContext(
         WorkerRecord worker,
-        IServiceProvider services)
+        IServiceProvider services,
+        WorkerOptions executionOptions)
     {
         var profiler = services.GetService<IWorkProfiler>() ?? NoOpWorkProfiler.Instance;
         return new WorkExecutionContext(
@@ -91,7 +106,7 @@ internal sealed class WorkerExecutionInvoker(
             worker.Work.Definition,
             worker.RequestContext,
             () => worker.CancellationRequestContext,
-            worker.Options,
+            executionOptions,
             worker.Configuration,
             () => worker.InterruptionReason,
             profiler,

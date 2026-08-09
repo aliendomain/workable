@@ -28,6 +28,18 @@ GET /workable/diagnostics
 GET /workable/systems/email/diagnostics
 ```
 
+## Runtime Health Versus Execution Evidence
+
+`IWorkSystem.Diagnostics` reports the current health of Workable's runtime loops and queues. It does not contain the log stream or profile tree for a particular worker iteration.
+
+Use [Persistent Execution Diagnostics](../guides/configuration/execution-diagnostics-persistence.md) when a developer or agent needs to inspect work that just ran, answer questions such as “how many SQL commands did this iteration execute?”, or compare dependency timings between iterations. That opt-in feature stores expiring iteration evidence in an `IWorkExecutionDiagnosticsRepository` and exposes it through dedicated HTTP and MCP query surfaces. The repository, retention policy, and diagnostics permission are all required; it is not an always-on production log archive.
+
+The distinction is intentional:
+
+- use runtime diagnostics to decide whether the work system itself is healthy;
+- use persisted execution diagnostics to analyze the behavior of selected work iterations;
+- use an application observability platform for general production logs, metrics, and distributed traces.
+
 ## Reading Diagnostics
 
 Diagnostics work without SignalR.

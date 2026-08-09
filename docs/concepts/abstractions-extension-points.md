@@ -9,6 +9,7 @@ This document focuses on that smaller set: the public seams where advanced hosts
 Reach for these APIs only when one of these is true:
 
 - you are implementing a persistence-backed durability provider
+- you are implementing an expiring execution-diagnostics repository
 - you want Workable iterations translated into your metrics pipeline
 - you are adding automatic profiling instrumentation for another dependency or protocol
 - you need a host lifecycle callback during shutdown
@@ -115,6 +116,30 @@ The public exceptions here matter because they communicate expected provider-lev
 That last one is especially important. Lease loss is not a generic error; it is part of the durable replay model and can lead to worker interruption and later replay.
 
 If you are implementing a provider, study [Workable SQL Server Integration](../../packages/extensions/sqlserver/README.md) as the concrete example.
+
+## Execution Diagnostics Repository
+
+`IWorkExecutionDiagnosticsRepository` is independent of `IWorkPersistenceStore`. Implement it when a host needs persistent iteration logs, profiles, instrumentation summaries, and temporary capture rules without adopting Workable's durable queue protocol.
+
+The repository protocol has four groups of operations:
+
+- `Initialize(...)`, `BeginIteration(...)`, `AppendLogs(...)`, and `CompleteIteration(...)` store the artifact lifecycle;
+- `Query(...)` and `Get(...)` retrieve unexpired summaries and complete evidence;
+- `UpsertCaptureRule(...)`, `ListCaptureRules(...)`, and `DeleteCaptureRule(...)` manage temporary system/work capture policy;
+- `DeleteExpired(...)` performs bounded physical cleanup.
+
+Workable invokes artifact writes from its bounded background writer rather than from the work-execution critical path. Query and capture-rule administration can run concurrently with that writer, and one repository instance can initialize multiple logical Workable systems, so implementations must be thread-safe and scope every operation by the supplied system identity.
+
+Providers should preserve these correctness rules:
+
+- completed artifacts become unreadable at `ExpiresAt`, even before the next physical cleanup pass;
+- child logs and instrumentation are deleted with their parent artifact;
+- an incomplete artifact is not expired using completed-artifact retention—`AbandonedBefore` is the cross-instance safety cutoff, while `ActiveDiagnosticIds` supplies additional protection for work known to the current process;
+- capture-rule limits are enforced atomically in the store so concurrent hosts cannot exceed the configured maximum;
+- rule listing returns only active rules for the requested system; Workable performs case-insensitive definition matching over that result;
+- appends preserve each diagnostic's ordinal order, and missing or already-expired best-effort evidence does not turn into an application-work failure.
+
+The repository receives already-bounded log and profile payloads, but it remains responsible for parameterizing store operations and safely persisting open-ended structured JSON. See [Persistent Execution Diagnostics](../guides/configuration/execution-diagnostics-persistence.md) for policy, security, retention, and agent-query semantics. The SQL Server repository is the reference implementation.
 
 ## Metrics Sink
 
