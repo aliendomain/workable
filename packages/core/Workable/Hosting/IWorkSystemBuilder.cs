@@ -390,7 +390,7 @@ public interface IWorkSystemBuilder
     /// Enables persistent execution diagnostics for work definitions that do not override the system policy.
     /// </summary>
     IWorkSystemBuilder PersistExecutionDiagnostics(
-        TimeSpan retention,
+        TimeSpan retentionPeriod,
         Microsoft.Extensions.Logging.LogLevel minimumLogLevel = Microsoft.Extensions.Logging.LogLevel.Information,
         WorkProfileCaptureMode profileCaptureMode = WorkProfileCaptureMode.Bounded);
 

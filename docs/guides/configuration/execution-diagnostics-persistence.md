@@ -34,7 +34,7 @@ Enable it for every work definition that does not explicitly override the system
 services.AddWorkableSystem(builder =>
 {
     builder.PersistExecutionDiagnostics(
-        retention: TimeSpan.FromDays(7),
+        retentionPeriod: TimeSpan.FromDays(7),
         minimumLogLevel: LogLevel.Information,
         profileCaptureMode: WorkProfileCaptureMode.Bounded);
 });

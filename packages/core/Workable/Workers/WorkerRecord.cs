@@ -910,11 +910,11 @@ internal sealed class WorkerRecord(
         }
     }
 
-    public void RecordIterationProfile(long iterationSequence, WorkProfileSnapshot profile)
+    public void RecordIterationProfile(long targetIterationSequence, WorkProfileSnapshot profile)
     {
         lock (this.sync)
         {
-            if (this.currentIteration?.Sequence == iterationSequence)
+            if (this.currentIteration?.Sequence == targetIterationSequence)
             {
                 this.profile = profile;
                 this.pendingIterationProfile = profile;
@@ -925,7 +925,7 @@ internal sealed class WorkerRecord(
             for (var index = this.retainedIterations.Count - 1; index >= 0; index--)
             {
                 var iteration = this.retainedIterations[index];
-                if (iteration.Sequence != iterationSequence)
+                if (iteration.Sequence != targetIterationSequence)
                 {
                     continue;
                 }

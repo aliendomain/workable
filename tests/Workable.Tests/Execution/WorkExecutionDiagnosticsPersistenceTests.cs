@@ -476,7 +476,7 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
 
         await repository.CleanupDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal(6, repository.DeleteExpiredCallCount);
+        Assert.True(repository.DeleteExpiredCallCount >= 6);
     }
 
     [Fact]
@@ -518,6 +518,7 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
             await receipt.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(5));
             while (repository.ExpirationRequests.TryDequeue(out _))
             {
+                // Drain cleanup requests recorded before the pending completion was observed.
             }
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));

@@ -305,13 +305,13 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     }
 
     public IWorkSystemBuilder PersistExecutionDiagnostics(
-        TimeSpan retention,
+        TimeSpan retentionPeriod,
         LogLevel minimumLogLevel = LogLevel.Information,
         WorkProfileCaptureMode profileCaptureMode = WorkProfileCaptureMode.Bounded)
         => this.UseExecutionDiagnosticsPersistence(new WorkSystemExecutionDiagnosticsPersistenceConfiguration
         {
             IsEnabled = true,
-            Retention = retention,
+            Retention = retentionPeriod,
             MinimumLogLevel = minimumLogLevel,
             ProfileCaptureMode = profileCaptureMode,
         });

@@ -61,7 +61,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
     public bool IsAvailable => this.repository is not null;
 
     public WorkExecutionDiagnosticsPolicy? ResolvePolicy(
-        WorkConfiguration configuration,
+        WorkConfiguration workConfiguration,
         string definitionName)
     {
         var now = DateTimeOffset.UtcNow;
@@ -77,7 +77,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
                     : WorkExecutionDiagnosticCaptureSource.TemporaryWorkRule);
         }
 
-        return this.policies.Resolve(configuration);
+        return this.policies.Resolve(workConfiguration);
     }
 
     public bool ShouldEnableProfiling(WorkExecutionDiagnosticsPolicy policy)

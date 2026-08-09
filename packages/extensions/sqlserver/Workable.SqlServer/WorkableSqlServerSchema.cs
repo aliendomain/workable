@@ -995,6 +995,7 @@ WHERE schemas.name = @SchemaName AND tables.name = @Name;
         };
         foreach (var (table, indexes) in requiredIndexes)
         {
+            var missingIndexes = new List<string>();
             foreach (var index in indexes)
             {
                 if (await Scalar<int>(connection, """
@@ -1005,9 +1006,11 @@ INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = @SchemaName AND tables.name = @Name AND indexes.name = @IndexName;
 """, schemaName, cancellationToken, table, index) == 0)
                 {
-                    missing.Add(index);
+                    missingIndexes.Add(index);
                 }
             }
+
+            missing.AddRange(missingIndexes);
         }
 
         if (!missing.Any(item => item.StartsWith($"{schemaName}.SchemaVersion", StringComparison.Ordinal)))

@@ -3808,7 +3808,10 @@ FROM workable.WorkEntries
         {
             await Execute(connection, $"""
 UPDATE workable.WorkIterationDiagnostics
-SET UpdatedAt = DATEADD(hour, -2, SYSDATETIMEOFFSET())
+SET UpdatedAt = CASE
+    WHEN DiagnosticId = '{abandonedId:D}' THEN DATEADD(day, -2, SYSDATETIMEOFFSET())
+    ELSE DATEADD(hour, -2, SYSDATETIMEOFFSET())
+END
 WHERE DiagnosticId IN ('{abandonedId:D}', '{activeId:D}');
 """);
         }
@@ -3831,6 +3834,73 @@ SELECT COUNT(*) FROM workable.WorkIterationDiagnostics WHERE DiagnosticId = '{ac
         Assert.Equal(0, await Scalar<int>(verification, $"""
 SELECT COUNT(*) FROM workable.WorkDiagnosticCaptureRules WHERE RuleId = '{expiredRuleId:D}';
 """));
+    }
+
+    [Fact]
+    public async Task ExpirationDoesNotDeleteActiveDiagnosticsOwnedByAnotherRepositoryInstance()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string persistenceScope = "diagnostic-cross-instance-expiry";
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var cleanupProvider = this.CreateDiagnosticsProvider(persistenceScope, autoDeploySchema: false);
+        await using var activeProvider = this.CreateDiagnosticsProvider(persistenceScope, autoDeploySchema: false);
+        var cleanupRepository = cleanupProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var activeRepository = activeProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var cleanupContext = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "cleanup-diagnostic-system");
+        var activeContext = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "active-cross-instance-system");
+        await cleanupRepository.Initialize(cleanupContext);
+        await activeRepository.Initialize(activeContext);
+
+        var now = DateTimeOffset.UtcNow;
+        var diagnosticId = Guid.NewGuid();
+        var workerId = WorkerId.New();
+        await activeRepository.BeginIteration(CreateDiagnosticStart(
+            diagnosticId,
+            activeContext,
+            workerId,
+            1,
+            "active.cross-instance",
+            now.AddHours(-2)));
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, $"""
+UPDATE workable.WorkIterationDiagnostics
+SET UpdatedAt = DATEADD(hour, -2, SYSDATETIMEOFFSET())
+WHERE DiagnosticId = '{diagnosticId:D}';
+""");
+        }
+
+        var deleted = await cleanupRepository.DeleteExpired(new WorkExecutionDiagnosticsExpirationRequest(
+            cleanupContext.WorkSystemId,
+            now,
+            now.AddDays(-1)));
+        await activeRepository.CompleteIteration(new WorkExecutionDiagnosticIterationCompletion(
+            diagnosticId,
+            WorkCompletionStatus.Completed,
+            1,
+            now,
+            TimeSpan.FromHours(2),
+            null,
+            false,
+            0,
+            0,
+            []));
+        var artifact = await activeRepository.Get(new WorkExecutionDiagnosticGetRequest(
+            activeContext.WorkSystemId,
+            workerId,
+            1));
+
+        Assert.Equal(0, deleted);
+        Assert.NotNull(artifact);
+        Assert.Equal(WorkCompletionStatus.Completed, artifact.Summary.Status);
     }
 
     [Fact]
@@ -3953,7 +4023,7 @@ WHERE RuleId = '{expiredRule.Id:D}';
                     new WorkActor(definitionName)), 1);
                 return null;
             }
-            catch (Exception exception)
+            catch (SqlException exception)
             {
                 return exception;
             }

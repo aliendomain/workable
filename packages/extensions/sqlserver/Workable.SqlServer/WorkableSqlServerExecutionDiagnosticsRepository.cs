@@ -267,13 +267,11 @@ WITH
         CancellationToken cancellationToken = default)
     {
         _ = this.GetSystemName(request.WorkSystemId);
-        foreach (var active in this.activeDiagnostics)
+        foreach (var active in this.activeDiagnostics.Where(active =>
+            active.Value == request.WorkSystemId &&
+            !request.ActiveDiagnosticIds.Contains(active.Key)))
         {
-            if (active.Value == request.WorkSystemId &&
-                !request.ActiveDiagnosticIds.Contains(active.Key))
-            {
-                this.activeDiagnostics.TryRemove(active.Key, out _);
-            }
+            this.activeDiagnostics.TryRemove(active.Key, out _);
         }
 
         var activeDiagnosticIds = request.ActiveDiagnosticIds
@@ -307,8 +305,7 @@ candidates AS
     FROM {this.diagnosticsTable} WITH (READPAST)
     WHERE PersistenceScope = @PersistenceScope
       AND CompletedAt IS NULL
-      AND (DATEADD(second, RetentionSeconds, UpdatedAt) <= @ExpiresBefore
-           OR UpdatedAt <= @AbandonedBefore)
+      AND UpdatedAt <= @AbandonedBefore
       AND NOT EXISTS
       (
           SELECT 1 FROM active WHERE active.DiagnosticId = {this.diagnosticsTable}.DiagnosticId
@@ -369,7 +366,7 @@ OFFSET 0 ROWS FETCH NEXT @Take ROWS ONLY;
 """;
         AddSummaryScope(command, systemName);
         Add(command, "@DefinitionName", NormalizeOptional(criteria.DefinitionName));
-        Add(command, "@WorkerId", criteria.WorkerId?.Value);
+        Add(command, "@WorkerId", criteria.WorkerId is { } workerId ? workerId.Value : null);
         Add(command, "@CompletedAfter", criteria.CompletedAfter);
         Add(command, "@CompletedBefore", criteria.CompletedBefore);
         Add(command, "@MinimumLogLevel", criteria.MinimumLogLevel is null

@@ -525,6 +525,7 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
 
     private sealed class HttpClientProfileContext
     {
+        private readonly object capturedUriLock = new();
         private bool methodObserved;
         private bool uriObserved;
         private string? method;
@@ -607,7 +608,7 @@ internal sealed class WorkableHttpClientProfilingObserver : IDisposable
 
         private CapturedUri GetCapturedUri()
         {
-            lock (this)
+            lock (this.capturedUriLock)
             {
                 if (!this.uriCaptured)
                 {
