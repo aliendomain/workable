@@ -99,7 +99,7 @@ internal static class WorkableSqlServerCli
         var targets = BuildDeploymentTargets(options, discovery, schemaName);
         if (targets.Count == 0)
         {
-            Console.Error.WriteLine("A connection string is required. Pass --connection-string, set WORKABLE_SQLSERVER_CONNECTION_STRING, or use a project with a literal AddWorkableSqlServerDurableQueue connection string.");
+            Console.Error.WriteLine("A connection string is required. Pass --connection-string, set WORKABLE_SQLSERVER_CONNECTION_STRING, or use a project with a literal AddWorkableSqlServerPersistence or AddWorkableSqlServerDurableQueue connection string.");
             WriteApplyHelp();
             return 1;
         }

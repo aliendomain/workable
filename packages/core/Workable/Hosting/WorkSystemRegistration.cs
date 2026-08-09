@@ -22,4 +22,5 @@ internal sealed record WorkSystemRegistration(
     WorkSystemRetentionConfiguration Retention,
     WorkSystemCapacityConfiguration Capacity,
     WorkSystemIterationStatusConfiguration IterationStatuses,
-    WorkSystemProfilingConfiguration Profiling);
+    WorkSystemProfilingConfiguration Profiling,
+    WorkSystemExecutionDiagnosticsPersistenceConfiguration ExecutionDiagnostics);

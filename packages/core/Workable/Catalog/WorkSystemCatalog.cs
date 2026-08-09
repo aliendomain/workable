@@ -16,6 +16,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategory = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<WorkDefinition>> definitionsByCategoryPath = new Dictionary<string, IReadOnlyList<WorkDefinition>>(StringComparer.OrdinalIgnoreCase);
     private readonly bool persistenceStoreAvailable;
+    private readonly bool executionDiagnosticsRepositoryAvailable;
     private readonly WorkerOptions? implicitDefaultWorkerOptions;
     private readonly WorkSystemAuthorizationConfiguration authorizationConfiguration;
     private readonly ILogger? authorizationLogger;
@@ -27,9 +28,11 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         WorkerOptions? implicitDefaultWorkerOptions = null,
         WorkSystemAuthorizationConfiguration? authorizationConfiguration = null,
         ILogger? authorizationLogger = null,
-        WorkChangeStream? changes = null)
+        WorkChangeStream? changes = null,
+        bool executionDiagnosticsRepositoryAvailable = false)
     {
         this.persistenceStoreAvailable = persistenceStoreAvailable;
+        this.executionDiagnosticsRepositoryAvailable = executionDiagnosticsRepositoryAvailable;
         this.implicitDefaultWorkerOptions = implicitDefaultWorkerOptions;
         this.authorizationConfiguration = authorizationConfiguration ?? WorkSystemAuthorizationConfiguration.Default;
         this.authorizationLogger = authorizationLogger;
@@ -160,10 +163,12 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         var messages = new List<WorkMessage>();
         messages.AddRange(WorkConfigurationValidator.Validate(configuration));
         messages.AddRange(WorkConfigurationValidator.ValidatePersistenceStore(configuration, this.persistenceStoreAvailable));
+        messages.AddRange(WorkConfigurationValidator.ValidateExecutionDiagnosticsRepository(configuration, this.executionDiagnosticsRepositoryAvailable));
         if (options.Configuration is { } optionConfiguration)
         {
             messages.AddRange(WorkConfigurationValidator.Validate(optionConfiguration));
             messages.AddRange(WorkConfigurationValidator.ValidatePersistenceStore(optionConfiguration, this.persistenceStoreAvailable));
+            messages.AddRange(WorkConfigurationValidator.ValidateExecutionDiagnosticsRepository(optionConfiguration, this.executionDiagnosticsRepositoryAvailable));
         }
 
         return messages;

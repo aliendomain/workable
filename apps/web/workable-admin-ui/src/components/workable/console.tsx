@@ -443,6 +443,8 @@ export function WorkableConsole() {
       activeHost?.apiUrl
         ? {
             apiUrl: activeHost.apiUrl,
+            executionDiagnosticsPersistenceAvailable:
+              activeSystem?.capabilities.executionDiagnosticsPersistenceAvailable ?? false,
             realtimeHubPath: activeHost.realtimeEnabled
               ? activeHost.realtimeHubPath ?? null
               : null,
@@ -2326,6 +2328,7 @@ export function WorkableConsole() {
                         {mountedViews.has("definition") && selectedDefinitionId && (
                           <ConsoleViewMount active={visibleView === "definition"}>
                             <DefinitionView
+                              canControlSystem={activeSystem?.access?.canControlSystem ?? false}
                               canViewDiagnostics={activeSystem?.access?.canViewDiagnostics ?? false}
                               connection={hydratedConnection}
                               definitionId={selectedDefinitionId}

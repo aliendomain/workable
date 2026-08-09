@@ -209,6 +209,18 @@ The response includes queue, read-model, retention, concurrency, durability, and
 
 Diagnostics require the system-level `Diagnostics` permission or `SystemAdministrator`.
 
+Persisted iteration evidence and temporary persistence rules use these routes:
+
+```http
+GET /workable/execution-diagnostics
+GET /workable/execution-diagnostics/workers/{workerId}/iterations/{sequence}
+GET /workable/execution-diagnostics/capture-rules
+POST /workable/execution-diagnostics/capture-rules
+DELETE /workable/execution-diagnostics/capture-rules/{ruleId}
+```
+
+They are mapped only when the host registers an `IWorkExecutionDiagnosticsRepository`. GET routes require `ViewDiagnostics`; creating or deleting a capture rule requires `ControlSystem`. Query results contain compact instrumentation summaries; iteration detail contains complete persistent logs and profile JSON. See [Persistent Execution Diagnostics](../guides/configuration/execution-diagnostics-persistence.md).
+
 ## Temporary Full Profile Capture
 
 The built-in API exposes temporary rules that enable full profiling for matching future workers:

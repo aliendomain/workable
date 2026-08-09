@@ -55,13 +55,15 @@ public static class WorkableHttpApiExtensions
             endpoints,
             prefix,
             requireBuiltInSurfaceAccess: true);
-        MapWorkableApiRoutes(group);
+        var executionDiagnosticsAvailable =
+            endpoints.ServiceProvider.GetService<IWorkExecutionDiagnosticsRepository>() is not null;
+        MapWorkableApiRoutes(group, executionDiagnosticsAvailable);
 
         var namedGroup = CreateProtectedGroup(
             endpoints,
             $"{prefix}/systems/{{systemName}}",
             requireBuiltInSurfaceAccess: true);
-        MapWorkableApiRoutes(namedGroup);
+        MapWorkableApiRoutes(namedGroup, executionDiagnosticsAvailable);
 
         return endpoints;
     }
@@ -84,7 +86,9 @@ public static class WorkableHttpApiExtensions
         return group;
     }
 
-    private static void MapWorkableApiRoutes(RouteGroupBuilder group)
+    private static void MapWorkableApiRoutes(
+        RouteGroupBuilder group,
+        bool executionDiagnosticsAvailable)
     {
         WorkableHttpSystemRoutes.Map(group);
         WorkableHttpCatalogRoutes.Map(group);
@@ -93,6 +97,10 @@ public static class WorkableHttpApiExtensions
         WorkableHttpWorkflowRoutes.Map(group);
         WorkableHttpWorkerRoutes.Map(group);
         WorkableHttpProfilingRoutes.Map(group);
+        if (executionDiagnosticsAvailable)
+        {
+            WorkableHttpExecutionDiagnosticsRoutes.Map(group);
+        }
     }
 
     private static void HandleAuthorizationDenied(RouteGroupBuilder group)

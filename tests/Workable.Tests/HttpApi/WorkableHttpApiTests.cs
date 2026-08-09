@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -22,6 +23,218 @@ public sealed class WorkableHttpApiTests
 {
     private static readonly string[] CompletedFailedStates = ["Completed", "Failed"];
     private static readonly string[] CompletedStatuses = ["Completed"];
+
+    [Fact]
+    public async Task MappedHttpRoutesManagePersistentExecutionDiagnosticCaptureRules()
+    {
+        var repository = new TestExecutionDiagnosticsRepository();
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.execution-diagnostics"),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups,
+            configureServices: services => services.AddSingleton<IWorkExecutionDiagnosticsRepository>(repository));
+        var client = host.GetTestClient();
+
+        var createdResponse = await client.PostAsJsonAsync(
+            "/workable/execution-diagnostics/capture-rules",
+            new
+            {
+                definitionName = "http.execution-diagnostics",
+                minimumLogLevel = "Debug",
+                profileCaptureMode = "Bounded",
+                activeForMinutes = 15,
+                artifactRetentionMinutes = 60,
+                description = "Investigate SQL count",
+            });
+        createdResponse.EnsureSuccessStatusCode();
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        jsonOptions.Converters.Add(new JsonStringEnumConverter());
+        var created = await createdResponse.Content.ReadFromJsonAsync<WorkExecutionDiagnosticCaptureRule>(jsonOptions)
+            ?? throw new InvalidOperationException("Expected a persistent execution diagnostic capture rule.");
+        var state = await client.GetFromJsonAsync<WorkableHttpExecutionDiagnosticCaptureState>(
+            "/workable/execution-diagnostics/capture-rules",
+            jsonOptions)
+            ?? throw new InvalidOperationException("Expected persistent execution diagnostic state.");
+
+        Assert.True(state.PersistenceAvailable);
+        Assert.Equal("http.execution-diagnostics", created.DefinitionName);
+        Assert.Equal(LogLevel.Debug, created.MinimumLogLevel);
+        Assert.Equal(WorkProfileCaptureMode.Bounded, created.ProfileCaptureMode);
+        Assert.Equal("user-123", created.CreatedBy.Id);
+        Assert.Equal(created.Id, Assert.Single(state.Rules).Id);
+
+        var invalidQuery = await client.GetAsync("/workable/execution-diagnostics?take=0");
+        Assert.Equal(HttpStatusCode.BadRequest, invalidQuery.StatusCode);
+
+        var deleteResponse = await client.DeleteAsync(
+            $"/workable/execution-diagnostics/capture-rules/{created.Id}");
+        var missingDeleteResponse = await client.DeleteAsync(
+            $"/workable/execution-diagnostics/capture-rules/{created.Id}");
+        var invalidCreateResponse = await client.PostAsJsonAsync(
+            "/workable/execution-diagnostics/capture-rules",
+            new
+            {
+                minimumLogLevel = "Information",
+                activeForMinutes = 0,
+                artifactRetentionMinutes = 60,
+            });
+
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, missingDeleteResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidCreateResponse.StatusCode);
+        Assert.Contains(
+            "workable.execution_diagnostics.capture_rule.invalid",
+            await invalidCreateResponse.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+        Assert.Empty((await client.GetFromJsonAsync<WorkableHttpExecutionDiagnosticCaptureState>(
+            "/workable/execution-diagnostics/capture-rules",
+            jsonOptions))!.Rules);
+    }
+
+    [Fact]
+    public async Task MappedHttpRoutesQueryAndGetPersistentExecutionDiagnostics()
+    {
+        var repository = new TestExecutionDiagnosticsRepository();
+        var workerId = WorkerId.New();
+        var now = DateTimeOffset.Parse("2026-08-08T12:00:00Z");
+        var summary = new WorkExecutionDiagnosticSummary(
+            Guid.NewGuid(),
+            WorkSystemId.New(),
+            null,
+            workerId,
+            7,
+            WorkDefinitionId.New(),
+            "http.execution-diagnostics.read",
+            WorkCompletionStatus.Completed,
+            1,
+            now.AddSeconds(-2),
+            now,
+            TimeSpan.FromSeconds(2),
+            WorkExecutionDiagnosticCaptureSource.TemporaryWorkRule,
+            WorkProfileCaptureMode.Bounded,
+            new WorkExecutionDiagnosticInstrumentationAvailability(true, true),
+            false,
+            1,
+            0,
+            now.AddHours(1),
+            []);
+        repository.QueryResult = new WorkExecutionDiagnosticQueryResult([summary]);
+        repository.Artifact = new WorkExecutionDiagnosticArtifact(
+            summary,
+            [
+                new WorkExecutionDiagnosticLogRecord(
+                    summary.DiagnosticId,
+                    0,
+                    now,
+                    LogLevel.Warning,
+                    "diagnostic.category",
+                    new EventId(17, "DiagnosticEvent"),
+                    "persisted warning",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null),
+            ],
+            null);
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.execution-diagnostics.read"),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups,
+            configureServices: services => services.AddSingleton<IWorkExecutionDiagnosticsRepository>(repository));
+        var client = host.GetTestClient();
+
+        var queryResponse = await client.GetAsync(
+            $"/workable/execution-diagnostics?definitionName=http.execution-diagnostics.read&workerId={workerId.Value:D}&completedAfter=2026-08-08T11%3A00%3A00Z&completedBefore=2026-08-08T13%3A00%3A00Z&minimumLogLevel=Warning&take=25");
+        var artifactResponse = await client.GetAsync(
+            $"/workable/execution-diagnostics/workers/{workerId.Value:D}/iterations/7");
+
+        queryResponse.EnsureSuccessStatusCode();
+        artifactResponse.EnsureSuccessStatusCode();
+        Assert.Contains("http.execution-diagnostics.read", await queryResponse.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.Contains("persisted warning", await artifactResponse.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.Equal("http.execution-diagnostics.read", repository.LastCriteria?.DefinitionName);
+        Assert.Equal(workerId, repository.LastCriteria?.WorkerId);
+        Assert.Equal(LogLevel.Warning, repository.LastCriteria?.MinimumLogLevel);
+        Assert.Equal(25, repository.LastCriteria?.Take);
+        Assert.Equal(workerId, repository.LastGetRequest?.WorkerId);
+        Assert.Equal(7, repository.LastGetRequest?.IterationSequence);
+
+        repository.Artifact = null;
+        var missing = await client.GetAsync(
+            $"/workable/execution-diagnostics/workers/{workerId.Value:D}/iterations/8");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
+
+    [Fact]
+    public async Task PersistentExecutionDiagnosticReadsRequireDiagnosticsAccess()
+    {
+        var repository = new TestExecutionDiagnosticsRepository();
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.execution-diagnostics-read-auth"),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.WorkAdministratorGroups,
+            configureServices: services => services.AddSingleton<IWorkExecutionDiagnosticsRepository>(repository));
+        var client = host.GetTestClient();
+        var workerId = Guid.NewGuid();
+
+        var query = await client.GetAsync("/workable/execution-diagnostics");
+        var get = await client.GetAsync(
+            $"/workable/execution-diagnostics/workers/{workerId:D}/iterations/1");
+        var rules = await client.GetAsync("/workable/execution-diagnostics/capture-rules");
+
+        Assert.Equal(HttpStatusCode.Forbidden, query.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, get.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, rules.StatusCode);
+    }
+
+    [Fact]
+    public async Task PersistentExecutionDiagnosticCaptureMutationsRequireControlSystemAccess()
+    {
+        var repository = new TestExecutionDiagnosticsRepository();
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.execution-diagnostics-control"),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.WorkAdministratorGroups
+                .Concat(TransportAuthorizationTestSupport.DiagnosticsGroups),
+            configureServices: services => services.AddSingleton<IWorkExecutionDiagnosticsRepository>(repository));
+        var client = host.GetTestClient();
+
+        var list = await client.GetAsync("/workable/execution-diagnostics/capture-rules");
+        var create = await client.PostAsJsonAsync(
+            "/workable/execution-diagnostics/capture-rules",
+            new
+            {
+                minimumLogLevel = "Information",
+                activeForMinutes = 15,
+                artifactRetentionMinutes = 60,
+            });
+        var delete = await client.DeleteAsync($"/workable/execution-diagnostics/capture-rules/{Guid.NewGuid()}");
+
+        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, create.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, delete.StatusCode);
+    }
+
+    [Fact]
+    public async Task ExecutionDiagnosticRoutesAreNotMappedWithoutARepository()
+    {
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.execution-diagnostics-unavailable"),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups);
+
+        var response = await host.GetTestClient().GetAsync(
+            "/workable/execution-diagnostics/capture-rules");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
 
     [Fact]
     public async Task HttpApiReturnsAfterAcceptedByDefault()

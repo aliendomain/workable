@@ -133,6 +133,57 @@ public sealed class WorkAuthorizationEvaluatorShould
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RequireControlSystemWhenDefinitionReconfigurationChangesPersistentDiagnostics(
+        bool canControlSystem)
+    {
+        var work = CreatePermissionedWork(
+            "persistent-diagnostics.work",
+            "operators",
+            WorkOperationPermissions.ReconfigureDefinition);
+        var catalog = CreateCatalog(work);
+        var groups = canControlSystem
+            ? Groups("operators", "system-control")
+            : Groups("operators");
+        var systemAuthorization = new WorkSystemAuthorizationEvaluator(
+            WorkSystemAuthorizationConfiguration.Default with
+            {
+                ControlSystemGroups = Groups("system-control"),
+                WorkAdministratorGroups = Groups("operators"),
+            },
+            groups);
+        var evaluator = new WorkAuthorizationEvaluator(
+            catalog,
+            groups,
+            isKnownAuthenticatedUser: true,
+            systemAuthorization);
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("persistence-operator"));
+        var changedConfiguration = WorkConfiguration.Default with
+        {
+            ExecutionDiagnostics = new WorkExecutionDiagnosticsPersistenceConfiguration
+            {
+                IsEnabled = true,
+                Retention = TimeSpan.FromHours(1),
+            },
+        };
+
+        var changed = evaluator.AuthorizeDefinitionReconfiguration(
+            work,
+            new WorkDefinitionReconfiguration(Configuration: changedConfiguration),
+            requestContext);
+        var unchanged = evaluator.AuthorizeDefinitionReconfiguration(
+            work,
+            new WorkDefinitionReconfiguration(Configuration: WorkConfiguration.Default),
+            requestContext);
+
+        Assert.Equal(canControlSystem, changed.IsAllowed);
+        Assert.True(unchanged.IsAllowed);
+    }
+
+    [Theory]
     [InlineData(WorkAction.Start, WorkOperationPermissions.Start)]
     [InlineData(WorkAction.Pause, WorkOperationPermissions.Pause)]
     [InlineData(WorkAction.Cancel, WorkOperationPermissions.Cancel)]

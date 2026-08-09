@@ -47,8 +47,9 @@ services.AddWorkableSystem(builder => builder.AddWork(
         workspace.WriteFile("src/App/Program.cs", """
 using Microsoft.Extensions.DependencyInjection;
 
-var ignoredString = ".QueueDurably().CoordinatePersistently().AddWorkableSqlServerDurableQueue(\"fake\", schemaName: \"ignored\")";
+var ignoredString = ".QueueDurably().CoordinatePersistently().PersistExecutionDiagnostics(TimeSpan.FromHours(1)).AddWorkableSqlServerDurableQueue(\"fake\", schemaName: \"ignored\").AddWorkableSqlServerPersistence(\"fake\")";
 // services.AddWorkableSqlServerDurableQueue("comment", schemaName: "commented");
+// services.AddWorkableSqlServerPersistence("comment", schemaName: "commented");
 /*
 builder.AddWork(
     WorkDefinition.Create("sample", "Sample work."),
@@ -64,6 +65,58 @@ builder.AddWork(
 
         Assert.False(result.RequiresSchema);
         Assert.Empty(result.Features);
+        Assert.Empty(result.Targets);
+    }
+
+    [Fact]
+    public async Task DiscoverExecutionDiagnosticsPersistenceRegistrationAndTarget()
+    {
+        using var workspace = SqlServerCliTestWorkspace.Create();
+        var projectPath = workspace.WriteProject("src/App/App.csproj");
+        workspace.WriteFile("src/App/Program.cs", """
+using Microsoft.Extensions.DependencyInjection;
+using Workable.SqlServer;
+
+new ServiceCollection().AddWorkableSqlServerPersistence(
+    "Server=diagnostics;Database=Workable;Integrated Security=true",
+    schemaName: "telemetry");
+""");
+
+        var result = await WorkableSqlServerSchemaDiscovery.Discover(new WorkableSqlServerSchemaDiscoveryRequest(
+            SolutionPaths: [],
+            ProjectPaths: [projectPath],
+            IncludeTests: false));
+
+        Assert.True(result.RequiresSchema);
+        var feature = Assert.Single(result.Features);
+        Assert.Equal(WorkableSqlServerSchemaFeature.ExecutionDiagnosticsPersistence, feature.Feature);
+        var target = Assert.Single(result.Targets);
+        Assert.Equal("Server=diagnostics;Database=Workable;Integrated Security=true", target.ConnectionString);
+        Assert.Equal("telemetry", target.SchemaName);
+    }
+
+    [Fact]
+    public async Task DiscoverExecutionDiagnosticsWorkConfigurationWithoutARegistrationTarget()
+    {
+        using var workspace = SqlServerCliTestWorkspace.Create();
+        var projectPath = workspace.WriteProject("src/App/App.csproj");
+        workspace.WriteFile("src/App/WorkRegistration.cs", """
+using Workable;
+
+builder.AddWork(
+    WorkDefinition.Create("diagnostic.work"),
+    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+    configuration => configuration.PersistExecutionDiagnostics(TimeSpan.FromHours(2)));
+""");
+
+        var result = await WorkableSqlServerSchemaDiscovery.Discover(new WorkableSqlServerSchemaDiscoveryRequest(
+            SolutionPaths: [],
+            ProjectPaths: [projectPath],
+            IncludeTests: false));
+
+        Assert.True(result.RequiresSchema);
+        var feature = Assert.Single(result.Features);
+        Assert.Equal(WorkableSqlServerSchemaFeature.ExecutionDiagnosticsPersistence, feature.Feature);
         Assert.Empty(result.Targets);
     }
 

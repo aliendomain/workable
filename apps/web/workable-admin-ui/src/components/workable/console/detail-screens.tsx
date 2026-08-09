@@ -123,6 +123,7 @@ import {
 } from "@/components/workable/console/feedback-panel";
 import { WorkProfilePanel } from "@/components/workable/console/work-profile-panel";
 import { ProfilingCaptureRulesCard } from "@/components/workable/console/profiling-capture-rules-card";
+import { ExecutionDiagnosticsCaptureCard } from "@/components/workable/console/execution-diagnostics-capture-card";
 import {
   formatRelativeTime,
   useLiveRelativeTimeNow,
@@ -534,6 +535,7 @@ export function DefinitionsView({
 }
 
 export function DefinitionView({
+  canControlSystem,
   canViewDiagnostics,
   connection,
   definitionId,
@@ -542,6 +544,7 @@ export function DefinitionView({
   onReady,
   refreshToken,
 }: {
+  canControlSystem: boolean;
   canViewDiagnostics: boolean;
   connection: WorkableConnection;
   definitionId: string;
@@ -722,6 +725,12 @@ export function DefinitionView({
             </CardContent>
           </Card>
           <ProfilingCaptureRulesCard
+            canViewDiagnostics={canViewDiagnostics}
+            connection={connection}
+            definitionName={definition.name}
+          />
+          <ExecutionDiagnosticsCaptureCard
+            canControlSystem={canControlSystem}
             canViewDiagnostics={canViewDiagnostics}
             connection={connection}
             definitionName={definition.name}

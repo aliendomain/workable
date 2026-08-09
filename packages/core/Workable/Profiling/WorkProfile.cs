@@ -211,7 +211,7 @@ internal sealed class WorkProfile :
 
     public WorkProfileSnapshot ToSnapshot()
     {
-        Volatile.Write(ref this.finalizing, 1);
+        this.Seal();
         this.WaitForPendingInstrumentationRegistrations();
 
         foreach (var instrumentation in this.pendingInstrumentation.Keys)
@@ -229,6 +229,9 @@ internal sealed class WorkProfile :
             this.root.StartedAt,
             DateTimeOffset.UtcNow);
     }
+
+    public void Seal()
+        => Volatile.Write(ref this.finalizing, 1);
 
     bool IWorkProfilePendingInstrumentationRegistry.IsAcceptingPendingInstrumentation
         => Volatile.Read(ref this.finalizing) == 0;

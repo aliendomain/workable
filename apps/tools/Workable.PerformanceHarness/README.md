@@ -152,6 +152,9 @@ Current benchmark groups:
 - `BaselineAuthorizationResolutionBenchmarks` isolates matching-snapshot session creation, mismatched-snapshot fallback resolution, and access description, including allocation counts for the asynchronous authorization entry points.
 - `BaselineIdempotencyBenchmarks` measures persistence-backed idempotency acceptance, duplicate rejection, and duplicate contention.
 - `BaselineProfilingAdmissionBenchmarks` measures bounded automatic-node omission accounting, temporary full-capture rule misses at zero and maximum active rules, the worst case where 1,000 matching rules have pending exhausted leases, and completion of 1,000 one-shot rules.
+- `BaselineProfilingExecutionBenchmarks` compares complete worker execution with profiling explicitly off, bounded to 10 automatic nodes, and full capture. Each worker performs 100 application profile steps and emits 100 HTTP activities. The synchronous cases leave diagnostic persistence unregistered to isolate profile collection and publication; the persisted cases measure profiling off versus full capture when profile snapshot materialization and persistence run on the diagnostics writer.
+- `BaselineExecutionDiagnosticsLoggingBenchmarks` compares 100 structured logs per work with persistence off, full persistent capture, a 10-log artifact bound, and a deliberately blocked/saturated diagnostics writer.
+- `BaselineExecutionDiagnosticsPolicyBenchmarks` measures cached persistent-capture policy resolution with no rules, 1,000 unrelated rules, and 1,000 matching rules.
 - `BaselineProfilingHttpBenchmarks` measures the process-wide listener tax, admitted and post-cap HTTP activity overhead, concurrent HTTP sampling at the profile cap, and the actual admitted-request path with a 1,000,000-character URI.
 - `BaselineProfilingHttpUriBenchmarks` measures sanitized URI capture at 128, 32,768, and 1,000,000 path characters.
 - `BaselineProfilingFinalizationBenchmarks` measures profile publication with zero, 100, and 1,000 settled pending instrumentation operations.
@@ -197,6 +200,53 @@ A follow-up pass on the same machine measured the remaining automatic-capture ho
 | SQL event check inside an eligible profile | enabled, 1.7145 ns | enabled, 5.4372 ns | adds 3.72 ns only while SQL profiling is active |
 
 The SQL-listener benchmark measures only the provider's `IsEnabled` decision. Its outside-profile improvement is the change from an enabled event to a rejected event: the slightly more expensive predicate prevents SqlClient from constructing and publishing the much larger diagnostic payload. Focused tests assert the enabled/rejected states in addition to the timing benchmark.
+
+The persisted-profile writer refactor was measured on 2026-08-08 on the same Apple M5 Max and .NET 10.0.8 runtime. These cases complete the worker without waiting for profile snapshot materialization, summary construction, or the repository call:
+
+| Persisted diagnostics case | Mean | Allocation |
+| --- | ---: | ---: |
+| Profiling off | 63.03 μs | 82.62 KB |
+| Full profiling, profile queued to writer | 119.09 μs | 315.53 KB |
+
+Full persisted profiling is 1.89x the persisted-off worker latency in this instrumentation-heavy case. The earlier synchronous full-capture case measured 175.18 μs and 411.49 KB, so moving finalization to the writer reduced observed worker completion latency by 32.0% while retaining the complete profile. Allocations reported by this benchmark include concurrent writer work and should be treated as process cost rather than exclusively worker-thread allocation.
+
+The final execution-diagnostics hardening pass added explicit log-path and rule-cache baselines on 2026-08-08:
+
+| Execution diagnostics case | Mean | Median | Allocation |
+| --- | ---: | ---: | ---: |
+| 100 structured logs, persistence off | 158.0 μs | 155.9 μs | 149.04 KB |
+| Persist all 100 structured logs | 314.4 μs | 315.1 μs | 416.97 KB |
+| Stop materializing after the 10-log artifact bound | 200.1 μs | 205.3 μs | 212.58 KB |
+| Blocked writer with bounded queue/drop behavior | 156.8 μs | 161.2 μs | 228.73 KB |
+
+The deliberately saturated writer case is multimodal as the bounded channel transitions from accepting to dropping evidence. Its median is the useful result: repository backpressure does not block work completion. Normal full capture still pays the expected synchronous cost of formatting and taking stable snapshots of accepted logs; after the artifact bound is reached, later log state is not materialized.
+
+| Cached capture-rule resolution | Mean | Allocation |
+| --- | ---: | ---: |
+| No rules | 20.07 ns | 32 B |
+| 1,000 unrelated rules | 20.18 ns | 32 B |
+| 1,000 matching rules | 21.47 ns | 72 B |
+
+The rule count is absent from the steady-state lookup cost because repository rules are periodically refreshed into an immutable index and each definition resolution is cached until the selected rule expires.
+
+A post-hardening verification pass on 2026-08-09 re-ran the diagnostics-critical benchmarks after the final expiration, registration, and SQL index changes:
+
+| Execution diagnostics case | Mean | Median | Allocation |
+| --- | ---: | ---: | ---: |
+| 100 structured logs, persistence off | 151.4 μs | 160.8 μs | 138.75 KB |
+| Persist all 100 structured logs | 309.6 μs | 307.9 μs | 307.95 KB |
+| Stop materializing after the 10-log artifact bound | 178.0 μs | 196.4 μs | 211.45 KB |
+| Blocked writer with bounded queue/drop behavior | 133.0 μs | 115.4 μs | 220.33 KB |
+
+The full-capture allocation fell by 26.1% from the preceding pass while latency remained effectively unchanged. The off, bounded, and saturated cases also remained at or below their recorded allocation. The off, bounded, and saturated timing distributions were multimodal, so their medians and the allocation trend are more useful than small mean differences.
+
+| Cached capture-rule resolution | Mean | Allocation |
+| --- | ---: | ---: |
+| No rules | 20.05 ns | 32 B |
+| 1,000 unrelated rules | 20.08 ns | 32 B |
+| 1,000 matching rules | 21.48 ns | 72 B |
+
+The default persisted-profile run crossed tiered-JIT phases during measured iterations. A diagnostic rerun with 30 warmups and 20 measured iterations produced 56.28 μs / 71.98 KB with profiling off and 128.00 μs / 318.64 KB with full profiling queued to the writer. A controlled comparison that temporarily removed the new queued-completion lifetime protection measured 124.44 μs, with overlapping confidence intervals; the protection was retained because it prevents expiration cleanup from racing a queued completion. Finalizing 1,000 settled pending profile operations measured 84.71 μs / 8.12 KB, within the preceding run's variance.
 
 ### Iteration status stream comparison
 

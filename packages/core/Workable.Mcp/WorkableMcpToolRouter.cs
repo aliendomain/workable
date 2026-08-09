@@ -36,6 +36,8 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
     private const string GetWorkerStatusSummaryTool = "workable_get_worker_status_summary";
     private const string QueryWorkflowRunsTool = "workable_query_workflow_runs";
     private const string GetWorkflowRunTool = "workable_get_workflow_run";
+    private const string QueryExecutionDiagnosticsTool = "workable_query_execution_diagnostics";
+    private const string GetExecutionDiagnosticTool = "workable_get_execution_diagnostic";
     private const string StartWorkflowTool = "workable_start_workflow";
     private const string StartWorkflowRunTool = "workable_start_workflow_run";
     private const string PauseWorkflowTool = "workable_pause_workflow_run";
@@ -76,7 +78,13 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
 
         if (options.IncludeQueryTools)
         {
-            tools.AddRange(CreateQueryTools());
+            var access = await system.DescribeAccess(requestContext, cancellationToken);
+            var includeExecutionDiagnostics = access.CanViewDiagnostics &&
+                system is IWorkExecutionDiagnosticsSystem
+                {
+                    ExecutionDiagnosticsPersistenceAvailable: true,
+                };
+            tools.AddRange(CreateQueryTools(includeExecutionDiagnostics));
         }
 
         if (options.IncludeActionTools)
@@ -205,6 +213,38 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                     }
                     case QueryWorkerIterationsTool:
                         return ToToolResult(await session.Query.WorkerIterations(ToWorkerIterationCriteria(arguments), cancellationToken: cancellationToken));
+                    case QueryExecutionDiagnosticsTool:
+                    {
+                        var diagnostics = await ResolveExecutionDiagnostics(
+                            system,
+                            requestContext,
+                            cancellationToken);
+                        return ToToolResult(await diagnostics.QueryExecutionDiagnostics(
+                            new WorkExecutionDiagnosticCriteria(
+                                system.Id,
+                                DefinitionName: ReadString(arguments, "definitionName") ?? ReadString(arguments, "name"),
+                                WorkerId: ReadGuid(arguments, "workerId") is { } workerId ? new WorkerId(workerId) : null,
+                                CompletedAfter: ReadDateTimeOffset(arguments, "completedAfter"),
+                                CompletedBefore: ReadDateTimeOffset(arguments, "completedBefore"),
+                                MinimumLogLevel: ReadOptionalEnum<Microsoft.Extensions.Logging.LogLevel>(arguments, "minimumLogLevel"),
+                                Take: ReadInt(arguments, "take") ?? 100),
+                            cancellationToken));
+                    }
+                    case GetExecutionDiagnosticTool:
+                    {
+                        var diagnostics = await ResolveExecutionDiagnostics(
+                            system,
+                            requestContext,
+                            cancellationToken);
+                        var workerId = new WorkerId(ReadRequiredGuid(arguments, "workerId"));
+                        var sequence = ReadRequiredLong(arguments, "sequence");
+                        var artifact = await diagnostics.GetExecutionDiagnostic(
+                            new WorkExecutionDiagnosticGetRequest(system.Id, workerId, sequence),
+                            cancellationToken);
+                        return ToToolResult(artifact is null
+                            ? new { found = false, workerId = workerId.Value.ToString("D"), sequence }
+                            : new { found = true, artifact });
+                    }
                     case GetWorkInfoTool:
                     {
                         var name = ReadString(arguments, "name");
@@ -438,9 +478,10 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         })];
     }
 
-    private static IReadOnlyList<WorkableMcpServerToolDescriptor> CreateQueryTools()
-        =>
-        [
+    private static IReadOnlyList<WorkableMcpServerToolDescriptor> CreateQueryTools(bool includeExecutionDiagnostics)
+    {
+        var tools = new List<WorkableMcpServerToolDescriptor>
+        {
             new(
                 QueryWorkersTool,
                 "Find workers by work name, state, subject, concurrency key, identifier, selected configuration flags, time range, and paging. Use this before worker actions when you need the current worker id and revision.",
@@ -519,7 +560,25 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
                 WorkflowRunGetSchema,
                 null,
                 WorkableMcpServerToolKind.Query),
-        ];
+        };
+        if (includeExecutionDiagnostics)
+        {
+            tools.Add(new(
+                QueryExecutionDiagnosticsTool,
+                "Query persisted work iteration logs and profile summaries. Use this to inspect recent executions and count SQL, HTTP, or other instrumented operations without loading full profile trees. Each result reports whether SQL and HTTP client profiling were available for that execution, so distinguish zero operations from unavailable instrumentation.",
+                """{"type":"object","properties":{"definitionName":{"type":"string"},"workerId":{"type":"string"},"completedAfter":{"type":"string","format":"date-time"},"completedBefore":{"type":"string","format":"date-time"},"minimumLogLevel":{"type":"string","enum":["Trace","Debug","Information","Warning","Error","Critical"]},"take":{"type":"integer","minimum":1,"maximum":1000}},"additionalProperties":false}""",
+                null,
+                WorkableMcpServerToolKind.Query));
+            tools.Add(new(
+                GetExecutionDiagnosticTool,
+                "Get persisted logs and the complete profile tree for one worker iteration, including the SQL and HTTP client profiling availability captured for that execution. Use the query tool first when the worker id or iteration sequence is unknown.",
+                """{"type":"object","properties":{"workerId":{"type":"string"},"sequence":{"type":"integer"}},"required":["workerId","sequence"],"additionalProperties":false}""",
+                null,
+                WorkableMcpServerToolKind.Query));
+        }
+
+        return tools;
+    }
 
     private static IReadOnlyList<WorkableMcpServerToolDescriptor> CreateActionTools()
         =>
@@ -741,6 +800,31 @@ public sealed class WorkableMcpToolRouter(IWorkSystemRegistry registry)
         => system is InMemoryWorkSystem inMemory
             ? inMemory.WorkflowRuntime
             : throw new InvalidOperationException("Workflow MCP tools require the built-in Workable system implementation.");
+
+    private static async Task<IWorkExecutionDiagnosticsSystem> ResolveExecutionDiagnostics(
+        IWorkSystem system,
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
+    {
+        if (!(await system.DescribeAccess(requestContext, cancellationToken)).CanViewDiagnostics)
+        {
+            throw new WorkSystemAccessDeniedException(
+                WorkSystemPermission.ViewDiagnostics,
+                system.Id,
+                system.Name);
+        }
+
+        if (system is not IWorkExecutionDiagnosticsSystem
+            {
+                ExecutionDiagnosticsPersistenceAvailable: true,
+            } diagnostics)
+        {
+            throw new InvalidOperationException(
+                "Persistent execution diagnostics are not available for this system.");
+        }
+
+        return diagnostics;
+    }
 
     private static WorkableMcpToolResult ToToolResult(object value, bool isError = false)
     {

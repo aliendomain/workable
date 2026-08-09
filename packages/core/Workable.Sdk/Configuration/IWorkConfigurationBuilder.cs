@@ -49,6 +49,12 @@ public interface IWorkConfigurationBuilder
     IWorkConfigurationBuilder UseLogging(WorkLoggingConfiguration logging);
 
     /// <summary>
+    /// Replaces the persistent execution-diagnostics configuration.
+    /// </summary>
+    IWorkConfigurationBuilder UseExecutionDiagnosticsPersistence(
+        WorkExecutionDiagnosticsPersistenceConfiguration persistence);
+
+    /// <summary>
     /// Replaces the worker retention configuration.
     /// </summary>
     /// <param name="retention">The retention configuration to apply to the registration.</param>
@@ -127,6 +133,19 @@ public interface IWorkConfigurationBuilder
         bool isEnabled = true,
         LogLevel level = LogLevel.Information,
         int maximumBufferedEntries = 100);
+
+    /// <summary>
+    /// Enables persistent logs and profiles for iterations of this work definition.
+    /// </summary>
+    IWorkConfigurationBuilder PersistExecutionDiagnostics(
+        TimeSpan retention,
+        LogLevel minimumLogLevel = LogLevel.Information,
+        WorkProfileCaptureMode profileCaptureMode = WorkProfileCaptureMode.Bounded);
+
+    /// <summary>
+    /// Explicitly disables persistent execution diagnostics for this work definition.
+    /// </summary>
+    IWorkConfigurationBuilder DisableExecutionDiagnosticsPersistence();
 
     /// <summary>
     /// Configures retained-worker cleanup behavior.

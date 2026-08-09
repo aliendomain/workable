@@ -1,6 +1,6 @@
 # Workable SQL Server Integration
 
-`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, persistence-backed concurrency, and durable workflow-run persistence.
+`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, persistence-backed concurrency, durable workflow-run persistence, and expiring execution diagnostics.
 
 See also:
 
@@ -11,11 +11,26 @@ See also:
 
 ## Runtime Configuration
 
+Register SQL Server for persistent iteration logs, profiles, instrumentation summaries, and temporary capture rules without enabling durable queueing:
+
+```csharp
+services.AddWorkableSqlServerPersistence(
+    connectionString,
+    schemaName: "workable",
+    persistenceScope: "my-application");
+```
+
+The persistence scope and Workable system name form the stable query boundary across application restarts. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md) for work/system policy, expiry, background writing, and query surfaces.
+
+Durable queue registration also registers this diagnostics repository:
+
 ```csharp
 services.AddWorkableSqlServerDurableQueue(
     connectionString,
     schemaName: "workable");
 ```
+
+When both methods are used, they must identify the same SQL Server connection and schema. The explicit `AddWorkableSqlServerPersistence(...)` options supply the diagnostics persistence scope regardless of registration order; conflicting stores or conflicting explicit persistence configurations fail during service registration.
 
 By default, the SQL Server integration auto-deploys the required schema when the Workable system starts. Startup fails if SQL Server rejects the deployment because of permissions, connectivity, or another SQL error.
 
@@ -174,7 +189,7 @@ dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema apply --project
 
 `--project` can be repeated, and `--solution` scans all non-test projects in the solution. Pass `--include-tests` when a test project is intentionally part of the scan. `schema apply` also accepts repeated `--connection-string` values so the same detected schema requirements can be deployed to multiple databases.
 
-The scanner looks for durable queue configuration, persistence-backed idempotency configuration, persistence-backed concurrency configuration, and durable workflow configuration. If connection strings or schema names are supplied dynamically through application configuration, pass them to the CLI explicitly; literal `AddWorkableSqlServerDurableQueue("...", schemaName: "...")` values can be discovered automatically.
+The scanner looks for durable queue configuration, persistence-backed idempotency configuration, persistence-backed concurrency configuration, durable workflow configuration, and execution-diagnostics persistence registration or work configuration. If connection strings or schema names are supplied dynamically through application configuration, pass them to the CLI explicitly; literal `AddWorkableSqlServerPersistence("...", schemaName: "...")` and `AddWorkableSqlServerDurableQueue("...", schemaName: "...")` values can be discovered automatically.
 
 You can also provide the connection string with `WORKABLE_SQLSERVER_CONNECTION_STRING`:
 

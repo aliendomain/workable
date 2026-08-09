@@ -4,6 +4,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -230,6 +231,95 @@ INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
 WHERE schemas.name = N'workable'
   AND tables.name = N'WorkEntries'
   AND indexes.name = N'IX_WorkableWorkEntries_Ready';
+"""));
+    }
+
+    [Fact]
+    public async Task SchemaApplyUpgradesExecutionDiagnosticMetadata()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, """
+ALTER TABLE workable.WorkIterationDiagnostics
+DROP CONSTRAINT DF_WorkableWorkIterationDiagnostics_ProfileDropped;
+ALTER TABLE workable.WorkIterationDiagnostics
+DROP COLUMN SqlClientProfilingAvailable, HttpClientProfilingAvailable, ProfileDropped;
+DROP INDEX IX_WorkableWorkIterationDiagnostics_RecentWork
+ON workable.WorkIterationDiagnostics;
+CREATE INDEX IX_WorkableWorkIterationDiagnostics_RecentWork
+ON workable.WorkIterationDiagnostics
+    (PersistenceScope, WorkSystemName, DefinitionName, CompletedAt DESC, DiagnosticId);
+""");
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(this.ConnectionString, SchemaName);
+
+        await using var verification = await this.OpenConnection();
+        Assert.Equal(3, await Scalar<int>(verification, """
+SELECT COUNT(*)
+FROM sys.columns columns
+INNER JOIN sys.tables tables ON tables.object_id = columns.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkIterationDiagnostics'
+  AND columns.name IN (N'SqlClientProfilingAvailable', N'HttpClientProfilingAvailable', N'ProfileDropped');
+"""));
+        Assert.Equal(2, await Scalar<int>(verification, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkIterationDiagnostics'
+  AND indexes.name IN
+  (
+      N'IX_WorkableWorkIterationDiagnostics_ExpirationByScope',
+      N'IX_WorkableWorkIterationDiagnostics_IncompleteByScope'
+  );
+"""));
+        Assert.Equal("WorkSystemName", await Scalar<string>(verification, """
+SELECT columns.name
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+INNER JOIN sys.index_columns index_columns
+    ON index_columns.object_id = indexes.object_id
+   AND index_columns.index_id = indexes.index_id
+   AND index_columns.key_ordinal = 1
+INNER JOIN sys.columns columns
+    ON columns.object_id = index_columns.object_id
+   AND columns.column_id = index_columns.column_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkIterationDiagnostics'
+  AND indexes.name = N'IX_WorkableWorkIterationDiagnostics_RecentWork';
+"""));
+        Assert.Equal(1438, await Scalar<int>(verification, """
+SELECT SUM(columns.max_length)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+INNER JOIN sys.index_columns index_columns
+    ON index_columns.object_id = indexes.object_id
+   AND index_columns.index_id = indexes.index_id
+   AND index_columns.key_ordinal > 0
+INNER JOIN sys.columns columns
+    ON columns.object_id = index_columns.object_id
+   AND columns.column_id = index_columns.column_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkIterationDiagnostics'
+  AND indexes.name = N'IX_WorkableWorkIterationDiagnostics_RecentWork';
+"""));
+        Assert.Equal(7, await Scalar<int>(verification, """
+SELECT Version
+FROM workable.SchemaVersion
+WHERE Component = N'ExecutionDiagnostics';
 """));
     }
 
@@ -3539,6 +3629,691 @@ FROM workable.WorkEntries
         await secondSystem.Stop();
 
         Assert.Equal(["first", "second"], executionOrder);
+    }
+
+    [Fact]
+    public async Task PersistsQueriesAndExpiresExecutionDiagnostics()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var services = new ServiceCollection()
+            .AddSingleton<IHostEnvironment>(new TestHostEnvironment(Environments.Development))
+            .AddWorkableSqlServerPersistence(this.ConnectionString, SchemaName, persistenceScope: "diagnostic-tests")
+            .AddWorkableSqlServerProfiling()
+            .AddWorkableHttpClientProfiling()
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create("sql-diagnostics", "Persists logs and profiles in SQL Server."),
+                (context, _, _) =>
+                {
+                    var logger = context.Services.GetRequiredService<ILogger<WorkableSqlServerPersistenceTests>>();
+                    logger.LogInformation("sql diagnostic {ExecuteCount}", 2);
+                    logger.LogWarning("sql diagnostic complete");
+                    context.Profile.AddInfo("SQL execute count", new { Count = 2 });
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configuration =>
+                {
+                    configuration.ConfigureLogging(level: LogLevel.Warning, maximumBufferedEntries: 1);
+                    configuration.PersistExecutionDiagnostics(TimeSpan.FromHours(1), LogLevel.Information);
+                }));
+        await using var provider = services.BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var repository = provider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        await system.Start();
+
+        var completion = await (await system.Queue.Enqueue("sql-diagnostics")).WaitForCompletion();
+        await StopWithTimeout(system);
+        var query = await repository.Query(new WorkExecutionDiagnosticCriteria(
+            system.Id,
+            MinimumLogLevel: LogLevel.Warning,
+            Take: 10));
+        var summary = Assert.Single(query.Items);
+        var artifact = await repository.Get(new WorkExecutionDiagnosticGetRequest(
+            system.Id,
+            completion.Worker!.Id,
+            completion.Worker.LastIteration!.Sequence));
+        var limitedArtifact = await repository.Get(new WorkExecutionDiagnosticGetRequest(
+            system.Id,
+            completion.Worker.Id,
+            completion.Worker.LastIteration.Sequence,
+            MaximumLogCount: 1));
+
+        Assert.Equal(2, summary.PersistedLogCount);
+        Assert.Equal(0, summary.DroppedLogCount);
+        Assert.False(summary.ProfileDropped);
+        Assert.True(summary.InstrumentationAvailability.SqlClientProfilingAvailable);
+        Assert.True(summary.InstrumentationAvailability.HttpClientProfilingAvailable);
+        Assert.NotNull(artifact);
+        Assert.Equal(2, artifact.Logs.Count);
+        Assert.False(artifact.LogsTruncated);
+        Assert.NotNull(limitedArtifact);
+        Assert.Single(limitedArtifact.Logs);
+        Assert.True(limitedArtifact.LogsTruncated);
+        Assert.NotNull(artifact.Profile);
+        Assert.Contains(summary.Instrumentation, item => item.Instrumentation == WorkProfileInstrumentation.Application);
+        Assert.Contains("\"ExecuteCount\":2", artifact.Logs[0].PropertiesJson, StringComparison.Ordinal);
+        Assert.Empty((await repository.Query(new WorkExecutionDiagnosticCriteria(
+            system.Id,
+            MinimumLogLevel: LogLevel.Critical))).Items);
+
+        var activeDiagnosticId = Guid.NewGuid();
+        await repository.BeginIteration(new WorkExecutionDiagnosticIterationStart(
+            activeDiagnosticId,
+            system.Id,
+            system.Name,
+            WorkerId.New(),
+            99,
+            WorkDefinitionId.New(),
+            "sql-diagnostics-active",
+            DateTimeOffset.UtcNow.AddDays(-2),
+            TimeSpan.FromHours(1),
+            LogLevel.Information,
+            null,
+            new WorkExecutionDiagnosticInstrumentationAvailability(false, false),
+            WorkExecutionDiagnosticCaptureSource.SystemConfiguration));
+        var protectedActive = await repository.DeleteExpired(new WorkExecutionDiagnosticsExpirationRequest(
+            system.Id,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddDays(1))
+        {
+            ActiveDiagnosticIds = new HashSet<Guid> { activeDiagnosticId },
+        });
+        var orphanedDeleted = await repository.DeleteExpired(new WorkExecutionDiagnosticsExpirationRequest(
+            system.Id,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddDays(1)));
+
+        Assert.Equal(0, protectedActive);
+        Assert.Equal(1, orphanedDeleted);
+
+        var deleted = await repository.DeleteExpired(new WorkExecutionDiagnosticsExpirationRequest(
+            system.Id,
+            DateTimeOffset.UtcNow.AddHours(2),
+            DateTimeOffset.UtcNow.AddHours(-1)));
+
+        Assert.Equal(1, deleted);
+        Assert.Empty((await repository.Query(new WorkExecutionDiagnosticCriteria(system.Id))).Items);
+    }
+
+    [Fact]
+    public async Task ExpirationCleansThePersistenceScopeAndProtectsActiveDiagnosticsAcrossSystems()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string persistenceScope = "diagnostic-global-expiry";
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        var retiredContext = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "retired-diagnostic-system");
+        var expiredCompletedId = Guid.Empty;
+        var abandonedId = Guid.NewGuid();
+        var expiredRuleId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        await using (var retiredProvider = this.CreateDiagnosticsProvider(persistenceScope, autoDeploySchema: false))
+        {
+            var retiredRepository = retiredProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+            await retiredRepository.Initialize(retiredContext);
+            expiredCompletedId = (await PersistDiagnostic(
+                retiredRepository,
+                retiredContext,
+                "retired.completed",
+                now.AddHours(-2),
+                LogLevel.Information)).DiagnosticId;
+            await retiredRepository.BeginIteration(CreateDiagnosticStart(
+                abandonedId,
+                retiredContext,
+                WorkerId.New(),
+                2,
+                "retired.abandoned",
+                now.AddHours(-2)));
+            await retiredRepository.UpsertCaptureRule(new WorkExecutionDiagnosticCaptureRule(
+                expiredRuleId,
+                retiredContext.WorkSystemId,
+                retiredContext.WorkSystemName,
+                null,
+                LogLevel.Information,
+                null,
+                TimeSpan.FromHours(1),
+                now.AddMinutes(-10),
+                now.AddMinutes(-1),
+                new WorkActor("expiry-test")), 5);
+        }
+
+        await using var provider = this.CreateDiagnosticsProvider(persistenceScope, autoDeploySchema: false);
+        var repository = provider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var currentContext = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "current-diagnostic-system");
+        var activeContext = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "active-diagnostic-system");
+        await repository.Initialize(currentContext);
+        await repository.Initialize(activeContext);
+        var activeId = Guid.NewGuid();
+        await repository.BeginIteration(CreateDiagnosticStart(
+            activeId,
+            activeContext,
+            WorkerId.New(),
+            1,
+            "active.work",
+            now.AddHours(-2)));
+
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, $"""
+UPDATE workable.WorkIterationDiagnostics
+SET UpdatedAt = DATEADD(hour, -2, SYSDATETIMEOFFSET())
+WHERE DiagnosticId IN ('{abandonedId:D}', '{activeId:D}');
+""");
+        }
+
+        var deleted = await repository.DeleteExpired(new WorkExecutionDiagnosticsExpirationRequest(
+            currentContext.WorkSystemId,
+            now,
+            now.AddDays(-1)));
+        Assert.Equal(2, deleted);
+        Assert.Empty(await repository.ListCaptureRules(currentContext));
+
+        await using var verification = await this.OpenConnection();
+        Assert.Equal(0, await Scalar<int>(verification, $"""
+SELECT COUNT(*) FROM workable.WorkIterationDiagnostics
+WHERE DiagnosticId IN ('{expiredCompletedId:D}', '{abandonedId:D}');
+"""));
+        Assert.Equal(1, await Scalar<int>(verification, $"""
+SELECT COUNT(*) FROM workable.WorkIterationDiagnostics WHERE DiagnosticId = '{activeId:D}';
+"""));
+        Assert.Equal(0, await Scalar<int>(verification, $"""
+SELECT COUNT(*) FROM workable.WorkDiagnosticCaptureRules WHERE RuleId = '{expiredRuleId:D}';
+"""));
+    }
+
+    [Fact]
+    public async Task PersistsUpdatesExpiresAndDeletesExecutionDiagnosticCaptureRules()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await using var provider = this.CreateDiagnosticsProvider("diagnostic-rule-crud");
+        var repository = provider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var context = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "diagnostic-rule-system");
+        await repository.Initialize(context);
+        var now = DateTimeOffset.UtcNow;
+        var ruleId = Guid.NewGuid();
+        var actor = new WorkActor("diagnostic-user", "Diagnostic User", "diagnostic@example.test");
+
+        await repository.UpsertCaptureRule(new WorkExecutionDiagnosticCaptureRule(
+            ruleId,
+            context.WorkSystemId,
+            context.WorkSystemName,
+            "orders.rebuild",
+            LogLevel.Information,
+            WorkProfileCaptureMode.Bounded,
+            TimeSpan.FromHours(2),
+            now,
+            now.AddMinutes(15),
+            actor), 1);
+        await repository.UpsertCaptureRule(new WorkExecutionDiagnosticCaptureRule(
+            ruleId,
+            context.WorkSystemId,
+            context.WorkSystemName,
+            "orders.rebuild",
+            LogLevel.Warning,
+            WorkProfileCaptureMode.Full,
+            TimeSpan.FromHours(3),
+            now,
+            now.AddMinutes(30),
+            actor), 1);
+
+        var persisted = Assert.Single(await repository.ListCaptureRules(context));
+        Assert.Equal(ruleId, persisted.Id);
+        Assert.Equal(LogLevel.Warning, persisted.MinimumLogLevel);
+        Assert.Equal(WorkProfileCaptureMode.Full, persisted.ProfileCaptureMode);
+        Assert.Equal(TimeSpan.FromHours(3), persisted.ArtifactRetention);
+        Assert.Equal(actor, persisted.CreatedBy);
+        Assert.True(await repository.DeleteCaptureRule(
+            new WorkExecutionDiagnosticCaptureRuleDeleteRequest(context.WorkSystemId, ruleId)));
+        Assert.False(await repository.DeleteCaptureRule(
+            new WorkExecutionDiagnosticCaptureRuleDeleteRequest(context.WorkSystemId, ruleId)));
+
+        var expiredRule = new WorkExecutionDiagnosticCaptureRule(
+            Guid.NewGuid(),
+            context.WorkSystemId,
+            context.WorkSystemName,
+            null,
+            LogLevel.Debug,
+            null,
+            TimeSpan.FromHours(1),
+            now.AddMinutes(-10),
+            now.AddMinutes(-1),
+            actor);
+        await repository.UpsertCaptureRule(expiredRule, 1);
+
+        Assert.Empty(await repository.ListCaptureRules(context));
+        await using var connection = await this.OpenConnection();
+        Assert.Equal(0, await Scalar<int>(connection, $"""
+SELECT COUNT(*)
+FROM workable.WorkDiagnosticCaptureRules
+WHERE RuleId = '{expiredRule.Id:D}';
+"""));
+    }
+
+    [Fact]
+    public async Task ConcurrentCaptureRuleWritesEnforceTheDatabaseMaximum()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var firstProvider = this.CreateDiagnosticsProvider("diagnostic-rule-limit", autoDeploySchema: false);
+        await using var secondProvider = this.CreateDiagnosticsProvider("diagnostic-rule-limit", autoDeploySchema: false);
+        var firstRepository = firstProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var secondRepository = secondProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var context = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "diagnostic-rule-limit-system");
+        await Task.WhenAll(firstRepository.Initialize(context), secondRepository.Initialize(context));
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ready = 0;
+        var now = DateTimeOffset.UtcNow;
+
+        async Task<Exception?> TryCreate(
+            IWorkExecutionDiagnosticsRepository repository,
+            string definitionName)
+        {
+            if (Interlocked.Increment(ref ready) == 2)
+            {
+                gate.TrySetResult();
+            }
+
+            await gate.Task;
+            try
+            {
+                await repository.UpsertCaptureRule(new WorkExecutionDiagnosticCaptureRule(
+                    Guid.NewGuid(),
+                    context.WorkSystemId,
+                    context.WorkSystemName,
+                    definitionName,
+                    LogLevel.Information,
+                    null,
+                    TimeSpan.FromHours(1),
+                    now,
+                    now.AddMinutes(10),
+                    new WorkActor(definitionName)), 1);
+                return null;
+            }
+            catch (Exception exception)
+            {
+                return exception;
+            }
+        }
+
+        var outcomes = await Task.WhenAll(
+            Task.Run(() => TryCreate(firstRepository, "rule.one")),
+            Task.Run(() => TryCreate(secondRepository, "rule.two")));
+
+        Assert.Single(outcomes, outcome => outcome is null);
+        var rejected = Assert.IsType<SqlException>(Assert.Single(outcomes, outcome => outcome is not null));
+        Assert.Equal(50010, rejected.Number);
+        Assert.Single(await firstRepository.ListCaptureRules(context));
+    }
+
+    [Fact]
+    public async Task ExecutionDiagnosticsAreIsolatedByPersistenceScopeAndWorkSystemName()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var firstProvider = this.CreateDiagnosticsProvider("diagnostic-scope-a", autoDeploySchema: false);
+        await using var secondProvider = this.CreateDiagnosticsProvider("diagnostic-scope-b", autoDeploySchema: false);
+        var firstRepository = firstProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var secondRepository = secondProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var firstContext = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "shared-diagnostic-system");
+        var secondContext = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "shared-diagnostic-system");
+        var otherSystemContext = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "other-diagnostic-system");
+        await firstRepository.Initialize(firstContext);
+        await firstRepository.Initialize(otherSystemContext);
+        await secondRepository.Initialize(secondContext);
+        var persisted = await PersistDiagnostic(
+            firstRepository,
+            firstContext,
+            "isolated.diagnostic",
+            DateTimeOffset.UtcNow,
+            LogLevel.Warning);
+        var rule = new WorkExecutionDiagnosticCaptureRule(
+            Guid.NewGuid(),
+            firstContext.WorkSystemId,
+            firstContext.WorkSystemName,
+            null,
+            LogLevel.Warning,
+            null,
+            TimeSpan.FromHours(1),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            new WorkActor("scope-user"));
+        await firstRepository.UpsertCaptureRule(rule, 5);
+
+        Assert.Empty((await secondRepository.Query(
+            new WorkExecutionDiagnosticCriteria(secondContext.WorkSystemId))).Items);
+        Assert.Null(await secondRepository.Get(new WorkExecutionDiagnosticGetRequest(
+            secondContext.WorkSystemId,
+            persisted.WorkerId,
+            persisted.Sequence)));
+        Assert.Empty(await secondRepository.ListCaptureRules(secondContext));
+        Assert.Empty((await firstRepository.Query(
+            new WorkExecutionDiagnosticCriteria(otherSystemContext.WorkSystemId))).Items);
+        Assert.Empty(await firstRepository.ListCaptureRules(otherSystemContext));
+        Assert.Single((await firstRepository.Query(
+            new WorkExecutionDiagnosticCriteria(firstContext.WorkSystemId))).Items);
+        Assert.Single(await firstRepository.ListCaptureRules(firstContext));
+    }
+
+    [Fact]
+    public async Task ExecutionDiagnosticQueriesApplyAllFiltersAndStableOrdering()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await using var provider = this.CreateDiagnosticsProvider("diagnostic-query-filters");
+        var repository = provider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var context = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "diagnostic-query-system");
+        await repository.Initialize(context);
+        var now = DateTimeOffset.UtcNow;
+        var oldest = await PersistDiagnostic(
+            repository,
+            context,
+            "alpha.work",
+            now.AddMinutes(-3),
+            LogLevel.Information,
+            sequence: 1);
+        var middle = await PersistDiagnostic(
+            repository,
+            context,
+            "beta.work",
+            now.AddMinutes(-2),
+            LogLevel.Warning,
+            sequence: 2);
+        var newest = await PersistDiagnostic(
+            repository,
+            context,
+            "alpha.work",
+            now.AddMinutes(-1),
+            LogLevel.Critical,
+            sequence: 3);
+
+        var ordered = (await repository.Query(new WorkExecutionDiagnosticCriteria(
+            context.WorkSystemId,
+            Take: 2))).Items;
+        var definitions = (await repository.Query(new WorkExecutionDiagnosticCriteria(
+            context.WorkSystemId,
+            DefinitionName: "alpha.work"))).Items;
+        var worker = (await repository.Query(new WorkExecutionDiagnosticCriteria(
+            context.WorkSystemId,
+            WorkerId: middle.WorkerId))).Items;
+        var completedWindow = (await repository.Query(new WorkExecutionDiagnosticCriteria(
+            context.WorkSystemId,
+            CompletedAfter: now.AddMinutes(-2.5),
+            CompletedBefore: now.AddMinutes(-0.5)))).Items;
+        var severe = (await repository.Query(new WorkExecutionDiagnosticCriteria(
+            context.WorkSystemId,
+            MinimumLogLevel: LogLevel.Error))).Items;
+
+        Assert.Equal([newest.DiagnosticId, middle.DiagnosticId], ordered.Select(item => item.DiagnosticId));
+        Assert.Equal([newest.DiagnosticId, oldest.DiagnosticId], definitions.Select(item => item.DiagnosticId));
+        Assert.Equal(middle.DiagnosticId, Assert.Single(worker).DiagnosticId);
+        Assert.Equal([newest.DiagnosticId, middle.DiagnosticId], completedWindow.Select(item => item.DiagnosticId));
+        Assert.Equal(newest.DiagnosticId, Assert.Single(severe).DiagnosticId);
+    }
+
+    [Fact]
+    public async Task ExecutionDiagnosticWritesAreIdempotentAndExpirationCascades()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await using var provider = this.CreateDiagnosticsProvider("diagnostic-idempotency");
+        var repository = provider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var context = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "diagnostic-idempotency-system");
+        await repository.Initialize(context);
+        var diagnosticId = Guid.NewGuid();
+        var workerId = WorkerId.New();
+        var completedAt = DateTimeOffset.UtcNow;
+        var start = CreateDiagnosticStart(
+            diagnosticId,
+            context,
+            workerId,
+            7,
+            "idempotent.work",
+            completedAt.AddSeconds(-1));
+        var log = new WorkExecutionDiagnosticLogRecord(
+            diagnosticId,
+            0,
+            completedAt,
+            LogLevel.Warning,
+            "idempotent.category",
+            new EventId(27, "IdempotentLog"),
+            "write once",
+            "{\"attempt\":1}",
+            null,
+            null,
+            null,
+            null,
+            null);
+        var completion = new WorkExecutionDiagnosticIterationCompletion(
+            diagnosticId,
+            WorkCompletionStatus.Completed,
+            1,
+            completedAt,
+            TimeSpan.FromSeconds(1),
+            null,
+            false,
+            1,
+            0,
+            [new WorkExecutionInstrumentationSummary("sql-client", 2, 2, 8, 5)]);
+
+        await repository.BeginIteration(start);
+        await repository.BeginIteration(start);
+        await repository.AppendLogs([log]);
+        await repository.AppendLogs([log]);
+        await repository.CompleteIteration(completion);
+        await repository.CompleteIteration(completion);
+
+        var artifact = await repository.Get(new WorkExecutionDiagnosticGetRequest(
+            context.WorkSystemId,
+            workerId,
+            7));
+        Assert.NotNull(artifact);
+        Assert.Single(artifact.Logs);
+        Assert.Single(artifact.Summary.Instrumentation);
+
+        Assert.Equal(1, await repository.DeleteExpired(new WorkExecutionDiagnosticsExpirationRequest(
+            context.WorkSystemId,
+            completedAt.AddHours(2),
+            completedAt.AddHours(-1))));
+        Assert.Null(await repository.Get(new WorkExecutionDiagnosticGetRequest(
+            context.WorkSystemId,
+            workerId,
+            7)));
+        await using var connection = await this.OpenConnection();
+        Assert.Equal(0, await Scalar<int>(connection, $"""
+SELECT
+    (SELECT COUNT(*) FROM workable.WorkIterationDiagnostics WHERE DiagnosticId = '{diagnosticId:D}') +
+    (SELECT COUNT(*) FROM workable.WorkIterationDiagnosticLogs WHERE DiagnosticId = '{diagnosticId:D}') +
+    (SELECT COUNT(*) FROM workable.WorkIterationInstrumentation WHERE DiagnosticId = '{diagnosticId:D}');
+"""));
+    }
+
+    [Fact]
+    public async Task ExecutionDiagnosticsAutoDeployDisabledRejectsAnIncompleteSchema()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, "DROP TABLE workable.WorkIterationInstrumentation;");
+        }
+
+        await using var provider = this.CreateDiagnosticsProvider(
+            "diagnostic-incomplete-schema",
+            autoDeploySchema: false);
+        var repository = provider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+
+        var exception = await Assert.ThrowsAsync<WorkableSqlServerSchemaDeploymentException>(() =>
+            repository.Initialize(new WorkExecutionDiagnosticsInitializationContext(
+                WorkSystemId.New(),
+                "diagnostic-incomplete-schema-system")));
+
+        Assert.Contains("could not validate schema", exception.Message);
+        var validation = Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Contains("WorkIterationInstrumentation", validation.Message);
+    }
+
+    [Fact]
+    public async Task ExecutionDiagnosticsValidationRejectsMissingColumnsIndexesAndOldVersions()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, """
+ALTER TABLE workable.WorkDiagnosticCaptureRules DROP COLUMN CreatedByJson;
+DROP INDEX IX_WorkableWorkIterationDiagnostics_ExpirationByScope
+    ON workable.WorkIterationDiagnostics;
+UPDATE workable.SchemaVersion
+SET Version = 5
+WHERE Component = N'ExecutionDiagnostics';
+""");
+        }
+
+        await using var provider = this.CreateDiagnosticsProvider(
+            "diagnostic-invalid-schema-shape",
+            autoDeploySchema: false);
+        var repository = provider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+
+        var exception = await Assert.ThrowsAsync<WorkableSqlServerSchemaDeploymentException>(() =>
+            repository.Initialize(new WorkExecutionDiagnosticsInitializationContext(
+                WorkSystemId.New(),
+                "diagnostic-invalid-schema-shape-system")));
+
+        var validation = Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Contains("WorkDiagnosticCaptureRules.CreatedByJson", validation.Message);
+        Assert.Contains("IX_WorkableWorkIterationDiagnostics_ExpirationByScope", validation.Message);
+        Assert.Contains("schema version 7 (installed: 5)", validation.Message);
+    }
+
+    private ServiceProvider CreateDiagnosticsProvider(string persistenceScope, bool autoDeploySchema = true)
+        => new ServiceCollection()
+            .AddWorkableSqlServerPersistence(
+                this.ConnectionString,
+                SchemaName,
+                persistenceScope,
+                autoDeploySchema)
+            .BuildServiceProvider();
+
+    private static WorkExecutionDiagnosticIterationStart CreateDiagnosticStart(
+        Guid diagnosticId,
+        WorkExecutionDiagnosticsInitializationContext context,
+        WorkerId workerId,
+        long sequence,
+        string definitionName,
+        DateTimeOffset startedAt)
+        => new(
+            diagnosticId,
+            context.WorkSystemId,
+            context.WorkSystemName,
+            workerId,
+            sequence,
+            WorkDefinitionId.New(),
+            definitionName,
+            startedAt,
+            TimeSpan.FromHours(1),
+            LogLevel.Information,
+            WorkProfileCaptureMode.Bounded,
+            new WorkExecutionDiagnosticInstrumentationAvailability(true, true),
+            WorkExecutionDiagnosticCaptureSource.WorkConfiguration);
+
+    private static async Task<(Guid DiagnosticId, WorkerId WorkerId, long Sequence)> PersistDiagnostic(
+        IWorkExecutionDiagnosticsRepository repository,
+        WorkExecutionDiagnosticsInitializationContext context,
+        string definitionName,
+        DateTimeOffset completedAt,
+        LogLevel logLevel,
+        long sequence = 1)
+    {
+        var diagnosticId = Guid.NewGuid();
+        var workerId = WorkerId.New();
+        await repository.BeginIteration(CreateDiagnosticStart(
+            diagnosticId,
+            context,
+            workerId,
+            sequence,
+            definitionName,
+            completedAt.AddSeconds(-1)));
+        await repository.AppendLogs(
+        [
+            new WorkExecutionDiagnosticLogRecord(
+                diagnosticId,
+                0,
+                completedAt,
+                logLevel,
+                "integration.category",
+                new EventId((int)sequence, "IntegrationLog"),
+                $"{definitionName} completed",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null),
+        ]);
+        await repository.CompleteIteration(new WorkExecutionDiagnosticIterationCompletion(
+            diagnosticId,
+            WorkCompletionStatus.Completed,
+            1,
+            completedAt,
+            TimeSpan.FromSeconds(1),
+            null,
+            false,
+            1,
+            0,
+            []));
+        return (diagnosticId, workerId, sequence);
     }
 
     private IWorkSystem CreateSystem(

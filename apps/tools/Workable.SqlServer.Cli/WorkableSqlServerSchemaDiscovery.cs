@@ -3,7 +3,11 @@ using System.Xml.Linq;
 
 internal static partial class WorkableSqlServerSchemaDiscovery
 {
-    private const string SqlServerRegistrationMethod = "AddWorkableSqlServerDurableQueue";
+    private static readonly string[] SqlServerRegistrationMethods =
+    [
+        "AddWorkableSqlServerDurableQueue",
+        "AddWorkableSqlServerPersistence",
+    ];
 
     public static async Task<WorkableSqlServerSchemaDiscoveryResult> Discover(
         WorkableSqlServerSchemaDiscoveryRequest request)
@@ -127,7 +131,19 @@ internal static partial class WorkableSqlServerSchemaDiscovery
                 projectPath,
                 sourcePath));
         }
+
+        if (ContainsExecutionDiagnosticsPersistenceConfiguration(code))
+        {
+            features.Add(new WorkableSqlServerSchemaFeatureDiscovery(
+                WorkableSqlServerSchemaFeature.ExecutionDiagnosticsPersistence,
+                projectPath,
+                sourcePath));
+        }
     }
+
+    private static bool ContainsExecutionDiagnosticsPersistenceConfiguration(string source)
+        => source.Contains("AddWorkableSqlServerPersistence", StringComparison.Ordinal)
+            || source.Contains(".PersistExecutionDiagnostics(", StringComparison.Ordinal);
 
     private static bool ContainsDurableQueueConfiguration(string source)
         => source.Contains(".QueueDurably(", StringComparison.Ordinal)
@@ -277,39 +293,42 @@ internal static partial class WorkableSqlServerSchemaDiscovery
         List<WorkableSqlServerSchemaTargetDiscovery> targets)
     {
         var code = MaskCSharpTrivia(source);
-        var searchIndex = 0;
-        while (searchIndex < code.Length)
+        foreach (var registrationMethod in SqlServerRegistrationMethods)
         {
-            var methodIndex = code.IndexOf(SqlServerRegistrationMethod, searchIndex, StringComparison.Ordinal);
-            if (methodIndex < 0)
+            var searchIndex = 0;
+            while (searchIndex < code.Length)
             {
-                return;
+                var methodIndex = code.IndexOf(registrationMethod, searchIndex, StringComparison.Ordinal);
+                if (methodIndex < 0)
+                {
+                    break;
+                }
+
+                searchIndex = methodIndex + registrationMethod.Length;
+                if (!TryReadInvocationArguments(source, searchIndex, out var invocation, out var endIndex))
+                {
+                    continue;
+                }
+
+                searchIndex = endIndex;
+                var arguments = SplitTopLevelArguments(invocation);
+                var connectionString = arguments.Count > 0
+                    ? TryReadStringLiteral(arguments[0])
+                    : null;
+                var schemaName = TryReadNamedStringArgument(arguments, "schemaName")
+                    ?? (arguments.Count > 1 ? TryReadStringLiteral(arguments[1]) : null);
+
+                if (connectionString is null && schemaName is null)
+                {
+                    continue;
+                }
+
+                targets.Add(new WorkableSqlServerSchemaTargetDiscovery(
+                    connectionString,
+                    schemaName,
+                    projectPath,
+                    sourcePath));
             }
-
-            searchIndex = methodIndex + SqlServerRegistrationMethod.Length;
-            if (!TryReadInvocationArguments(source, searchIndex, out var invocation, out var endIndex))
-            {
-                continue;
-            }
-
-            searchIndex = endIndex;
-            var arguments = SplitTopLevelArguments(invocation);
-            var connectionString = arguments.Count > 0
-                ? TryReadStringLiteral(arguments[0])
-                : null;
-            var schemaName = TryReadNamedStringArgument(arguments, "schemaName")
-                ?? (arguments.Count > 1 ? TryReadStringLiteral(arguments[1]) : null);
-
-            if (connectionString is null && schemaName is null)
-            {
-                continue;
-            }
-
-            targets.Add(new WorkableSqlServerSchemaTargetDiscovery(
-                connectionString,
-                schemaName,
-                projectPath,
-                sourcePath));
         }
     }
 
@@ -535,4 +554,5 @@ internal enum WorkableSqlServerSchemaFeature
     PersistenceBackedIdempotency,
     PersistenceBackedConcurrency,
     DurableWorkflow,
+    ExecutionDiagnosticsPersistence,
 }

@@ -381,6 +381,20 @@ public interface IWorkSystemBuilder
     IWorkSystemBuilder ConfigureProfiling(int? maximumAutomaticInstrumentationNodes = null);
 
     /// <summary>
+    /// Replaces the system-wide persistent execution-diagnostics configuration.
+    /// </summary>
+    IWorkSystemBuilder UseExecutionDiagnosticsPersistence(
+        WorkSystemExecutionDiagnosticsPersistenceConfiguration persistence);
+
+    /// <summary>
+    /// Enables persistent execution diagnostics for work definitions that do not override the system policy.
+    /// </summary>
+    IWorkSystemBuilder PersistExecutionDiagnostics(
+        TimeSpan retention,
+        Microsoft.Extensions.Logging.LogLevel minimumLogLevel = Microsoft.Extensions.Logging.LogLevel.Information,
+        WorkProfileCaptureMode profileCaptureMode = WorkProfileCaptureMode.Bounded);
+
+    /// <summary>
     /// Adds an exception classifier that applies to work registered in this system.
     /// </summary>
     /// <param name="classifier">The classifier Workable evaluates when work in this system throws.</param>

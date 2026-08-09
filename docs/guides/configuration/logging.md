@@ -6,6 +6,8 @@ For configuration source order, precedence, and override rules that apply to eve
 
 Workable decorates `ILogger<>` in the host service provider. During worker execution, logs written by the executor and by scoped or transient services created for that execution are still forwarded to the host logger. When worker logging is enabled, matching log entries are retained on the worker snapshot and a `worker.log` event is published with the captured log message details.
 
+This retained in-memory buffer is separate from [Persistent Execution Diagnostics](execution-diagnostics-persistence.md). Persistent capture has its own minimum level and can retain eligible entries after the snapshot buffer reaches `MaximumBufferedEntries`.
+
 ## Settings
 
 | Setting | Default | Description |

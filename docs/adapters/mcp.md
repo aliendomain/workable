@@ -107,6 +107,8 @@ Query tools are exposed by default so an MCP client can inspect what is happenin
 - `workable_get_worker_status_summary`
 - `workable_query_workflow_runs`
 - `workable_get_workflow_run`
+- `workable_query_execution_diagnostics`
+- `workable_get_execution_diagnostic`
 
 These tools use the same query engine as the .NET API. They do not mutate workers. Worker queries can filter by selected configuration flags with `recurrenceEnabled`, `concurrencyEnabled`, and `profilingEnabled`.
 
@@ -115,6 +117,8 @@ Use `workable_query_worker_key_types` when the user asks broadly for workers tie
 Use `workable_query_work_iteration_key_types` and `workable_query_work_iteration_keys` when the user asks about actual executions tied to a relationship, such as failed claim work or completed customer work. These tools filter by iteration completion status and return `WorkerIterationOverviewItem` rows.
 
 Use `workable_query_worker_iterations` when the user asks about execution history, recent failures, retry attempts, or recurring activity. It can filter by worker id, work name, category, completion status, subject, concurrency key, identifier, and time range. Use `workable_get_worker_iteration` when the client already has a worker id and iteration sequence and needs the full iteration output, messages, logs, or profile.
+
+Use `workable_query_execution_diagnostics` when an agent needs persisted execution evidence or compact counts grouped by instrumentation source. Use `workable_get_execution_diagnostic` after selecting a worker iteration when the agent needs its complete persistent log stream and profile tree. Before treating a missing profile as “profiling was off,” check `profileDropped`; a true value means profiling was requested but the best-effort writer could not retain it. These two tools require system diagnostics permission. See [Persistent Execution Diagnostics](../guides/configuration/execution-diagnostics-persistence.md).
 
 Use `workable_query_workflow_runs` for operator-style workflow monitoring. It can include final runs, filter by workflow definition name, and control the compact child-worker sample size. Use `workable_get_workflow_run` for one run's step graph and child-worker summaries.
 

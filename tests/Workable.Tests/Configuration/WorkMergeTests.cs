@@ -139,6 +139,13 @@ public sealed class WorkMergeTests
             {
                 Level = LogLevel.Warning,
             },
+            ExecutionDiagnostics = new WorkExecutionDiagnosticsPersistenceConfiguration
+            {
+                IsEnabled = true,
+                Retention = TimeSpan.FromHours(2),
+                MinimumLogLevel = LogLevel.Debug,
+                ProfileCaptureMode = WorkProfileCaptureMode.Full,
+            },
         };
         var overrides = WorkConfiguration.Default with
         {
@@ -179,6 +186,10 @@ public sealed class WorkMergeTests
                 PurgeInterval = TimeSpan.FromSeconds(30),
             },
             Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.InProcess),
+            ExecutionDiagnostics = new WorkExecutionDiagnosticsPersistenceConfiguration
+            {
+                IsEnabled = false,
+            },
         };
 
         var merged = original.MergeRuntimeOptions(overrides);
@@ -190,6 +201,7 @@ public sealed class WorkMergeTests
         Assert.Equal(overrides.FailedWorker, merged.FailedWorker);
         Assert.Equal(overrides.Logging, merged.Logging);
         Assert.Equal(overrides.Retention, merged.Retention);
+        Assert.Equal(original.ExecutionDiagnostics, merged.ExecutionDiagnostics);
         Assert.Equal(original.Invocation, merged.Invocation);
     }
 

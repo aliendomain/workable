@@ -15,7 +15,8 @@ internal sealed class InMemoryWorkSystem :
     IWorkSystemWorkflowClock,
     IWorkSystemShutdownMetadata,
     IWorkSystemCapabilitySource,
-    IWorkProfileCaptureRuleSystem
+    IWorkProfileCaptureRuleSystem,
+    IWorkExecutionDiagnosticsSystem
 {
     private readonly IServiceProvider rootServices;
     private readonly ILogger<InMemoryWorkSystem>? logger;
@@ -38,6 +39,8 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkIterationStatusStream iterationStatuses;
     private readonly WorkChangeStream changes = new();
     private readonly WorkProfileCaptureRuleStore profileCaptureRules = new();
+    private readonly WorkExecutionDiagnosticsCoordinator? executionDiagnostics;
+    private readonly bool executionDiagnosticsRequiredByDefault;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
     private readonly WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
@@ -74,9 +77,11 @@ internal sealed class InMemoryWorkSystem :
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.ShutdownGracePeriod = shutdownGracePeriod;
         var persistenceStore = rootServices.GetService<IWorkPersistenceStore>();
+        var executionDiagnosticsRepository = rootServices.GetService<IWorkExecutionDiagnosticsRepository>();
         var capabilities = new WorkSystemCapabilitiesBuilder
         {
             PersistentCoordinationAvailable = persistenceStore is not null,
+            ExecutionDiagnosticsPersistenceAvailable = executionDiagnosticsRepository is not null,
         };
         foreach (var contributor in rootServices.GetServices<IWorkSystemCapabilityContributor>())
         {
@@ -85,6 +90,19 @@ internal sealed class InMemoryWorkSystem :
 
         this.Capabilities = capabilities.Build();
         this.ProfilingConfiguration = registration.Profiling;
+        this.executionDiagnosticsRequiredByDefault = registration.ExecutionDiagnostics.IsEnabled;
+        this.executionDiagnostics = executionDiagnosticsRepository is null
+            ? null
+            : new WorkExecutionDiagnosticsCoordinator(
+                this.Id,
+                this.Name,
+                executionDiagnosticsRepository,
+                registration.ExecutionDiagnostics,
+                rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.ExecutionDiagnostics"),
+                rootServices.GetService<IHostEnvironment>()?.IsProduction() != false,
+                new WorkExecutionDiagnosticInstrumentationAvailability(
+                    this.Capabilities.SqlProfilingAvailable,
+                    this.Capabilities.HttpClientProfilingAvailable));
         var authorizationLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Authorization");
         this.catalog = new WorkSystemCatalog(
             work,
@@ -92,7 +110,8 @@ internal sealed class InMemoryWorkSystem :
             implicitDefaultWorkerOptions,
             this.authorization,
             authorizationLogger,
-            this.changes);
+            this.changes,
+            this.Capabilities.ExecutionDiagnosticsPersistenceAvailable);
         this.workflows = new WorkflowCatalog(registration.Workflows);
         this.workflowPersistence = new WorkflowPersistenceCoordinator(
             persistenceStore,
@@ -117,7 +136,8 @@ internal sealed class InMemoryWorkSystem :
             this.metrics,
             this.queueDiagnostics,
             this.idempotencyDiagnostics,
-            persistenceStore);
+            persistenceStore,
+            this.executionDiagnostics);
         this.diagnostics = new WorkSystemDiagnostics(this.queueDiagnostics, this.readModel, this.workers);
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
@@ -173,6 +193,8 @@ internal sealed class InMemoryWorkSystem :
 
     public WorkSystemProfilingConfiguration ProfilingConfiguration { get; }
 
+    public bool ExecutionDiagnosticsPersistenceAvailable => this.executionDiagnostics is not null;
+
     internal WorkflowCatalog Workflows => this.workflows;
 
     internal WorkflowRuntime WorkflowRuntime => this.workflowRuntime;
@@ -193,6 +215,43 @@ internal sealed class InMemoryWorkSystem :
 
     public bool DeleteProfileCaptureRule(Guid id)
         => this.profileCaptureRules.Delete(id);
+
+    public Task<WorkExecutionDiagnosticQueryResult> QueryExecutionDiagnostics(
+        WorkExecutionDiagnosticCriteria criteria,
+        CancellationToken cancellationToken)
+        => this.executionDiagnostics?.Query(criteria with { WorkSystemId = this.Id }, cancellationToken)
+            ?? Task.FromResult(new WorkExecutionDiagnosticQueryResult([]));
+
+    public Task<WorkExecutionDiagnosticArtifact?> GetExecutionDiagnostic(
+        WorkExecutionDiagnosticGetRequest request,
+        CancellationToken cancellationToken)
+        => this.executionDiagnostics?.Get(request with { WorkSystemId = this.Id }, cancellationToken)
+            ?? Task.FromResult<WorkExecutionDiagnosticArtifact?>(null);
+
+    public IReadOnlyList<WorkExecutionDiagnosticCaptureRule> GetExecutionDiagnosticCaptureRules()
+        => this.executionDiagnostics?.GetCaptureRules() ?? [];
+
+    public Task<WorkExecutionDiagnosticCaptureRule> CreateExecutionDiagnosticCaptureRule(
+        string? definitionName,
+        LogLevel minimumLogLevel,
+        WorkProfileCaptureMode? profileCaptureMode,
+        TimeSpan activeFor,
+        TimeSpan artifactRetention,
+        WorkActor createdBy,
+        CancellationToken cancellationToken)
+        => this.executionDiagnostics?.CreateCaptureRule(
+                definitionName,
+                minimumLogLevel,
+                profileCaptureMode,
+                activeFor,
+                artifactRetention,
+                createdBy,
+                cancellationToken)
+            ?? Task.FromException<WorkExecutionDiagnosticCaptureRule>(
+                new InvalidOperationException("Persistent execution diagnostics are not available for this system."));
+
+    public Task<bool> DeleteExecutionDiagnosticCaptureRule(Guid id, CancellationToken cancellationToken)
+        => this.executionDiagnostics?.DeleteCaptureRule(id, cancellationToken) ?? Task.FromResult(false);
 
     long IWorkSystemReadModelClock.AppliedSequence => this.readModel.AppliedSequence;
 
@@ -393,6 +452,14 @@ internal sealed class InMemoryWorkSystem :
             }
 
             this.catalog.Freeze();
+            if (this.executionDiagnostics is null)
+            {
+                this.EnsureExecutionDiagnosticsRepositoryNotRequired();
+            }
+            else
+            {
+                await this.executionDiagnostics.Initialize([.. this.catalog.Definitions], cancellationToken);
+            }
             await this.workflowPersistence.Initialize(this.workflows.Definitions, cancellationToken);
             this.workflowRuntime.StartExecutionLifetime();
             await this.workers.StartDispatching(cancellationToken);
@@ -492,6 +559,12 @@ internal sealed class InMemoryWorkSystem :
             await TryCleanupAsync(
                 async () => result = await this.workers.StopDispatching(requestContext, cancellationToken),
                 cleanupExceptions);
+            if (this.executionDiagnostics is not null)
+            {
+                await TryCleanupAsync(
+                    () => this.executionDiagnostics.Flush(cancellationToken),
+                    cleanupExceptions);
+            }
             await TryCleanupAsync(
                 () => this.workflowRuntime.WaitForExecutions(cancellationToken),
                 cleanupExceptions);
@@ -580,11 +653,26 @@ internal sealed class InMemoryWorkSystem :
         await this.StopCore(
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         this.workers.Dispose();
+        if (this.executionDiagnostics is not null)
+        {
+            await this.executionDiagnostics.DisposeAsync();
+        }
         this.lifecycleLock.Dispose();
         await this.readModel.DisposeAsync();
         await this.events.DisposeAsync();
         await this.iterationStatuses.DisposeAsync();
         await this.changes.DisposeAsync();
+    }
+
+    private void EnsureExecutionDiagnosticsRepositoryNotRequired()
+    {
+        var required = this.executionDiagnosticsRequiredByDefault ||
+            this.catalog.Definitions.Any(definition => definition.Configuration.ExecutionDiagnostics.IsEnabled == true);
+        if (required)
+        {
+            throw new InvalidOperationException(
+                "Persistent execution diagnostics require a registered IWorkExecutionDiagnosticsRepository.");
+        }
     }
 
     private async Task DefineRuntimeWork(CancellationToken cancellationToken)

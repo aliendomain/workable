@@ -29,6 +29,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
   - [Transient Retry Configuration](guides/configuration/transient-retry.md): transient exception classification and retry behavior.
   - [Failed-Worker Handling Configuration](guides/configuration/failed-worker.md): opt into auto-cancel for failed non-recurring workers and control runtime overrides.
   - [Logging Configuration](guides/configuration/logging.md): worker-scoped logging behavior.
+  - [Persistent Execution Diagnostics](guides/configuration/execution-diagnostics-persistence.md): expiring iteration logs and profiles for developer and agent analysis.
   - [Retention Configuration](guides/configuration/retention.md): automatic purge timing and final-worker count cleanup.
   - [System Settings](guides/configuration/system-settings.md): startup-only limits for admission capacity, retained final workers, iteration status replay, payload size, and profiling.
   - [Concurrency Configuration](guides/configuration/concurrency.md): capacity limits by definition, subject, or concurrency key.

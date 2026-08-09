@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Workable;
 internal sealed class WorkSystemBuilder(IServiceCollection services, string? name) : IWorkSystemBuilder
@@ -23,6 +24,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private WorkSystemCapacityConfiguration capacity = WorkSystemCapacityConfiguration.Default;
     private WorkSystemIterationStatusConfiguration iterationStatuses = WorkSystemIterationStatusConfiguration.Default;
     private WorkSystemProfilingConfiguration profiling = WorkSystemProfilingConfiguration.Default;
+    private WorkSystemExecutionDiagnosticsPersistenceConfiguration executionDiagnostics =
+        WorkSystemExecutionDiagnosticsPersistenceConfiguration.Default;
 
     public IWorkSystemBuilder WithWorkDefaults(
         Action<IWorkDefinitionBuilder> register,
@@ -292,6 +295,27 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         return this;
     }
 
+    public IWorkSystemBuilder UseExecutionDiagnosticsPersistence(
+        WorkSystemExecutionDiagnosticsPersistenceConfiguration persistence)
+    {
+        ArgumentNullException.ThrowIfNull(persistence);
+        ValidateExecutionDiagnostics(persistence);
+        this.executionDiagnostics = persistence;
+        return this;
+    }
+
+    public IWorkSystemBuilder PersistExecutionDiagnostics(
+        TimeSpan retention,
+        LogLevel minimumLogLevel = LogLevel.Information,
+        WorkProfileCaptureMode profileCaptureMode = WorkProfileCaptureMode.Bounded)
+        => this.UseExecutionDiagnosticsPersistence(new WorkSystemExecutionDiagnosticsPersistenceConfiguration
+        {
+            IsEnabled = true,
+            Retention = retention,
+            MinimumLogLevel = minimumLogLevel,
+            ProfileCaptureMode = profileCaptureMode,
+        });
+
     public IWorkSystemBuilder IncludeContributedWork(bool enabled = true)
     {
         this.includeContributedWork = enabled;
@@ -410,7 +434,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             this.retention,
             this.capacity,
             this.iterationStatuses,
-            this.profiling);
+            this.profiling,
+            this.executionDiagnostics);
 
     private static WorkflowDefinition ApplyWorkflowAuthorization(
         WorkflowDefinition definition,
@@ -534,6 +559,78 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         if (profiling.MaximumAutomaticInstrumentationNodes <= 0)
         {
             throw new InvalidOperationException("System profiling maximum automatic instrumentation nodes must be greater than zero.");
+        }
+    }
+
+    private static void ValidateExecutionDiagnostics(
+        WorkSystemExecutionDiagnosticsPersistenceConfiguration persistence)
+    {
+        if (persistence.Retention < WorkExecutionDiagnosticsPersistenceConfiguration.MinimumRetention ||
+            persistence.Retention > WorkExecutionDiagnosticsPersistenceConfiguration.MaximumRetention)
+        {
+            throw new InvalidOperationException(
+                "System execution diagnostics retention must be between one minute and 30 days.");
+        }
+
+        if (persistence.IsEnabled &&
+            (persistence.MinimumLogLevel == LogLevel.None || !Enum.IsDefined(persistence.MinimumLogLevel)))
+        {
+            throw new InvalidOperationException(
+                "Enabled system execution diagnostics require a persistent log level other than None.");
+        }
+
+        if (persistence.IsEnabled && !Enum.IsDefined(persistence.ProfileCaptureMode))
+        {
+            throw new InvalidOperationException(
+                "Enabled system execution diagnostics require a valid profile capture mode.");
+        }
+
+        if (persistence.ChannelCapacity <= 0 || persistence.ControlOperationCapacity <= 0)
+        {
+            throw new InvalidOperationException("Execution diagnostics evidence and control capacities must be greater than zero.");
+        }
+
+        if (persistence.MaximumPendingLogBytes <= 0 ||
+            persistence.MaximumLogsPerIteration <= 0 ||
+            persistence.MaximumLogBytesPerIteration <= 0 ||
+            persistence.MaximumLogMessageLength <= 0 ||
+            persistence.MaximumLogPropertiesLength <= 0 ||
+            persistence.MaximumExceptionTextLength <= 0)
+        {
+            throw new InvalidOperationException("Execution diagnostics log bounds must be greater than zero.");
+        }
+
+        if (persistence.MaximumPendingProfiles <= 0 ||
+            persistence.MaximumProfileNodeCount <= 0 ||
+            persistence.MaximumProfileJsonLength <= 0)
+        {
+            throw new InvalidOperationException(
+                "Execution diagnostics profile bounds must be greater than zero.");
+        }
+
+        if (persistence.MaximumCaptureRules <= 0)
+        {
+            throw new InvalidOperationException("Execution diagnostics maximum capture rules must be greater than zero.");
+        }
+
+        if (persistence.LogBatchSize <= 0 || persistence.LogBatchSize > persistence.ChannelCapacity)
+        {
+            throw new InvalidOperationException(
+                "Execution diagnostics log batch size must be greater than zero and no larger than channel capacity.");
+        }
+
+        if (persistence.CleanupInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("Execution diagnostics cleanup interval must be greater than zero.");
+        }
+
+
+        if (persistence.CleanupBatchSize <= 0 ||
+            persistence.MaximumCleanupBatchesPerInterval <= 0 ||
+            persistence.CleanupBacklogDelay < TimeSpan.Zero)
+        {
+            throw new InvalidOperationException(
+                "Execution diagnostics cleanup bounds must be greater than zero and the backlog delay must not be negative.");
         }
     }
 }
