@@ -6,6 +6,7 @@ See also:
 
 - [Documentation Index](../../../docs/README.md)
 - [Getting Started](../../../docs/guides/getting-started.md)
+- [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md)
 - [Queue Durability Configuration](../../../docs/guides/configuration/queue-durability.md)
 - [Configuration Interactions](../../../docs/guides/configuration/interactions.md)
 
@@ -20,7 +21,7 @@ services.AddWorkableSqlServerPersistence(
     persistenceScope: "my-application");
 ```
 
-The persistence scope and Workable system name form the stable query boundary across application restarts. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md) for work/system policy, expiry, background writing, and query surfaces.
+This is host-level service registration: one SQL connection/schema pair supplies the repository for all Workable systems in the service collection. The persistence scope and logical Workable system name form each system's stable, isolated query boundary across application restarts. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md) for work/system policy, expiry, background writing, and query surfaces.
 
 Durable queue registration also registers this diagnostics repository:
 
@@ -32,7 +33,7 @@ services.AddWorkableSqlServerDurableQueue(
 
 When both methods are used, they must identify the same SQL Server connection and schema. The explicit `AddWorkableSqlServerPersistence(...)` options supply the diagnostics persistence scope regardless of registration order; conflicting stores or conflicting explicit persistence configurations fail during service registration.
 
-By default, the SQL Server integration auto-deploys the required schema when the Workable system starts. Startup fails if SQL Server rejects the deployment because of permissions, connectivity, or another SQL error.
+By default, the SQL Server integration auto-deploys the required schema when the Workable system starts. Execution diagnostics uses the shared `SchemaVersion` table with its own component version, separate from queue durability and workflow persistence. Startup fails if SQL Server rejects the deployment because of permissions, connectivity, or another SQL error.
 
 Disable runtime schema deployment when schema changes are managed outside the app:
 

@@ -618,6 +618,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         }
         catch (OperationCanceledException) when (this.lifetime.IsCancellationRequested)
         {
+            return;
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or StackOverflowException))
         {
@@ -652,6 +653,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         }
         catch (OperationCanceledException) when (this.lifetime.IsCancellationRequested)
         {
+            return;
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or StackOverflowException))
         {
@@ -723,6 +725,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         }
         catch (OperationCanceledException) when (this.lifetime.IsCancellationRequested)
         {
+            return;
         }
     }
 
@@ -975,6 +978,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+            return;
         }
     }
 
