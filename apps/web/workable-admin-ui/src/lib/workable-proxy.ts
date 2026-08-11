@@ -125,7 +125,10 @@ export async function proxyWorkableRequest(
       );
     }
 
-    const responseBody = await response.arrayBuffer();
+    const responseBody =
+      request.method === "HEAD" || isNullBodyStatus(response.status)
+        ? null
+        : await response.arrayBuffer();
     return new Response(responseBody, {
       status: response.status,
       statusText: response.statusText,
@@ -272,4 +275,8 @@ function createSafeProxyContentType(contentType: string | null) {
   }
 
   return "text/plain; charset=utf-8";
+}
+
+function isNullBodyStatus(status: number) {
+  return status === 204 || status === 205 || status === 304;
 }
