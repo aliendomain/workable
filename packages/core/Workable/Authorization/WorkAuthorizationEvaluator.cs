@@ -61,13 +61,13 @@ internal sealed class WorkAuthorizationEvaluator(
     public IReadOnlyList<WorkDefinition> OperableDefinitions()
         => [.. catalog.Definitions.Where(this.CanOperate)];
 
-    public IReadOnlySet<string> OperableDefinitionNamesFor(WorkAction action)
+    public IReadOnlySet<WorkDefinitionId> OperableDefinitionIdsFor(WorkAction action)
         => systemAuthorization?.HasOperateAllWorkAccess() == true
-            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            ? new HashSet<WorkDefinitionId>()
             : catalog.RegisteredWork
                 .Where(registeredWork => this.CanAttempt(registeredWork, ToPermission(action)))
-                .Select(registeredWork => registeredWork.Definition.Name)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                .Select(registeredWork => registeredWork.Definition.Id)
+                .ToHashSet();
 
     public WorkOperateAuthorizationDecision AuthorizeQueue(
         RegisteredWork registeredWork,

@@ -609,17 +609,15 @@ public sealed class WorkableRealtimeHub(
                 system.Name,
                 requestContext.Actor,
                 groups,
-                readableDefinitionIds: null),
+                readableDefinitionIds: null,
+                isAuthenticated: requestContext.IsAuthenticated),
         };
         await EnsureCanAccessNamedSystem(system, systemName, authorizationContext);
         var session = await system.CreateSession(authorizationContext, this.Context.ConnectionAborted);
 
         return (
-            WorkAuthorizationSnapshot.CreateForSystem(
-                system.Name,
-                requestContext.Actor,
-                groups,
-                session.Catalog.Definitions.Select(static definition => definition.Id)),
+            (session as WorkSystemSession)?.RequestContext.Authorization
+                ?? throw new InvalidOperationException("Authorized Workable sessions require a canonical authorization snapshot."),
             session);
     }
 

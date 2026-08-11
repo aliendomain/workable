@@ -28,23 +28,17 @@ BEGIN
         WorkerId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkEntries PRIMARY KEY,
         WorkSystemName nvarchar(256) NOT NULL,
         DefinitionName nvarchar(450) NOT NULL,
-        IsDurableQueued bit NOT NULL CONSTRAINT DF_WorkableWorkEntries_IsDurableQueued DEFAULT (0),
         HasIdempotencyReservation bit NOT NULL CONSTRAINT DF_WorkableWorkEntries_HasIdempotencyReservation DEFAULT (0),
-        HasPersistentConcurrency bit NOT NULL CONSTRAINT DF_WorkableWorkEntries_HasPersistentConcurrency DEFAULT (0),
         SubjectType nvarchar(256) NULL,
         SubjectValue nvarchar(450) NULL,
-        ConcurrencyType nvarchar(256) NULL,
-        ConcurrencyValue nvarchar(450) NULL,
         InputJson nvarchar(max) NULL,
         OptionsJson nvarchar(max) NULL,
         ConfigurationJson nvarchar(max) NULL,
         OriginJson nvarchar(max) NOT NULL,
+        WorkflowProvenanceJson nvarchar(max) NULL,
         CreatedAt datetimeoffset NOT NULL,
-        ClaimedBy nvarchar(450) NULL,
-        ClaimedAt datetimeoffset NULL,
-        LeaseId nvarchar(64) NULL,
-        LeaseExpiresAt datetimeoffset NULL,
-        ConcurrencyBucket nvarchar(32) NULL
+        FailedAt datetimeoffset NULL,
+        FailureMessagesJson nvarchar(max) NULL
     );
 END
 GO
@@ -56,6 +50,7 @@ BEGIN
         WorkerId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkQueueEntries PRIMARY KEY,
         WorkSystemName nvarchar(256) NOT NULL,
         DefinitionName nvarchar(450) NOT NULL,
+        Disposition nvarchar(32) NOT NULL CONSTRAINT DF_WorkableWorkQueueEntries_Disposition DEFAULT (N'Ready'),
         HasPersistentConcurrency bit NOT NULL CONSTRAINT DF_WorkableWorkQueueEntries_HasPersistentConcurrency DEFAULT (0),
         ConcurrencyScope nvarchar(64) NULL,
         ConcurrencyMaximumCapacity int NULL,
@@ -64,8 +59,6 @@ BEGIN
         ConcurrencyType nvarchar(256) NULL,
         ConcurrencyValue nvarchar(450) NULL,
         CreatedAt datetimeoffset NOT NULL,
-        ClaimedBy nvarchar(450) NULL,
-        ClaimedAt datetimeoffset NULL,
         LeaseId nvarchar(64) NULL,
         LeaseExpiresAt datetimeoffset NULL,
         ConcurrencyBucket nvarchar(32) NULL
@@ -94,8 +87,7 @@ BEGIN
         PendingControlRequestContextJson nvarchar(max) NULL,
         CreatedAt datetimeoffset NOT NULL,
         StartedAt datetimeoffset NULL,
-        CompletedAt datetimeoffset NULL,
-        UpdatedAt datetimeoffset NOT NULL
+        CompletedAt datetimeoffset NULL
     );
 END
 GO
@@ -375,138 +367,118 @@ END
 GO
 
 IF OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
-   AND COL_LENGTH(N'workable.WorkEntries', N'HasPersistentConcurrency') IS NULL
+   AND COL_LENGTH(N'workable.WorkEntries', N'FailedAt') IS NULL
 BEGIN
-    ALTER TABLE [workable].[WorkEntries]
-        ADD HasPersistentConcurrency bit NOT NULL
-            CONSTRAINT DF_WorkableWorkEntries_HasPersistentConcurrency DEFAULT (0);
+    ALTER TABLE [workable].[WorkEntries] ADD FailedAt datetimeoffset NULL;
+END
+GO
 
-    IF COL_LENGTH(N'workable.WorkEntries', N'IsDurableQueued') IS NOT NULL
-       AND COL_LENGTH(N'workable.WorkEntries', N'ConfigurationJson') IS NOT NULL
-    BEGIN
-        EXEC(N'UPDATE [workable].[WorkEntries]
-        SET HasPersistentConcurrency = CASE
-            WHEN JSON_VALUE(ConfigurationJson, ''$.coordination.concurrency.isEnabled'') = ''true''
-             AND JSON_VALUE(ConfigurationJson, ''$.coordination.storage'') = ''Persistent''
-            THEN 1
-            ELSE 0
-        END
-        WHERE IsDurableQueued = 1;');
-    END
+IF OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
+   AND COL_LENGTH(N'workable.WorkEntries', N'FailureMessagesJson') IS NULL
+BEGIN
+    ALTER TABLE [workable].[WorkEntries] ADD FailureMessagesJson nvarchar(max) NULL;
+END
+GO
+
+IF OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
+   AND COL_LENGTH(N'workable.WorkEntries', N'WorkflowProvenanceJson') IS NULL
+BEGIN
+    ALTER TABLE [workable].[WorkEntries] ADD WorkflowProvenanceJson nvarchar(max) NULL;
 END
 GO
 
 IF OBJECT_ID(N'workable.WorkQueueEntries', N'U') IS NOT NULL
-   AND OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
-   AND COL_LENGTH(N'workable.WorkEntries', N'IsDurableQueued') IS NOT NULL
+   AND COL_LENGTH(N'workable.WorkQueueEntries', N'Disposition') IS NULL
 BEGIN
-    EXEC(N'
-    INSERT INTO [workable].[WorkQueueEntries]
-    (
-        WorkerId,
-        WorkSystemName,
-        DefinitionName,
-        HasPersistentConcurrency,
-        ConcurrencyScope,
-        ConcurrencyMaximumCapacity,
-        SubjectType,
-        SubjectValue,
-        ConcurrencyType,
-        ConcurrencyValue,
-        CreatedAt,
-        ClaimedBy,
-        ClaimedAt,
-        LeaseId,
-        LeaseExpiresAt,
-        ConcurrencyBucket
-    )
-    SELECT entries.WorkerId,
-           entries.WorkSystemName,
-           entries.DefinitionName,
-           entries.HasPersistentConcurrency,
-           CASE
-               WHEN entries.HasPersistentConcurrency = 1
-               THEN JSON_VALUE(entries.ConfigurationJson, ''$.coordination.concurrency.scope'')
-               ELSE NULL
-           END,
-           CASE
-               WHEN entries.HasPersistentConcurrency = 1
-               THEN TRY_CONVERT(int, JSON_VALUE(entries.ConfigurationJson, ''$.coordination.concurrency.maximumCapacity''))
-               ELSE NULL
-           END,
-           entries.SubjectType,
-           entries.SubjectValue,
-           entries.ConcurrencyType,
-           entries.ConcurrencyValue,
-           entries.CreatedAt,
-           entries.ClaimedBy,
-           entries.ClaimedAt,
-           entries.LeaseId,
-           entries.LeaseExpiresAt,
-           entries.ConcurrencyBucket
-    FROM [workable].[WorkEntries] entries
-    WHERE entries.IsDurableQueued = 1
-      AND NOT EXISTS
+    ALTER TABLE [workable].[WorkQueueEntries]
+        ADD Disposition nvarchar(32) NOT NULL
+            CONSTRAINT DF_WorkableWorkQueueEntries_Disposition DEFAULT (N'Ready');
+END
+GO
+
+IF OBJECT_ID(N'workable.WorkQueueEntries', N'U') IS NOT NULL
+   AND COL_LENGTH(N'workable.WorkQueueEntries', N'Disposition') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1
+       FROM sys.indexes indexes
+       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+       WHERE schemas.name = N'workable'
+         AND tables.name = N'WorkQueueEntries'
+         AND indexes.name = N'IX_WorkableWorkQueueEntries_Failed')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkQueueEntries_Failed ON [workable].[WorkQueueEntries] (WorkSystemName, LeaseExpiresAt, CreatedAt, WorkerId) WHERE Disposition = N''Failed'';');
+END
+GO
+
+IF OBJECT_ID(N'workable.WorkQueueEntries', N'U') IS NOT NULL
+   AND COL_LENGTH(N'workable.WorkQueueEntries', N'Disposition') IS NOT NULL
+BEGIN
+    DROP INDEX IF EXISTS IX_WorkableWorkQueueEntries_Ready ON [workable].[WorkQueueEntries];
+    EXEC(N'CREATE INDEX IX_WorkableWorkQueueEntries_Ready ON [workable].[WorkQueueEntries] (WorkSystemName, DefinitionName, CreatedAt, WorkerId) INCLUDE (LeaseExpiresAt, HasPersistentConcurrency) WHERE Disposition = N''Ready'';');
+
+    DROP INDEX IF EXISTS IX_WorkableWorkQueueEntries_PersistentConcurrencyReady ON [workable].[WorkQueueEntries];
+    EXEC(N'CREATE INDEX IX_WorkableWorkQueueEntries_PersistentConcurrencyReady ON [workable].[WorkQueueEntries] (WorkSystemName, DefinitionName, CreatedAt, WorkerId) INCLUDE (LeaseExpiresAt, HasPersistentConcurrency, ConcurrencyScope, ConcurrencyMaximumCapacity, SubjectType, SubjectValue, ConcurrencyType, ConcurrencyValue) WHERE Disposition = N''Ready'' AND HasPersistentConcurrency = 1;');
+END
+GO
+
+IF OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
+BEGIN
+    DROP INDEX IF EXISTS IX_WorkableWorkEntries_Ready ON [workable].[WorkEntries];
+    DROP INDEX IF EXISTS IX_WorkableWorkEntries_PersistentConcurrencyReady ON [workable].[WorkEntries];
+    DROP INDEX IF EXISTS IX_WorkableWorkEntries_Concurrency ON [workable].[WorkEntries];
+
+    DECLARE @DefaultConstraints nvarchar(max);
+    SELECT @DefaultConstraints = STRING_AGG(QUOTENAME(defaults.name), N', ')
+    FROM sys.default_constraints defaults
+    INNER JOIN sys.columns columns
+        ON columns.object_id = defaults.parent_object_id
+       AND columns.column_id = defaults.parent_column_id
+    WHERE defaults.parent_object_id = OBJECT_ID(N'workable.WorkEntries')
+      AND columns.name IN (N'IsDurableQueued', N'HasPersistentConcurrency');
+
+    IF @DefaultConstraints IS NOT NULL
+        EXEC(N'ALTER TABLE [workable].[WorkEntries] DROP CONSTRAINT ' + @DefaultConstraints + N';');
+
+    DECLARE @DeadColumns nvarchar(max);
+    SELECT @DeadColumns = STRING_AGG(QUOTENAME(columns.name), N', ')
+    FROM sys.columns columns
+    WHERE columns.object_id = OBJECT_ID(N'workable.WorkEntries')
+      AND columns.name IN
       (
-          SELECT 1
-          FROM [workable].[WorkQueueEntries] queue
-          WHERE queue.WorkerId = entries.WorkerId
+          N'IsDurableQueued',
+          N'HasPersistentConcurrency',
+          N'ConcurrencyType',
+          N'ConcurrencyValue',
+          N'ClaimedBy',
+          N'ClaimedAt',
+          N'LeaseId',
+          N'LeaseExpiresAt',
+          N'ConcurrencyBucket'
       );
 
-    UPDATE [workable].[WorkEntries]
-    SET IsDurableQueued = 0,
-        ClaimedBy = NULL,
-        ClaimedAt = NULL,
-        LeaseId = NULL,
-        LeaseExpiresAt = NULL,
-        ConcurrencyBucket = NULL
-    WHERE IsDurableQueued = 1;');
+    IF @DeadColumns IS NOT NULL
+        EXEC(N'ALTER TABLE [workable].[WorkEntries] DROP COLUMN ' + @DeadColumns + N';');
 END
 GO
 
-IF OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
-   AND COL_LENGTH(N'workable.WorkEntries', N'IsDurableQueued') IS NOT NULL
-   AND NOT EXISTS (
-       SELECT 1
-       FROM sys.indexes indexes
-       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
-       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
-       WHERE schemas.name = N'workable'
-         AND tables.name = N'WorkEntries'
-         AND indexes.name = N'IX_WorkableWorkEntries_Ready')
+IF OBJECT_ID(N'workable.WorkQueueEntries', N'U') IS NOT NULL
 BEGIN
-    EXEC(N'CREATE INDEX IX_WorkableWorkEntries_Ready ON [workable].[WorkEntries] (WorkSystemName, LeaseExpiresAt, CreatedAt, WorkerId) WHERE IsDurableQueued = 1;');
+    DECLARE @DeadQueueColumns nvarchar(max);
+    SELECT @DeadQueueColumns = STRING_AGG(QUOTENAME(columns.name), N', ')
+    FROM sys.columns columns
+    WHERE columns.object_id = OBJECT_ID(N'workable.WorkQueueEntries')
+      AND columns.name IN (N'ClaimedBy', N'ClaimedAt');
+
+    IF @DeadQueueColumns IS NOT NULL
+        EXEC(N'ALTER TABLE [workable].[WorkQueueEntries] DROP COLUMN ' + @DeadQueueColumns + N';');
 END
 GO
 
-IF OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
-   AND COL_LENGTH(N'workable.WorkEntries', N'HasPersistentConcurrency') IS NOT NULL
-   AND COL_LENGTH(N'workable.WorkEntries', N'IsDurableQueued') IS NOT NULL
-   AND NOT EXISTS (
-       SELECT 1
-       FROM sys.indexes indexes
-       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
-       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
-       WHERE schemas.name = N'workable'
-         AND tables.name = N'WorkEntries'
-         AND indexes.name = N'IX_WorkableWorkEntries_PersistentConcurrencyReady')
+IF OBJECT_ID(N'workable.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'workable.WorkflowRuns', N'UpdatedAt') IS NOT NULL
 BEGIN
-    EXEC(N'CREATE INDEX IX_WorkableWorkEntries_PersistentConcurrencyReady ON [workable].[WorkEntries] (WorkSystemName, LeaseExpiresAt, CreatedAt, WorkerId) WHERE IsDurableQueued = 1 AND HasPersistentConcurrency = 1;');
-END
-GO
-
-IF OBJECT_ID(N'workable.WorkEntries', N'U') IS NOT NULL
-   AND COL_LENGTH(N'workable.WorkEntries', N'ConcurrencyBucket') IS NOT NULL
-   AND NOT EXISTS (
-       SELECT 1
-       FROM sys.indexes indexes
-       INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
-       INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
-       WHERE schemas.name = N'workable'
-         AND tables.name = N'WorkEntries'
-         AND indexes.name = N'IX_WorkableWorkEntries_Concurrency')
-BEGIN
-    EXEC(N'CREATE INDEX IX_WorkableWorkEntries_Concurrency ON [workable].[WorkEntries] (WorkSystemName, DefinitionName, ConcurrencyBucket, LeaseExpiresAt, SubjectType, SubjectValue, ConcurrencyType, ConcurrencyValue) WHERE ConcurrencyBucket IS NOT NULL;');
+    ALTER TABLE [workable].[WorkflowRuns] DROP COLUMN UpdatedAt;
 END
 GO
 
@@ -535,7 +507,7 @@ IF OBJECT_ID(N'workable.WorkQueueEntries', N'U') IS NOT NULL
          AND tables.name = N'WorkQueueEntries'
          AND indexes.name = N'IX_WorkableWorkQueueEntries_Ready')
 BEGIN
-    EXEC(N'CREATE INDEX IX_WorkableWorkQueueEntries_Ready ON [workable].[WorkQueueEntries] (WorkSystemName, DefinitionName, CreatedAt, WorkerId) INCLUDE (LeaseExpiresAt, HasPersistentConcurrency);');
+    EXEC(N'CREATE INDEX IX_WorkableWorkQueueEntries_Ready ON [workable].[WorkQueueEntries] (WorkSystemName, DefinitionName, CreatedAt, WorkerId) INCLUDE (LeaseExpiresAt, HasPersistentConcurrency) WHERE Disposition = N''Ready'';');
 END
 GO
 
@@ -549,7 +521,7 @@ IF OBJECT_ID(N'workable.WorkQueueEntries', N'U') IS NOT NULL
          AND tables.name = N'WorkQueueEntries'
          AND indexes.name = N'IX_WorkableWorkQueueEntries_PersistentConcurrencyReady')
 BEGIN
-    EXEC(N'CREATE INDEX IX_WorkableWorkQueueEntries_PersistentConcurrencyReady ON [workable].[WorkQueueEntries] (WorkSystemName, DefinitionName, CreatedAt, WorkerId) INCLUDE (LeaseExpiresAt, HasPersistentConcurrency, ConcurrencyScope, ConcurrencyMaximumCapacity, SubjectType, SubjectValue, ConcurrencyType, ConcurrencyValue) WHERE HasPersistentConcurrency = 1;');
+    EXEC(N'CREATE INDEX IX_WorkableWorkQueueEntries_PersistentConcurrencyReady ON [workable].[WorkQueueEntries] (WorkSystemName, DefinitionName, CreatedAt, WorkerId) INCLUDE (LeaseExpiresAt, HasPersistentConcurrency, ConcurrencyScope, ConcurrencyMaximumCapacity, SubjectType, SubjectValue, ConcurrencyType, ConcurrencyValue) WHERE Disposition = N''Ready'' AND HasPersistentConcurrency = 1;');
 END
 GO
 
@@ -582,7 +554,7 @@ END
 GO
 
 MERGE [workable].[SchemaVersion] WITH (HOLDLOCK) AS target
-USING (SELECT N'QueueDurability' AS Component, 3 AS Version) AS source
+USING (SELECT N'QueueDurability' AS Component, 4 AS Version) AS source
 ON target.Component = source.Component
 WHEN MATCHED THEN UPDATE SET Version = source.Version, UpdatedAt = SYSDATETIMEOFFSET()
 WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Component, source.Version, SYSDATETIMEOFFSET());

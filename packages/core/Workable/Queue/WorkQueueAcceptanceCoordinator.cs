@@ -11,7 +11,8 @@ internal sealed class WorkQueueAcceptanceCoordinator(
         WorkInput? input,
         RegisteredWorkRuntimePlan runtimePlan,
         WorkRequestContext requestContext,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        WorkflowProvenance? workflowProvenance = null)
     {
         var idempotencyErrors = idempotency.Validate(
             registeredWork.Definition.Id,
@@ -26,8 +27,8 @@ internal sealed class WorkQueueAcceptanceCoordinator(
         }
 
         return runtimePlan.Configuration.Coordination.IsDurabilityEnabled
-            ? this.PreparePersistent(workerId, registeredWork, input, runtimePlan, requestContext, now)
-            : this.PrepareInMemory(workerId, registeredWork, input, runtimePlan, requestContext, now);
+            ? this.PreparePersistent(workerId, registeredWork, input, runtimePlan, requestContext, now, workflowProvenance)
+            : this.PrepareInMemory(workerId, registeredWork, input, runtimePlan, requestContext, now, workflowProvenance);
     }
 
     private PreparedWorkQueueAcceptance PrepareInMemory(
@@ -36,7 +37,8 @@ internal sealed class WorkQueueAcceptanceCoordinator(
         WorkInput? input,
         RegisteredWorkRuntimePlan runtimePlan,
         WorkRequestContext requestContext,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        WorkflowProvenance? workflowProvenance)
     {
         if (runtimePlan.Configuration.Coordination.IsPersistentIdempotencyEnabled &&
             runtimePlan.Options.QueueDurabilityTransaction is not null)
@@ -63,7 +65,8 @@ internal sealed class WorkQueueAcceptanceCoordinator(
                         runtimePlan,
                         requestContext,
                         isStartDeferred: status == WorkConcurrencyReservationStatus.Deferred,
-                        now));
+                        now,
+                        workflowProvenance));
             if (reservation.Status == WorkConcurrencyReservationStatus.Rejected)
             {
                 return PreparedWorkQueueAcceptance.Rejected(WorkQueueOutcome.Invalid(
@@ -91,7 +94,8 @@ internal sealed class WorkQueueAcceptanceCoordinator(
             runtimePlan,
             requestContext,
             isStartDeferred: false,
-            now);
+            now,
+            workflowProvenance);
 
         return PreparedWorkQueueAcceptance.InMemory(
             WorkQueueOutcome.Accepted(workerId),
@@ -107,7 +111,8 @@ internal sealed class WorkQueueAcceptanceCoordinator(
         WorkInput? input,
         RegisteredWorkRuntimePlan runtimePlan,
         WorkRequestContext requestContext,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        WorkflowProvenance? workflowProvenance)
     {
         var idempotencyRequest = runtimePlan.Configuration.Coordination.IsPersistentIdempotencyEnabled
             ? new WorkQueueDurabilityIdempotency(input?.SubjectId ?? throw new InvalidOperationException("Persistent idempotent queue acceptance requires a subject id."))
@@ -121,7 +126,8 @@ internal sealed class WorkQueueAcceptanceCoordinator(
             runtimePlan.Configuration,
             requestContext,
             now,
-            idempotencyRequest));
+            idempotencyRequest,
+            workflowProvenance));
     }
 
     private WorkIdempotencyPersistenceRequest? CreateIdempotencyRequest(
@@ -148,7 +154,8 @@ internal sealed class WorkQueueAcceptanceCoordinator(
         RegisteredWorkRuntimePlan runtimePlan,
         WorkRequestContext requestContext,
         bool isStartDeferred,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        WorkflowProvenance? workflowProvenance)
         => new(
             workerId,
             registeredWork,
@@ -160,5 +167,6 @@ internal sealed class WorkQueueAcceptanceCoordinator(
             isStartDeferred,
             messages: [],
             createdAt: now,
-            updatedAt: now);
+            updatedAt: now,
+            workflowProvenance);
 }

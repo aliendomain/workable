@@ -20,7 +20,8 @@ internal interface IWorkerPersistenceCoordinator
         RegisteredWorkRuntimePlan runtimePlan,
         WorkRequestContext requestContext,
         DateTimeOffset now,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        WorkflowProvenance? workflowProvenance = null);
 
     void SignalAccepted(WorkerRecord worker);
 
@@ -95,7 +96,8 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
             },
             logger,
             batchSize: durabilityOptions.ClaimBatchSize,
-            recentClaimSampleCapacity: durabilityOptions.RecentClaimSampleCapacity);
+            recentClaimSampleCapacity: durabilityOptions.RecentClaimSampleCapacity,
+            acceptPersistedFailedEntry: this.AcceptPersistedFailedEntry);
         this.queueAcceptance = new WorkQueueAcceptanceCoordinator(
             this.idempotency,
             concurrency,
@@ -133,7 +135,8 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
         RegisteredWorkRuntimePlan runtimePlan,
         WorkRequestContext requestContext,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkflowProvenance? workflowProvenance = null)
     {
         PreparedWorkQueueAcceptance acceptance;
         var acceptedIntoMemory = false;
@@ -146,7 +149,8 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
                 input,
                 runtimePlan,
                 requestContext,
-                now);
+                now,
+                workflowProvenance);
             if (acceptance.Outcome.IsAccepted &&
                 acceptance.PersistenceRequest is null &&
                 acceptance.IdempotencyRequest is null &&
@@ -228,7 +232,8 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
             isStartDeferred: false,
             messages: [],
             createdAt: entry.CreatedAt,
-            updatedAt: entry.CreatedAt);
+            updatedAt: entry.CreatedAt,
+            workflowProvenance: entry.WorkflowProvenance);
 
         bool shouldScheduleStart;
         bool shouldDrainQueuedWorkers;
@@ -271,7 +276,7 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
 
         if (worker.State is WorkerState.Failed)
         {
-            this.durability.RetainFailed(worker.Id);
+            this.durability.RetainFailed(worker.Id, worker.StateChangedAt, worker.Messages);
         }
     }
 
@@ -304,6 +309,50 @@ internal sealed class WorkerPersistenceCoordinator : IWorkerPersistenceCoordinat
         {
             await this.persistedWorkerMaterialized(materialized, cancellationToken);
         }
+    }
+
+    private async Task AcceptPersistedFailedEntry(
+        WorkQueueDurabilityFailedEntry entry,
+        CancellationToken cancellationToken)
+    {
+        if (this.workers.ContainsKey(entry.Lease.WorkerId) ||
+            !this.catalog.TryGetWork(entry.DefinitionName, out var registeredWork))
+        {
+            return;
+        }
+
+        var record = new WorkerRecord(
+            entry.Lease.WorkerId,
+            registeredWork,
+            entry.Input,
+            entry.Options,
+            entry.Configuration,
+            entry.RequestContext,
+            WorkerState.Failed,
+            isStartDeferred: false,
+            entry.Messages,
+            entry.CreatedAt,
+            entry.FailedAt,
+            entry.WorkflowProvenance);
+
+        lock (this.sync)
+        {
+            if (this.workers.ContainsKey(entry.Lease.WorkerId))
+            {
+                return;
+            }
+
+            this.acceptWorkerIntoMemory(record);
+        }
+
+        this.durability.TrackLease(record.Id, entry.Lease);
+        this.durability.TrackRetainedFailure(record.Id);
+        await this.persistedWorkerMaterialized(
+            new WorkerPersistenceMaterializedWorker(
+                record,
+                ShouldScheduleStart: false,
+                ShouldDrainQueuedWorkers: false),
+            cancellationToken);
     }
 }
 

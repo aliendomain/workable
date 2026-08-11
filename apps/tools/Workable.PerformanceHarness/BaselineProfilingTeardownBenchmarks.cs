@@ -56,6 +56,12 @@ public class BaselineProfilingTeardownBenchmarks
                 Activity.Current = null;
             }
         }
+
+        // BenchmarkDotNet collects before iteration setup. This fixture allocates a large live activity graph,
+        // so collect once more outside the measurement to keep setup-triggered GC work out of UnregisterSystem.
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
     }
 
     [Benchmark]

@@ -27,6 +27,16 @@ internal sealed class WorkQueueService(
         WorkRequestContext requestContext,
         CancellationToken cancellationToken)
     {
+        if (!this.TryPrepareInput(input, out var preparedInput, out var invalidInputHandle))
+        {
+            return Task.FromResult<IWorkerHandle>(invalidInputHandle);
+        }
+
+        if (WorkflowProvenanceRules.ContainsRunIdentifier(preparedInput))
+        {
+            return Task.FromResult<IWorkerHandle>(Reject(ReservedWorkflowRunIdentifier()));
+        }
+
         if (!catalog.TryGetWork(definitionId, out var registeredWork))
         {
             return Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(definitionId.ToString())));
@@ -37,7 +47,7 @@ internal sealed class WorkQueueService(
             return Task.FromResult<IWorkerHandle>(Reject(ChannelNotAllowed(registeredWork.Definition, requestContext.Channel)));
         }
 
-        return workers.CreateWorker(registeredWork, input, options, requestContext, cancellationToken);
+        return workers.CreateWorker(registeredWork, preparedInput, options, requestContext, cancellationToken);
     }
 
     public Task<IWorkerHandle> Enqueue<TInput>(
@@ -72,6 +82,16 @@ internal sealed class WorkQueueService(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
+        if (!this.TryPrepareInput(input, out var preparedInput, out var invalidInputHandle))
+        {
+            return Task.FromResult<IWorkerHandle>(invalidInputHandle);
+        }
+
+        if (WorkflowProvenanceRules.ContainsRunIdentifier(preparedInput))
+        {
+            return Task.FromResult<IWorkerHandle>(Reject(ReservedWorkflowRunIdentifier()));
+        }
+
         if (!catalog.TryGetWork(name, out var registeredWork))
         {
             return Task.FromResult<IWorkerHandle>(Reject(WorkQueueOutcome.NotFound(name)));
@@ -82,7 +102,73 @@ internal sealed class WorkQueueService(
             return Task.FromResult<IWorkerHandle>(Reject(ChannelNotAllowed(registeredWork.Definition, requestContext.Channel)));
         }
 
-        return workers.CreateWorker(registeredWork, input, options, requestContext, cancellationToken);
+        return workers.CreateWorker(registeredWork, preparedInput, options, requestContext, cancellationToken);
+    }
+
+    internal Task<IWorkerHandle> EnqueueDelegated(
+        string name,
+        WorkInput? input,
+        WorkerOptions? options,
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (!this.TryPrepareInput(input, out var preparedInput, out var invalidInputHandle))
+        {
+            return Task.FromResult<IWorkerHandle>(invalidInputHandle);
+        }
+
+        if (WorkflowProvenanceRules.ContainsRunIdentifier(preparedInput))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(ReservedWorkflowRunIdentifier()));
+        }
+
+        if (!catalog.TryGetWork(name, out var registeredWork))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(WorkQueueOutcome.NotFound(name)));
+        }
+
+        // The caller reached this path through a trusted, declared parent relationship. The child's direct queue
+        // authorization and invocation-channel gate do not apply, while normal worker validation and coordination do.
+        return workers.CreateWorker(registeredWork, preparedInput, options, requestContext, cancellationToken);
+    }
+
+    internal Task<IWorkerHandle> EnqueueWorkflowChild(
+        string name,
+        WorkInput? input,
+        WorkerOptions? options,
+        WorkRequestContext requestContext,
+        WorkflowProvenance provenance,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(requestContext);
+        ArgumentNullException.ThrowIfNull(provenance);
+
+        if (!this.TryPrepareInput(input, out var preparedInput, out var invalidInputHandle))
+        {
+            return Task.FromResult<IWorkerHandle>(invalidInputHandle);
+        }
+
+        if (!WorkflowProvenanceRules.HasExactRunIdentifier(preparedInput, provenance.RunId))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(InvalidWorkflowRunIdentifier(provenance.RunId)));
+        }
+
+        if (!catalog.TryGetWork(name, out var registeredWork))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(WorkQueueOutcome.NotFound(name)));
+        }
+
+        return workers.CreateWorker(
+            registeredWork,
+            preparedInput,
+            options,
+            requestContext,
+            cancellationToken,
+            provenance);
     }
 
     public Task<IWorkerHandle> Enqueue<TInput>(
@@ -100,10 +186,26 @@ internal sealed class WorkQueueService(
             _ => WorkInput.FromValue(input, WorkData.DefaultJsonOptions),
         };
 
-    private WorkerHandle Reject(WorkQueueOutcome outcome)
+    internal WorkerHandle Reject(WorkQueueOutcome outcome)
     {
         queueDiagnostics.RecordRejected(outcome);
         return WorkerHandle.Rejected(outcome);
+    }
+
+    private bool TryPrepareInput(
+        WorkInput? input,
+        out WorkInput? preparedInput,
+        out WorkerHandle invalidInputHandle)
+    {
+        preparedInput = WorkflowProvenanceRules.SnapshotInput(input);
+        if (!WorkflowProvenanceRules.ContainsMalformedIdentifier(preparedInput))
+        {
+            invalidInputHandle = null!;
+            return true;
+        }
+
+        invalidInputHandle = this.Reject(InvalidIdentifier());
+        return false;
     }
 
     private static WorkQueueOutcome ChannelNotAllowed(
@@ -114,6 +216,27 @@ internal sealed class WorkQueueService(
                 "workable.invocation.channel_not_allowed",
                 $"Work '{definition.Name}' cannot be invoked through {DescribeChannel(channel)}.",
                 "invocation.channel")]);
+
+    private static WorkQueueOutcome ReservedWorkflowRunIdentifier()
+        => WorkQueueOutcome.Invalid(
+            [WorkMessage.Error(
+                "workable.workflow.identifier.reserved",
+                "The 'workflow-run' identifier is system-reserved and can be assigned only by Workable workflow dispatch.",
+                "input.identifiers")]);
+
+    private static WorkQueueOutcome InvalidIdentifier()
+        => WorkQueueOutcome.Invalid(
+            [WorkMessage.Error(
+                "workable.identifier.invalid",
+                "Work identifiers require non-empty type and value strings.",
+                "input.identifiers")]);
+
+    private static WorkQueueOutcome InvalidWorkflowRunIdentifier(WorkflowRunId runId)
+        => WorkQueueOutcome.Invalid(
+            [WorkMessage.Error(
+                "workable.workflow.identifier.invalid",
+                $"Workflow child input must contain the system-assigned workflow run identifier '{runId}'.",
+                "input.identifiers")]);
 
     private static string DescribeChannel(WorkInvocationChannel channel)
         => channel switch

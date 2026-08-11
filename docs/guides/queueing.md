@@ -130,6 +130,59 @@ public sealed class SendWelcomeEmailExecutor : IWorkExecutor
 
 Adding the same identifier more than once is ignored.
 
+`workflow-run` is reserved for Workable's system-assigned workflow provenance. Ordinary and delegated child queue
+requests containing that identifier are rejected, and executors cannot discover it dynamically.
+
+Queue admission snapshots caller-owned identifier collections before validation and rejects identifiers with an empty
+type or value. Later caller mutation therefore cannot add reserved metadata to an accepted worker.
+
+## Queueing Declared Child Work
+
+Parent work can delegate execution to an explicitly declared child without giving the initiating caller direct queue access to that child. Configure the relationship on the parent and inject `IChildWorkQueueService` into the executor:
+
+```csharp
+var child = WorkDefinition.Create("billing.internal.post-ledger-entry");
+var parent = WorkDefinition.Create("billing.invoice.pay");
+
+builder.AddWork<PostLedgerEntryExecutor>(child,
+    configure: null,
+    authorize: auth => auth.AllowQueueToGroups("ledger.internal"));
+builder.AddWork<PayInvoiceExecutor>(
+    parent,
+    configure: configuration => configuration.AllowChildExecution(child),
+    authorize: auth => auth.AllowQueueToGroups("billing.pay"));
+
+public sealed class PayInvoiceExecutor(IChildWorkQueueService children) : IWorkExecutor
+{
+    public async Task<WorkExecutionResult> Execute(
+        IWorkExecutionContext context,
+        WorkInput? input,
+        CancellationToken cancellationToken)
+    {
+        var ledgerInput = ValidateAndCreateLedgerInput(input);
+        var handle = await children.Enqueue(
+            "billing.internal.post-ledger-entry",
+            ledgerInput,
+            cancellationToken: cancellationToken);
+        var completion = await handle.WaitForCompletion(cancellationToken);
+        return completion.IsCompletedSuccessfully
+            ? WorkExecutionResult.Success()
+            : WorkExecutionResult.Failure(completion.Messages);
+    }
+}
+```
+
+Declare `AllowChildExecution(...)` on the individual parent registration. Because it grants delegated
+authority, Workable does not allow it in a `WithWorkDefaults` configuration callback. The declared
+relationship graph must also be acyclic: startup rejects both `A -> A` and cycles such as `A -> B -> A`.
+
+The child queue exists only inside the active parent execution and accepts only declared child names. Using the system or session queue directly remains an ordinary queue request and therefore applies the child's direct authorization. See [Delegated Child Execution](../concepts/authorization.md#delegated-child-execution) for the security model.
+
+Treat the parent executor like a stored-procedure boundary. Validate caller-controlled tenant, account, subject, and
+other business scope before constructing child input. Do not pass through arbitrary `WorkerOptions`, and place explicit
+bounds on caller-driven fan-out. The delegated path intentionally skips child queue authorization requirements,
+including requirements that inspect input or options; Workable cannot infer these application-level constraints.
+
 ## Queue Options
 
 `WorkerOptions` can override worker options and effective runtime configuration for one queued worker.

@@ -39,7 +39,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         this.changes = changes;
         foreach (var registeredWork in work)
         {
-            var effectiveWork = this.ApplyImplicitDefaultOptions(registeredWork);
+            var effectiveWork = SnapshotChildExecution(this.ApplyImplicitDefaultOptions(registeredWork));
             this.ValidateAuthorization(effectiveWork);
             this.work.Add(effectiveWork);
         }
@@ -99,14 +99,21 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
                 throw new InvalidOperationException("Work definitions cannot be added after the catalog is frozen.");
             }
 
-            var effectiveWork = this.ApplyImplicitDefaultOptions(registeredWork);
+            var effectiveWork = SnapshotChildExecution(this.ApplyImplicitDefaultOptions(registeredWork));
             this.ValidateAuthorization(effectiveWork);
             this.work.Add(effectiveWork);
             this.RebuildIndexes();
         }
     }
 
-    internal void Freeze() => this.IsFrozen = true;
+    internal void Freeze()
+    {
+        lock (this.sync)
+        {
+            this.ValidateChildExecutionRelationships();
+            this.IsFrozen = true;
+        }
+    }
 
     public Task<WorkDefinitionReconfigurationOutcome> Reconfigure(
         WorkDefinitionVersion definition,
@@ -131,10 +138,22 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
             var updatedOptions = changes.DefaultOptions ?? registeredWork.Definition.DefaultOptions;
             var updatedConfiguration = changes.Configuration ?? registeredWork.Definition.Configuration;
             var messages = this.ValidateReconfiguration(updatedOptions, updatedConfiguration);
+            if (!ChildExecutionMatches(registeredWork.Definition.Configuration, updatedConfiguration))
+            {
+                messages.Add(WorkMessage.Error(
+                    "workable.configuration.child_execution.definition_scoped",
+                    "Declared child execution relationships cannot be changed through runtime reconfiguration.",
+                    "configuration.childExecution"));
+            }
             if (messages.Count > 0)
             {
                 return Task.FromResult(WorkDefinitionReconfigurationOutcome.Invalid(registeredWork.Definition, messages));
             }
+
+            updatedConfiguration = updatedConfiguration with
+            {
+                ChildExecution = registeredWork.Definition.Configuration.ChildExecution,
+            };
 
             var updatedDefinition = registeredWork.Definition with
             {
@@ -210,6 +229,121 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         this.definitionsByCategoryPath = BuildCategoryIndex(this.Definitions, includeSubcategories: true);
     }
 
+    private void ValidateChildExecutionRelationships()
+    {
+        var missing = this.work
+            .SelectMany(parent => parent.Definition.Configuration.ChildExecution.AllowedDefinitionNames
+                .Where(childName => !this.workByName.ContainsKey(childName))
+                .Select(childName => $"{parent.Definition.Name} -> {childName}"))
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (missing.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"Declared child work definitions must exist in the same catalog. Missing relationships: {string.Join(", ", missing)}.");
+        }
+
+        var selfReferences = this.work
+            .SelectMany(parent => parent.Definition.Configuration.ChildExecution.AllowedDefinitionNames
+                .Where(childName => string.Equals(parent.Definition.Name, childName, StringComparison.OrdinalIgnoreCase))
+                .Select(_ => $"{parent.Definition.Name} -> {parent.Definition.Name}"))
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (selfReferences.Length > 0)
+        {
+            throw new InvalidOperationException(
+                "Declared child execution relationships cannot be self-referential. " +
+                $"Invalid relationships: {string.Join(", ", selfReferences)}.");
+        }
+
+        var cycle = this.FindChildExecutionCycle();
+        if (cycle is not null)
+        {
+            throw new InvalidOperationException(
+                "Declared child execution relationships must be acyclic. " +
+                $"Cycle detected: {string.Join(" -> ", cycle)}.");
+        }
+    }
+
+    private IReadOnlyList<string>? FindChildExecutionCycle()
+    {
+        var visitStates = new Dictionary<string, ChildExecutionVisitState>(StringComparer.OrdinalIgnoreCase);
+        var path = new List<string>();
+        var traversal = new Stack<ChildExecutionTraversalFrame>();
+
+        foreach (var definitionName in this.workByName.Keys.Order(StringComparer.OrdinalIgnoreCase))
+        {
+            if (visitStates.ContainsKey(definitionName))
+            {
+                continue;
+            }
+
+            visitStates[definitionName] = ChildExecutionVisitState.Visiting;
+            path.Add(definitionName);
+            traversal.Push(new ChildExecutionTraversalFrame(
+                definitionName,
+                this.GetOrderedChildExecutionNames(definitionName),
+                NextChildIndex: 0));
+
+            while (traversal.Count > 0)
+            {
+                var frame = traversal.Pop();
+                if (frame.NextChildIndex >= frame.ChildNames.Length)
+                {
+                    path.RemoveAt(path.Count - 1);
+                    visitStates[frame.DefinitionName] = ChildExecutionVisitState.Visited;
+                    continue;
+                }
+
+                var childName = frame.ChildNames[frame.NextChildIndex];
+                traversal.Push(frame with { NextChildIndex = frame.NextChildIndex + 1 });
+                if (!visitStates.TryGetValue(childName, out var childState))
+                {
+                    visitStates[childName] = ChildExecutionVisitState.Visiting;
+                    path.Add(childName);
+                    traversal.Push(new ChildExecutionTraversalFrame(
+                        childName,
+                        this.GetOrderedChildExecutionNames(childName),
+                        NextChildIndex: 0));
+                    continue;
+                }
+
+                if (childState == ChildExecutionVisitState.Visiting)
+                {
+                    var cycleStart = path.FindIndex(name =>
+                        string.Equals(name, childName, StringComparison.OrdinalIgnoreCase));
+                    return [.. path.Skip(cycleStart), childName];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private string[] GetOrderedChildExecutionNames(string definitionName)
+        => [.. this.workByName[definitionName].Definition.Configuration.ChildExecution.AllowedDefinitionNames
+            .Select(configuredChildName => this.workByName[configuredChildName].Definition.Name)
+            .Order(StringComparer.OrdinalIgnoreCase)];
+
+    private readonly record struct ChildExecutionTraversalFrame(
+        string DefinitionName,
+        string[] ChildNames,
+        int NextChildIndex);
+
+    private enum ChildExecutionVisitState
+    {
+        Visiting,
+        Visited,
+    }
+
+    private static bool ChildExecutionMatches(
+        WorkConfiguration current,
+        WorkConfiguration updated)
+        => new HashSet<string>(
+            current.ChildExecution.AllowedDefinitionNames,
+            StringComparer.OrdinalIgnoreCase)
+            .SetEquals(updated.ChildExecution.AllowedDefinitionNames);
+
     private void ValidateAuthorization(RegisteredWork registeredWork)
     {
         WorkOperateAuthorizationConfigurationValidator.ValidateOrThrow(
@@ -228,6 +362,23 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         return registeredWork.WithDefinition(registeredWork.Definition with
         {
             DefaultOptions = registeredWork.Definition.DefaultOptions.Merge(this.implicitDefaultWorkerOptions),
+        });
+    }
+
+    private static RegisteredWork SnapshotChildExecution(RegisteredWork registeredWork)
+    {
+        var childExecution = registeredWork.Definition.Configuration.ChildExecution.Snapshot();
+        if (ReferenceEquals(childExecution, registeredWork.Definition.Configuration.ChildExecution))
+        {
+            return registeredWork;
+        }
+
+        return registeredWork.WithDefinition(registeredWork.Definition with
+        {
+            Configuration = registeredWork.Definition.Configuration with
+            {
+                ChildExecution = childExecution,
+            },
         });
     }
 

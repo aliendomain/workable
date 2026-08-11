@@ -209,7 +209,9 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
             filter.Identifier is null &&
             filter.Keys is not { Count: > 0 } &&
             filter.EventType is null &&
-            filter.EventTypes is not { Count: > 0 }
+            filter.EventTypes is not { Count: > 0 } &&
+            filter.DefinitionKind is null &&
+            filter.AuthorizedDefinitions is not { Count: > 0 }
                 ? null
                 : filter;
 
@@ -235,7 +237,9 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
                 filter.Identifier is not null ||
                 HasValidKeyFilter(filter.Keys) ||
                 !string.IsNullOrWhiteSpace(filter.EventType) ||
-                HasValidStringFilter(filter.EventTypes));
+                HasValidStringFilter(filter.EventTypes) ||
+                filter.DefinitionKind is not null ||
+                filter.AuthorizedDefinitions is { Count: > 0 });
 
     private static bool HasValidStringFilter(IReadOnlySet<string>? values)
         => values is { Count: > 0 } &&
@@ -1215,7 +1219,11 @@ internal sealed class WorkEventStream : IWorkEventStream, IAsyncDisposable
             => Volatile.Read(ref this.isDisposed) == 0 &&
                 this.CanAcceptWrite() &&
                 (filter is null ||
-                    ((filter.WorkerId is null || filter.WorkerId == metadata.WorkerId) &&
+                    ((filter.DefinitionKind is null || filter.DefinitionKind == metadata.DefinitionKind) &&
+                        (filter.AuthorizedDefinitions is not { Count: > 0 } ||
+                            metadata.DefinitionScope is { } definitionScope &&
+                            filter.AuthorizedDefinitions.Contains(definitionScope)) &&
+                        (filter.WorkerId is null || filter.WorkerId == metadata.WorkerId) &&
                         (filter.DefinitionName is null || string.Equals(filter.DefinitionName, metadata.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
                         (filter.DefinitionNames is not { Count: > 0 } ||
                             (!string.IsNullOrWhiteSpace(metadata.DefinitionName) &&

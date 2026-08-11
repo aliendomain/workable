@@ -5,6 +5,7 @@ namespace Workable.PerformanceHarness;
 
 [MemoryDiagnoser]
 [ShortRunJob]
+[InvocationCount(1)]
 /// <summary>
 /// Benchmarks authorized bulk worker actions against queued workers.
 /// </summary>

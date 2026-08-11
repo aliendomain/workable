@@ -70,6 +70,7 @@ public static class WorkableServiceCollectionExtensions
         services.AddSingleton<IWorkSystemRegistry, WorkSystemRegistry>();
         services.TryAddSingleton<IWorkCommandDispatcher, WorkCommandDispatcher>();
         services.TryAddSingleton<IWorkflowCommandDispatcher, WorkflowCommandDispatcher>();
+        services.TryAddScoped<IChildWorkQueueService>(_ => ChildWorkQueueContext.Current);
         services.TryAddSingleton(services => services.GetRequiredService<IWorkSystemRegistry>().Default);
         if (!services.Any(descriptor => descriptor.ServiceType == typeof(IHostedService) && descriptor.ImplementationType == HostedServiceType))
         {

@@ -117,24 +117,20 @@ public sealed class WorkflowExecutionSupportShould
     }
 
     [Fact]
-    public void AddWorkflowIdentifiersPreservesExistingInputMetadata()
+    public void AddWorkflowRunIdentifierPreservesExistingInputMetadata()
     {
         var input = WorkInput.Empty
             .WithSubject(new WorkSubjectId("order", "42"))
             .WithConcurrencyKey(new WorkConcurrencyKey("tenant", "acme"))
             .WithIdentifier(new WorkIdentifier("existing", "value"));
 
-        var updated = WorkflowExecutionSupport.AddWorkflowIdentifiers(
+        var updated = WorkflowExecutionSupport.AddWorkflowRunIdentifier(
             input,
-            new WorkflowRunId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
-            "workflow.demo",
-            "dispatch");
+            new WorkflowRunId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")));
 
         Assert.Equal(input.SubjectId, updated.SubjectId);
         Assert.Equal(input.ConcurrencyKey, updated.ConcurrencyKey);
         Assert.Contains(new WorkIdentifier("existing", "value"), updated.Identifiers!);
-        Assert.Contains(new WorkIdentifier("workflow-definition", "workflow.demo"), updated.Identifiers!);
-        Assert.Contains(new WorkIdentifier("workflow-step", "dispatch"), updated.Identifiers!);
         Assert.Contains(
             updated.Identifiers!,
                 identifier => identifier.Type == "workflow-run" &&
@@ -142,27 +138,71 @@ public sealed class WorkflowExecutionSupportShould
     }
 
     [Fact]
-    public void AddWorkflowIdentifiersReplacesCallerSuppliedReservedIdentifiers()
+    public void AddWorkflowRunIdentifierReplacesCallerSuppliedRunIdentifier()
     {
         var input = WorkInput.Empty.WithIdentifiers(
         [
             new WorkIdentifier("workflow-run", "attacker-run"),
-            new WorkIdentifier("WORKFLOW-STEP", "attacker-step"),
-            new WorkIdentifier("workflow-definition", "attacker-definition"),
             new WorkIdentifier("tenant", "acme"),
         ]);
 
-        var updated = WorkflowExecutionSupport.AddWorkflowIdentifiers(
+        var updated = WorkflowExecutionSupport.AddWorkflowRunIdentifier(
             input,
-            new WorkflowRunId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
-            "workflow.demo",
-            "dispatch");
+            new WorkflowRunId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")));
 
         Assert.Contains(new WorkIdentifier("tenant", "acme"), updated.Identifiers!);
         Assert.DoesNotContain(updated.Identifiers!, identifier => identifier.Value.StartsWith("attacker", StringComparison.Ordinal));
         Assert.Single(updated.Identifiers!, identifier => identifier.Type == "workflow-run");
-        Assert.Single(updated.Identifiers!, identifier => identifier.Type == "workflow-definition");
-        Assert.Single(updated.Identifiers!, identifier => identifier.Type == "workflow-step");
+    }
+
+    [Fact]
+    public void RequireExactAuthoritativeWorkflowProvenance()
+    {
+        var workerId = WorkerId.New();
+        var run = CreateRunWithOutstandingWorkers(workerId);
+        var validIdentifiers = WorkflowExecutionSupport.AddWorkflowRunIdentifier(
+            input: null,
+            run.Id).Identifiers!;
+        var validProvenance = new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch");
+        var valid = CreateSnapshot(
+            workerId,
+            WorkerState.Running,
+            identifiers: validIdentifiers,
+            workflowProvenance: validProvenance);
+        var wrongRun = CreateSnapshot(
+            workerId,
+            WorkerState.Running,
+            identifiers: validIdentifiers,
+            workflowProvenance: validProvenance with { RunId = WorkflowRunId.New() });
+        var wrongDefinition = CreateSnapshot(
+            workerId,
+            WorkerState.Running,
+            identifiers: validIdentifiers,
+            workflowProvenance: validProvenance with { DefinitionName = "workflow.other" });
+        var wrongStep = CreateSnapshot(
+            workerId,
+            WorkerState.Running,
+            identifiers: validIdentifiers,
+            workflowProvenance: validProvenance with { StepName = "other-step" });
+        var unrecordedWorker = CreateSnapshot(
+            WorkerId.New(),
+            WorkerState.Running,
+            identifiers: validIdentifiers,
+            workflowProvenance: validProvenance);
+        var forgedIdentifiersOnly = CreateSnapshot(
+            workerId,
+            WorkerState.Running,
+            identifiers: validIdentifiers);
+
+        Assert.True(WorkflowExecutionSupport.IsAuthoritativeChildOf(run, valid));
+        Assert.False(WorkflowExecutionSupport.IsAuthoritativeChildOf(
+            run,
+            CreateSnapshot(workerId, WorkerState.Running)));
+        Assert.False(WorkflowExecutionSupport.IsAuthoritativeChildOf(run, wrongRun));
+        Assert.False(WorkflowExecutionSupport.IsAuthoritativeChildOf(run, wrongDefinition));
+        Assert.False(WorkflowExecutionSupport.IsAuthoritativeChildOf(run, wrongStep));
+        Assert.False(WorkflowExecutionSupport.IsAuthoritativeChildOf(run, unrecordedWorker));
+        Assert.False(WorkflowExecutionSupport.IsAuthoritativeChildOf(run, forgedIdentifiersOnly));
     }
 
     [Fact]
@@ -475,8 +515,10 @@ public sealed class WorkflowExecutionSupportShould
     private static WorkerSnapshot CreateSnapshot(
         WorkerId workerId,
         WorkerState state,
-        long revision = 1)
-        => new(
+        long revision = 1,
+        IReadOnlySet<WorkIdentifier>? identifiers = null,
+        WorkflowProvenance? workflowProvenance = null)
+        => new WorkerSnapshot(
             workerId,
             Revision: revision,
             StateSequence: revision,
@@ -484,7 +526,7 @@ public sealed class WorkflowExecutionSupportShould
             DefinitionCategory: string.Empty,
             SubjectId: null,
             ConcurrencyKey: null,
-            Identifiers: new HashSet<WorkIdentifier>(),
+            Identifiers: identifiers ?? new HashSet<WorkIdentifier>(),
             RequestContext: WorkRequestContext.Create(WorkInvocationChannel.InProcess),
             State: state,
             Input: null,
@@ -495,7 +537,10 @@ public sealed class WorkflowExecutionSupportShould
             InterruptionReason: null,
             CreatedAt: DateTimeOffset.UtcNow,
             StateChangedAt: DateTimeOffset.UtcNow,
-            UpdatedAt: DateTimeOffset.UtcNow);
+            UpdatedAt: DateTimeOffset.UtcNow)
+        {
+            WorkflowProvenance = workflowProvenance,
+        };
 
     private sealed class TestWorkerHandle(
         WorkQueueOutcome queueOutcome,

@@ -13,6 +13,7 @@ public interface IWorkDefinitionBuilder
     /// </param>
     /// <param name="configure">
     /// Optional work configuration that runs before any per-registration <c>configure</c> callback inside the group.
+    /// Registration-specific child-execution grants cannot be declared through this callback.
     /// </param>
     /// <param name="authorize">
     /// Optional work authorization that runs before any per-registration <c>authorize</c> callback inside the group.

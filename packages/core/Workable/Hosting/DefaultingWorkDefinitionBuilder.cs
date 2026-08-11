@@ -36,7 +36,7 @@ internal sealed class DefaultingWorkDefinitionBuilder(
         Action<IWorkConfigurationBuilder>? configure,
         Action<IWorkAuthorizationBuilder>? authorize)
     {
-        inner.AddWork(definition, execute, Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
+        inner.AddWork(definition, execute, ComposeConfiguration(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
     }
 
@@ -57,7 +57,7 @@ internal sealed class DefaultingWorkDefinitionBuilder(
         Action<IWorkConfigurationBuilder>? configure,
         Action<IWorkAuthorizationBuilder>? authorize)
     {
-        inner.AddWork(definition, execute, Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
+        inner.AddWork(definition, execute, ComposeConfiguration(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
     }
 
@@ -78,7 +78,7 @@ internal sealed class DefaultingWorkDefinitionBuilder(
         Action<IWorkConfigurationBuilder>? configure,
         Action<IWorkAuthorizationBuilder>? authorize)
     {
-        inner.AddWork(definition, execute, Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
+        inner.AddWork(definition, execute, ComposeConfiguration(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
     }
 
@@ -102,7 +102,7 @@ internal sealed class DefaultingWorkDefinitionBuilder(
         Action<IWorkAuthorizationBuilder>? authorize)
         where TExecutor : class
     {
-        inner.AddWork<TExecutor>(definition, Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
+        inner.AddWork<TExecutor>(definition, ComposeConfiguration(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
     }
 
@@ -116,8 +116,30 @@ internal sealed class DefaultingWorkDefinitionBuilder(
         Action<IWorkAuthorizationBuilder>? authorize)
         where TExecutor : class
     {
-        inner.AddWork<TExecutor>(Compose(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
+        inner.AddWork<TExecutor>(ComposeConfiguration(defaultConfigure, configure), Compose(defaultAuthorize, authorize));
         return this;
+    }
+
+    private static Action<IWorkConfigurationBuilder>? ComposeConfiguration(
+        Action<IWorkConfigurationBuilder>? defaults,
+        Action<IWorkConfigurationBuilder>? registration)
+    {
+        if (defaults is null)
+        {
+            return registration;
+        }
+
+        return builder =>
+        {
+            if (builder is not WorkConfigurationBuilder concreteBuilder)
+            {
+                throw new InvalidOperationException(
+                    "WithWorkDefaults requires Workable's work configuration builder implementation.");
+            }
+
+            concreteBuilder.ApplyWorkDefaults(defaults);
+            registration?.Invoke(builder);
+        };
     }
 
     private static Action<TBuilder>? Compose<TBuilder>(

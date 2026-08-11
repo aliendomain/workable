@@ -17,7 +17,8 @@ internal static class BenchmarkRequestContexts
                 systemName: null,
                 actor,
                 [WorkableBenchmarkSystem.OperatorGroup],
-                readableDefinitionIds: null),
+                readableDefinitionIds: null,
+                isAuthenticated: true),
             IsAuthenticated: true);
     }
 

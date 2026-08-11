@@ -75,6 +75,8 @@ These are read-only execution facts.
 - `Services`: the execution-scope `IServiceProvider`
 - `Profile`: the active `IWorkProfiler`
 
+`IChildWorkQueueService` is also available through constructor injection or `Services` when the work registration declares child definitions with `AllowChildExecution(...)`. Its authority is scoped to the current execution attempt; it is revoked when the initializer or executor returns.
+
 Use `Services` to resolve scoped collaborators when constructor injection is not the better fit:
 
 ```csharp

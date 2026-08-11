@@ -18,7 +18,8 @@ internal sealed class WorkerRecord(
     bool isStartDeferred,
     IReadOnlyList<WorkMessage> messages,
     DateTimeOffset createdAt,
-    DateTimeOffset updatedAt)
+    DateTimeOffset updatedAt,
+    WorkflowProvenance? workflowProvenance = null)
 {
     private readonly Lock sync = new();
     private CancellationTokenSource? executionCancellation;
@@ -73,6 +74,8 @@ internal sealed class WorkerRecord(
     public WorkRequestContext RequestContext { get; } = requestContext;
 
     public WorkOrigin Origin => this.RequestContext.Origin;
+
+    public WorkflowProvenance? WorkflowProvenance { get; } = workflowProvenance;
 
     public IReadOnlySet<WorkIdentifier> Identifiers
     {
@@ -181,6 +184,13 @@ internal sealed class WorkerRecord(
 
     public bool AddIdentifier(WorkIdentifier identifier)
     {
+        if (string.IsNullOrWhiteSpace(identifier.Type) ||
+            string.IsNullOrWhiteSpace(identifier.Value) ||
+            WorkflowProvenanceRules.IsRunIdentifier(identifier.Type))
+        {
+            return false;
+        }
+
         WorkerReadModelIterationUpdate? currentIteration = null;
         Action<WorkerReadModelIterationUpdate>? iterationRecorded = null;
         lock (this.sync)
@@ -1115,6 +1125,7 @@ internal sealed class WorkerRecord(
             QueueDuration = this.QueueDurationLocked(),
             TotalExecutionDuration = this.TotalExecutionDurationLocked(),
             NextRunAt = this.nextRunAt,
+            WorkflowProvenance = this.WorkflowProvenance,
         };
     }
 

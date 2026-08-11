@@ -146,6 +146,8 @@ The durable queue reader is signal-first. When this process accepts durable work
 
 Polling remains as the cross-process and missed-notification fallback. If another process enqueues work, or if the caller commits without notifying the local reader, readers discover the row on the fallback polling interval. Waiting on an accepted worker handle issues one immediate reader notification but does not shorten the configured polling interval. The default fallback polling interval is five seconds and the minimum is one second.
 
+Providers that retain failed workers recover those control-plane rows once during startup and then on a separate lease-duration interval. Ready-work notifications claim only executable `Ready` rows; they do not run failed-worker recovery queries or make retained failures executable.
+
 Durable queueing does not imply idempotency. `QueueDurably()` persists the queue entry and gives at-least-once acceptance; execution remains recoverable with lease-based replay if a process stops before final cleanup. It also selects persistent coordination storage, so any enabled idempotency or concurrency feature in the same configuration is persistence-backed.
 
 The database provider is configured separately from work configuration. SQL Server is provided by [`Workable.SqlServer`](../../../packages/extensions/sqlserver/README.md):
@@ -267,14 +269,20 @@ public async Task<WorkExecutionResult> Execute(
 
 Failed durable work is also retained. A failed row remains available for inspection and retry until the worker is explicitly completed by restart or explicitly canceled through the worker API.
 
-SQL Server stores durable payloads and idempotency reservations in `workable.WorkEntries`, while ready queue rows live in the thinner `workable.WorkQueueEntries` table. Together they can represent queueing only, idempotency only, or both:
+SQL Server stores durable payloads and idempotency reservations in `workable.WorkEntries`, while queue-control state lives in the thinner `workable.WorkQueueEntries` table. Together they can represent queueing only, idempotency only, or both:
 
-- A matching `WorkQueueEntries` row means the durable queue reader can claim the worker.
+- `WorkQueueEntries.Disposition = 'Ready'` means the durable queue reader can claim the worker for execution.
+- `WorkQueueEntries.Disposition = 'Failed'` means the worker is retained for control-plane recovery. A runtime claims and restores it in the `Failed` state without starting it automatically.
 - `WorkEntries.HasIdempotencyReservation = 1` means the row participates in duplicate-subject rejection.
 
-Rows are deleted when a worker reaches `Completed` or `Canceled`, or when the worker is purged. Failed and interrupted rows are retained. Until a retained row is completed or canceled, durable queue rows renew their claimed lease so another process does not replay active work; if the process dies, the lease expires and another runtime can claim the row.
+Rows are deleted when a worker reaches `Completed` or `Canceled`, or when the worker is purged. Failed and interrupted rows are retained. Failed rows persist their failure time and messages, survive process restart, and remain available for explicit restart or cancellation. Restored failures whose configured auto-cancel deadline has passed are canceled by the normal failed-worker scheduler after startup. Until a retained row is completed or canceled, durable queue rows renew their claimed lease so another process does not restore or replay the same worker; if the process dies, the lease expires and another runtime can claim the row.
 
 Lease ids are fencing tokens. Renewal and final cleanup include the current `LeaseId`; if a provider reports that the lease no longer owns the row, Workable interrupts the local worker with `WorkInterruptionReason.LeaseLost`. Stale executions must not delete or retain a row that another runtime has already claimed.
+
+Custom `IWorkPersistenceStore` providers must round-trip `WorkflowProvenance` from
+`WorkQueueDurabilityEnqueueRequest` through both `WorkQueueDurabilityEntry` and
+`WorkQueueDurabilityFailedEntry`. This system-assigned value is required for secure workflow-child lifecycle and
+delegated control after durable materialization; searchable `WorkInput` identifiers are not an authority fallback.
 
 ## Related Interactions
 

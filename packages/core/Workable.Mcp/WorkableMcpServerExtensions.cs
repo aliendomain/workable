@@ -191,7 +191,8 @@ public static class WorkableMcpServerExtensions
                 resolvedSystemName,
                 requestContext.Actor,
                 groups,
-                readableDefinitionIds: null),
+                readableDefinitionIds: null,
+                isAuthenticated: requestContext.IsAuthenticated),
         };
     }
 

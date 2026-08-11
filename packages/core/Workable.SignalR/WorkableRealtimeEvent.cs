@@ -26,6 +26,21 @@ public sealed record WorkableRealtimeEvent(
     JsonElement? Data)
 {
     /// <summary>
+    /// Gets the namespace of the definition that produced the event.
+    /// </summary>
+    public WorkEventDefinitionKind DefinitionKind { get; init; }
+
+    /// <summary>
+    /// Gets the work definition identifier for a work event.
+    /// </summary>
+    public WorkDefinitionId? WorkDefinitionId { get; init; }
+
+    /// <summary>
+    /// Gets the workflow definition identifier for a workflow event.
+    /// </summary>
+    public WorkflowDefinitionId? WorkflowDefinitionId { get; init; }
+
+    /// <summary>
     /// Creates a realtime transport event from a core <see cref="WorkEvent"/>.
     /// </summary>
     /// <param name="workEvent">The core event to project into realtime transport form.</param>
@@ -43,7 +58,12 @@ public sealed record WorkableRealtimeEvent(
             workEvent.ConcurrencyKey,
             [.. workEvent.Identifiers],
             workEvent.EventType,
-            workEvent.Data);
+            workEvent.Data)
+        {
+            DefinitionKind = workEvent.DefinitionKind,
+            WorkDefinitionId = workEvent.WorkDefinitionId,
+            WorkflowDefinitionId = workEvent.WorkflowDefinitionId,
+        };
     }
 }
 

@@ -1301,7 +1301,8 @@ internal sealed class WorkableRealtimeBroadcaster(
                 WorkInvocationChannel.SignalR,
                 authorization.Actor,
                 WorkOriginSurface.WorkableAdapter),
-            Authorization: authorization));
+            Authorization: authorization,
+            IsAuthenticated: authorization.IsAuthenticated));
     }
 
     private static ValueTask<IWorkSystemSession> CreateRealtimeBroadcasterSession(IWorkSystem system)
@@ -1318,7 +1319,8 @@ internal sealed class WorkableRealtimeBroadcaster(
                 system.Name,
                 RealtimeBroadcasterActor,
                 [InternalWorkAuthorizationGroups.SystemAdministrator],
-                readableDefinitionIds: null),
+                readableDefinitionIds: null,
+                isAuthenticated: true),
             IsAuthenticated: true));
     }
 

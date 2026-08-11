@@ -626,8 +626,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
         var store = new RawWorkflowPersistenceStore(
             [],
             persisted => persisted.Status == WorkflowRunStatus.Running
@@ -676,8 +676,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
         var store = new RawWorkflowPersistenceStore(
             [],
             persisted =>
@@ -749,8 +749,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
         var store = new RawWorkflowPersistenceStore(
             [],
             persisted =>
@@ -886,8 +886,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
         var store = new RawWorkflowPersistenceStore(
             [],
             persisted =>
@@ -965,8 +965,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
         var store = new RawWorkflowPersistenceStore(
             [],
             persisted =>
@@ -1039,16 +1039,16 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "fan-out"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "fan-out"));
         var canceledWorker = CreateSnapshot(
             canceledWorkerId,
             WorkerState.Canceled,
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "fan-out"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "fan-out"));
         var store = new RawWorkflowPersistenceStore([]);
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
@@ -1122,8 +1122,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
             persistenceStore: store,
@@ -1227,8 +1227,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", handle.RunId!.Value.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(handle.RunId.Value, workflow.Definition.Name, "dispatch"));
 
         Assert.False(runtime.ShouldKeepWorkflowChildWorker(unrelated));
         await runtime.ObserveFinalWorkflowChild(unrelated, CancellationToken.None);
@@ -1275,8 +1275,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
 
         var firstObservation = runtime.ObserveFinalWorkflowChild(child, CancellationToken.None);
         await writeEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
@@ -1328,8 +1328,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
         var settleFinal = typeof(WorkflowRuntime).GetMethod(
             "TryPersistAndSetFinalCompletionWithActionGate",
             BindingFlags.Instance | BindingFlags.NonPublic)
@@ -1385,8 +1385,8 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
-            });
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             runtime.ObserveFinalWorkflowChild(child, CancellationToken.None));
@@ -1444,7 +1444,6 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "fan-out"),
             });
 
         await runtime.ObserveFinalWorkflowChild(forgedWorker, CancellationToken.None);
@@ -1477,7 +1476,6 @@ public sealed class WorkflowRuntimeInternalsShould
             new HashSet<WorkIdentifier>
             {
                 new("workflow-run", run.Id.Value.ToString("D")),
-                new("workflow-step", "dispatch"),
             });
         var runtime = CreateRuntime(
             catalog: new WorkflowCatalog([workflow]),
@@ -3070,8 +3068,9 @@ public sealed class WorkflowRuntimeInternalsShould
     private static WorkerSnapshot CreateSnapshot(
         WorkerId workerId,
         WorkerState state,
-        IReadOnlySet<WorkIdentifier>? identifiers = null)
-        => new(
+        IReadOnlySet<WorkIdentifier>? identifiers = null,
+        WorkflowProvenance? workflowProvenance = null)
+        => new WorkerSnapshot(
             workerId,
             Revision: 1,
             StateSequence: 1,
@@ -3090,7 +3089,10 @@ public sealed class WorkflowRuntimeInternalsShould
             InterruptionReason: null,
             CreatedAt: DateTimeOffset.UtcNow,
             StateChangedAt: DateTimeOffset.UtcNow,
-            UpdatedAt: DateTimeOffset.UtcNow);
+            UpdatedAt: DateTimeOffset.UtcNow)
+        {
+            WorkflowProvenance = workflowProvenance,
+        };
 
     private sealed class EmptyGroupProvider : IWorkAuthorizationGroupProvider
     {

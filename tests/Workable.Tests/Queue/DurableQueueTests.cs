@@ -862,6 +862,7 @@ public sealed class DurableQueueTests
     [Fact]
     public async Task StartupDrainRetriesAfterClaimFailure()
     {
+        var logger = new TestLogger();
         var store = new InMemoryDurableQueueStore
         {
             ClaimReadyFailuresRemaining = 1,
@@ -876,7 +877,8 @@ public sealed class DurableQueueTests
             {
                 accepted.Add(entry);
                 return Task.CompletedTask;
-            });
+            },
+            logger: logger);
 
         using var drainTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         await coordinator.InitializeAndDrain([definition], drainTimeout.Token);
@@ -884,6 +886,37 @@ public sealed class DurableQueueTests
         Assert.Single(accepted);
         Assert.Equal(workerId, accepted[0].Lease.WorkerId);
         Assert.True(store.ClaimReadyAttempts >= 2);
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Warning &&
+                entry.Exception is InvalidOperationException &&
+                entry.Message.Contains("ready-work drain", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StartupFailedRecoveryRetriesAfterClaimFailureAndLogsIt()
+    {
+        var logger = new TestLogger();
+        var store = new InMemoryDurableQueueStore
+        {
+            SupportsFailedWorkerRecovery = true,
+            ClaimFailedFailuresRemaining = 1,
+        };
+        var definition = WorkDefinition.Create("startup-failed-recovery-retry", "Retries failed recovery at startup.");
+        var coordinator = CreateCoordinator(
+            store,
+            (_, _) => Task.CompletedTask,
+            logger: logger);
+
+        using var drainTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await coordinator.InitializeAndDrain([definition], drainTimeout.Token);
+
+        Assert.True(store.ClaimFailedAttempts >= 2);
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Warning &&
+                entry.Exception is InvalidOperationException &&
+                entry.Message.Contains("failed-work recovery", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -911,6 +944,34 @@ public sealed class DurableQueueTests
         Assert.Single(accepted);
         Assert.Equal(workerId, accepted[0].Lease.WorkerId);
         Assert.True(store.ClaimReadyAttempts >= 1);
+    }
+
+    [Fact]
+    public async Task ReadyWorkSignalsDoNotRunFailedWorkerRecoveryClaims()
+    {
+        using var lifetime = new CancellationTokenSource();
+        var store = new InMemoryDurableQueueStore
+        {
+            SupportsFailedWorkerRecovery = true,
+        };
+        var definition = WorkDefinition.Create("ready-claim-only", "Keeps failed recovery off the signaled ready-work path.");
+        var coordinator = CreateCoordinator(
+            store,
+            (_, _) => Task.CompletedTask,
+            lifetime.Token,
+            leaseDuration: TimeSpan.FromMinutes(1));
+
+        await coordinator.InitializeAndDrain([definition], CancellationToken.None);
+        Assert.Equal(1, store.ClaimFailedAttempts);
+        store.ResetClaimAttempts();
+        coordinator.StartBackgroundTasks();
+
+        coordinator.SignalReader();
+        await store.WaitForClaimReadyAttempts(1, TimeSpan.FromSeconds(2));
+
+        Assert.Equal(0, store.ClaimFailedAttempts);
+        lifetime.Cancel();
+        await coordinator.StopBackgroundTasks(CancellationToken.None);
     }
 
     [Fact]
@@ -1079,6 +1140,7 @@ public sealed class DurableQueueTests
     public async Task BackgroundReaderRetriesAfterClaimFailure()
     {
         using var lifetime = new CancellationTokenSource();
+        var logger = new TestLogger();
         var accepted = new TaskCompletionSource<WorkQueueDurabilityEntry>(TaskCreationOptions.RunContinuationsAsynchronously);
         var store = new InMemoryDurableQueueStore
         {
@@ -1094,7 +1156,8 @@ public sealed class DurableQueueTests
                 accepted.TrySetResult(entry);
                 return Task.CompletedTask;
             },
-            lifetime.Token);
+            lifetime.Token,
+            logger: logger);
 
         coordinator.StartBackgroundTasks();
         var entry = await accepted.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -1102,6 +1165,73 @@ public sealed class DurableQueueTests
 
         Assert.Equal(workerId, entry.Lease.WorkerId);
         Assert.True(store.ClaimReadyAttempts >= 2);
+        Assert.Contains(
+            logger.Entries,
+            log => log.Level == LogLevel.Warning &&
+                log.Exception is InvalidOperationException &&
+                log.Message.Contains("ready-work reader", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CleanupRetriesAfterDeleteFailureAndLogsIt()
+    {
+        using var lifetime = new CancellationTokenSource();
+        var logger = new TestLogger();
+        var store = new InMemoryDurableQueueStore
+        {
+            DeleteFinalFailuresRemaining = 1,
+        };
+        var workerId = WorkerId.New();
+        var coordinator = CreateCoordinator(store, (_, _) => Task.CompletedTask, lifetime.Token, logger: logger);
+        coordinator.TrackLease(workerId, new WorkQueueDurabilityLease(workerId, "test-owner", "cleanup-retry-lease"));
+
+        coordinator.StartBackgroundTasks();
+        coordinator.DeleteFinal(workerId);
+        await TestEventually.Until(
+            () => coordinator.Diagnostics.PendingCleanupCount == 0,
+            "Expected final cleanup to retry and complete.",
+            timeout: TimeSpan.FromSeconds(2));
+        lifetime.Cancel();
+        await coordinator.StopBackgroundTasks(CancellationToken.None);
+
+        Assert.True(store.DeleteFinalAttempts >= 2);
+        Assert.Contains(workerId, store.DeletedFinalWorkers);
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Warning &&
+                entry.Exception is InvalidOperationException &&
+                entry.Message.Contains("durable cleanup", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CleanupRetriesAfterFailureRetentionFailureAndLogsIt()
+    {
+        using var lifetime = new CancellationTokenSource();
+        var logger = new TestLogger();
+        var store = new InMemoryDurableQueueStore
+        {
+            RetainFailedFailuresRemaining = 1,
+        };
+        var workerId = WorkerId.New();
+        var coordinator = CreateCoordinator(store, (_, _) => Task.CompletedTask, lifetime.Token, logger: logger);
+        coordinator.TrackLease(workerId, new WorkQueueDurabilityLease(workerId, "test-owner", "retention-retry-lease"));
+
+        coordinator.StartBackgroundTasks();
+        coordinator.RetainFailed(workerId, DateTimeOffset.UtcNow, []);
+        await TestEventually.Until(
+            () => coordinator.Diagnostics.PendingCleanupCount == 0,
+            "Expected failed-worker retention to retry and complete.",
+            timeout: TimeSpan.FromSeconds(2));
+        lifetime.Cancel();
+        await coordinator.StopBackgroundTasks(CancellationToken.None);
+
+        Assert.True(store.RetainFailedAttempts >= 2);
+        Assert.Contains(workerId, store.RetainedFailedWorkers);
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Warning &&
+                entry.Exception is InvalidOperationException &&
+                entry.Message.Contains("durable cleanup", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1301,7 +1431,8 @@ public sealed class DurableQueueTests
         Func<WorkQueueDurabilityEntry, CancellationToken, Task> acceptPersistedEntry,
         CancellationToken lifetimeToken = default,
         Action<WorkerId>? leaseLost = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        TimeSpan? leaseDuration = null)
         => new(
             store,
             WorkSystemId.New(),
@@ -1315,8 +1446,10 @@ public sealed class DurableQueueTests
             readerPollInterval: TimeSpan.FromMilliseconds(10),
             leaseRenewalInterval: TimeSpan.FromMilliseconds(10),
             retryDelay: TimeSpan.FromMilliseconds(10),
-            leaseDuration: TimeSpan.FromSeconds(1),
-            batchSize: 10);
+            leaseDuration: leaseDuration ?? TimeSpan.FromSeconds(1),
+            batchSize: 10,
+            acceptPersistedFailedEntry: (_, _) => Task.CompletedTask,
+            cleanupRetryDelay: TimeSpan.FromMilliseconds(10));
 
     private static WorkIdempotencyPersistenceRequest CreateIdempotencyRequest(
         WorkDefinition definition,
@@ -1374,6 +1507,12 @@ public sealed class DurableQueueTests
 
         public int ClaimReadyAttempts { get; private set; }
 
+        public bool SupportsFailedWorkerRecovery { get; set; }
+
+        public int ClaimFailedAttempts { get; private set; }
+
+        public int ClaimFailedFailuresRemaining { get; set; }
+
         public bool HoldClaims { get; set; }
 
         public int RenewLeaseFailuresRemaining { get; set; }
@@ -1385,6 +1524,14 @@ public sealed class DurableQueueTests
         public WorkQueueDurabilityLease? LoseLeaseOnDeleteFinal { get; set; }
 
         public bool BlockDeleteFinal { get; set; }
+
+        public int DeleteFinalFailuresRemaining { get; set; }
+
+        public int DeleteFinalAttempts { get; private set; }
+
+        public int RetainFailedFailuresRemaining { get; set; }
+
+        public int RetainFailedAttempts { get; private set; }
 
         public int TransactionalDeleteFinals { get; private set; }
 
@@ -1414,6 +1561,15 @@ public sealed class DurableQueueTests
             lock (this.sync)
             {
                 this.ClaimReadyAttempts = 0;
+            }
+        }
+
+        public void ResetClaimAttempts()
+        {
+            lock (this.sync)
+            {
+                this.ClaimReadyAttempts = 0;
+                this.ClaimFailedAttempts = 0;
             }
         }
 
@@ -1504,10 +1660,31 @@ public sealed class DurableQueueTests
                     entry.Options,
                     entry.Configuration,
                     entry.RequestContext,
-                    entry.CreatedAt);
+                    entry.CreatedAt)
+                {
+                    WorkflowProvenance = entry.WorkflowProvenance,
+                };
             }
 
             await Task.CompletedTask;
+        }
+
+        public async IAsyncEnumerable<WorkQueueDurabilityFailedEntry> ClaimFailed(
+            WorkQueueDurabilityClaimRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            lock (this.sync)
+            {
+                this.ClaimFailedAttempts++;
+                if (this.ClaimFailedFailuresRemaining > 0)
+                {
+                    this.ClaimFailedFailuresRemaining--;
+                    throw new InvalidOperationException("Transient durable failed-recovery claim failure.");
+                }
+            }
+
+            await Task.CompletedTask;
+            yield break;
         }
 
         public Task RenewLeases(IReadOnlyList<WorkQueueDurabilityLease> leases, TimeSpan leaseDuration, CancellationToken cancellationToken = default)
@@ -1536,6 +1713,13 @@ public sealed class DurableQueueTests
         {
             lock (this.sync)
             {
+                this.RetainFailedAttempts++;
+                if (this.RetainFailedFailuresRemaining > 0)
+                {
+                    this.RetainFailedFailuresRemaining--;
+                    throw new InvalidOperationException("Transient durable failure-retention failure.");
+                }
+
                 this.RetainedFailedWorkers.AddRange(workers.Select(worker => worker.WorkerId));
             }
 
@@ -1546,6 +1730,16 @@ public sealed class DurableQueueTests
             IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
             CancellationToken cancellationToken = default)
         {
+            lock (this.sync)
+            {
+                this.DeleteFinalAttempts++;
+                if (this.DeleteFinalFailuresRemaining > 0)
+                {
+                    this.DeleteFinalFailuresRemaining--;
+                    throw new InvalidOperationException("Transient durable final-cleanup failure.");
+                }
+            }
+
             if (this.LoseLeaseOnDeleteFinal is { } lostLease)
             {
                 this.LoseLeaseOnDeleteFinal = null;
@@ -1648,6 +1842,18 @@ public sealed class DurableQueueTests
                     }
                 },
                 $"Expected at least {minimumAttempts} lease renewal attempt(s).",
+                timeout: timeout);
+
+        public async Task WaitForClaimReadyAttempts(int minimumAttempts, TimeSpan timeout)
+            => await TestEventually.Until(
+                () =>
+                {
+                    lock (this.sync)
+                    {
+                        return this.ClaimReadyAttempts >= minimumAttempts;
+                    }
+                },
+                $"Expected at least {minimumAttempts} ready claim attempt(s).",
                 timeout: timeout);
 
         public async Task WaitForDeleteFinalStarted(TimeSpan timeout)

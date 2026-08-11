@@ -326,8 +326,15 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
-            var step = this.steps.SingleOrDefault(step => string.Equals(step.Name, name, StringComparison.Ordinal));
-            return step?.ContainsWorker(workerId) == true;
+            foreach (var step in this.steps)
+            {
+                if (string.Equals(step.Name, name, StringComparison.Ordinal))
+                {
+                    return step.ContainsWorker(workerId);
+                }
+            }
+
+            return false;
         }
     }
 
@@ -691,7 +698,10 @@ internal sealed class WorkflowRunState
             this.startedAt,
             this.completedAt,
             this.messages,
-            this.childReceipts.Values.ToArray());
+            this.childReceipts.Values.ToArray())
+        {
+            DefinitionId = this.DefinitionVersion.DefinitionId,
+        };
 
     private WorkflowRunSnapshot ToSnapshotLocked(
         WorkflowRunStatus snapshotStatus,
@@ -707,7 +717,10 @@ internal sealed class WorkflowRunState
             this.startedAt,
             snapshotCompletedAt,
             snapshotMessages,
-            this.childReceipts.Values.ToArray());
+            this.childReceipts.Values.ToArray())
+        {
+            DefinitionId = this.DefinitionVersion.DefinitionId,
+        };
 
     private sealed class WorkflowStepRunState
     {

@@ -62,7 +62,7 @@ internal sealed class WorkflowEventPublisher(
         var step = string.IsNullOrWhiteSpace(stepName)
             ? null
             : snapshot.Steps.SingleOrDefault(candidate => string.Equals(candidate.Name, stepName, StringComparison.Ordinal));
-        var identifiers = CreateIdentifiers(snapshot, step);
+        var identifiers = CreateIdentifiers(snapshot);
         events.Publish(
             new WorkflowEventState(snapshot, step, requestContext, action, actionStatus, messages, identifiers),
             state => new WorkEventMetadata(
@@ -73,7 +73,9 @@ internal sealed class WorkflowEventPublisher(
                 subjectId: null,
                 concurrencyKey: null,
                 eventType,
-                () => state.Identifiers),
+                () => state.Identifiers,
+                WorkEventDefinitionKind.Workflow,
+                state.Snapshot.DefinitionId),
             state => new WorkEvent(
                 DateTimeOffset.UtcNow,
                 workSystemId,
@@ -91,25 +93,16 @@ internal sealed class WorkflowEventPublisher(
                     state.RequestContext,
                     state.Action,
                     state.ActionStatus,
-                    state.Messages)));
+                    state.Messages),
+                WorkEventDefinitionKind.Workflow,
+                state.Snapshot.DefinitionId));
     }
 
-    private static IReadOnlySet<WorkIdentifier> CreateIdentifiers(
-        WorkflowRunSnapshot snapshot,
-        WorkflowStepRunSnapshot? step)
-    {
-        var identifiers = new HashSet<WorkIdentifier>
+    private static IReadOnlySet<WorkIdentifier> CreateIdentifiers(WorkflowRunSnapshot snapshot)
+        => new HashSet<WorkIdentifier>
         {
             new("workflow-run", snapshot.Id.Value.ToString("D")),
-            new("workflow-definition", snapshot.DefinitionName),
         };
-        if (step is not null)
-        {
-            identifiers.Add(new WorkIdentifier("workflow-step", step.Name));
-        }
-
-        return identifiers;
-    }
 
     private sealed record WorkflowEventState(
         WorkflowRunSnapshot Snapshot,

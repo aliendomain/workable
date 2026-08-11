@@ -2,7 +2,8 @@ namespace Workable;
 
 internal sealed class AuthorizedWorkEventStream(
     IWorkEventStream inner,
-    IReadOnlySet<string> readableDefinitionNames) : IWorkEventStream
+    IReadOnlySet<string> readableWorkDefinitionNames,
+    IReadOnlySet<string> readableWorkflowDefinitionNames) : IWorkEventStream
 {
     public IWorkEventSubscription Subscribe(
         WorkEventFilter? filter = null,
@@ -16,22 +17,47 @@ internal sealed class AuthorizedWorkEventStream(
 
     private WorkEventFilter? CreateAuthorizedFilter(WorkEventFilter? filter)
     {
-        if (readableDefinitionNames.Count == 0)
+        var readableDefinitions = CreateReadableDefinitions();
+        if (readableDefinitions.Count == 0)
         {
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(filter?.DefinitionName))
+        if (filter?.DefinitionKind is { } requestedKind)
         {
-            return readableDefinitionNames.Contains(filter.DefinitionName) ? filter : null;
+            readableDefinitions.RemoveWhere(definition => definition.Kind != requestedKind);
         }
 
-        var definitionNames = filter?.DefinitionNames is { Count: > 0 } requested
-            ? requested.Where(readableDefinitionNames.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase)
-            : readableDefinitionNames;
+        if (!string.IsNullOrWhiteSpace(filter?.DefinitionName))
+        {
+            readableDefinitions.RemoveWhere(definition =>
+                !string.Equals(definition.Name, filter.DefinitionName, StringComparison.OrdinalIgnoreCase));
+            return readableDefinitions.Count == 0
+                ? null
+                : filter with { AuthorizedDefinitions = readableDefinitions };
+        }
 
-        return definitionNames.Count == 0
+        if (filter?.DefinitionNames is { Count: > 0 } requested)
+        {
+            readableDefinitions.RemoveWhere(definition =>
+                !requested.Contains(definition.Name, StringComparer.OrdinalIgnoreCase));
+        }
+
+        return readableDefinitions.Count == 0
             ? null
-            : (filter ?? new WorkEventFilter()) with { DefinitionNames = definitionNames };
+            : (filter ?? new WorkEventFilter()) with
+            {
+                DefinitionNames = readableDefinitions
+                    .Select(static definition => definition.Name)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase),
+                AuthorizedDefinitions = readableDefinitions,
+            };
     }
+
+    private HashSet<WorkEventDefinitionScope> CreateReadableDefinitions()
+        => readableWorkDefinitionNames
+            .Select(static name => new WorkEventDefinitionScope(WorkEventDefinitionKind.Work, name))
+            .Concat(readableWorkflowDefinitionNames.Select(static name =>
+                new WorkEventDefinitionScope(WorkEventDefinitionKind.Workflow, name)))
+            .ToHashSet(WorkEventDefinitionScopeComparer.Instance);
 }

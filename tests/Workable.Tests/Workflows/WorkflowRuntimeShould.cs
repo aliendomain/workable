@@ -113,6 +113,262 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
+    public async Task ExecuteDeclaredWorkflowChildWithoutDirectChildQueuePermission()
+    {
+        var childRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var child = WorkDefinition.Create("workflow.delegation.restricted-child");
+        var actor = new WorkActor("workflow-parent-operator", "Workflow Parent Operator");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                child,
+                (_, _, _) =>
+                {
+                    childRan.TrySetResult();
+                    return Task.FromResult(WorkExecutionResult.Success());
+                },
+                configure: null,
+                authorize: authorization => authorization.AllowQueueToGroups("child.queue"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.delegation.parent"),
+                workflow => workflow.DispatchWork("child", child),
+                authorize: authorization => authorization.AllowOperateToGroups("workflow.queue"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor,
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                actor,
+                Groups("workflow.queue"),
+                readableDefinitionIds: null),
+        };
+        var session = await system.CreateSession(requestContext);
+        var directChild = await session.Queue.Enqueue(child.Name);
+
+        var workflowHandle = await system.WorkflowRuntime.Start(
+            "workflow.delegation.parent",
+            requestContext);
+        var completion = await workflowHandle.WaitForCompletion();
+        await childRan.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(WorkQueueStatus.Unauthorized, directChild.QueueOutcome.Status);
+        Assert.True(workflowHandle.StartOutcome.IsAccepted);
+        Assert.True(completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task ExposeOnlyWorkflowRunIdToChildReadersWithoutWorkflowReadPermission()
+    {
+        var child = WorkDefinition.Create("workflow.provenance.public-child");
+        var workflowName = "workflow.provenance.private-definition";
+        var stepName = "private-internal-step";
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                child,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configure: null,
+                authorize: authorization => authorization.AllowReadToGroups("child.read"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(workflowName),
+                workflow => workflow.DispatchWork(stepName, child),
+                authorize: authorization => authorization.AllowOperateToGroups("workflow.operate"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var operatorActor = new WorkActor("workflow-private-operator");
+        var operatorContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            operatorActor,
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                operatorActor,
+                Groups("workflow.operate"),
+                readableDefinitionIds: null),
+        };
+        var readerActor = new WorkActor("child-only-reader");
+        var readerContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            readerActor,
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                readerActor,
+                Groups("child.read"),
+                readableDefinitionIds: null),
+        };
+
+        var handle = await system.WorkflowRuntime.Start(workflowName, operatorContext);
+        var completion = await handle.WaitForCompletion();
+        var childWorkerId = Assert.Single(Assert.Single(completion.Run!.Steps).WorkerIds);
+        var readerSession = await system.CreateSession(readerContext);
+        var visibleChild = await readerSession.Query.Worker(childWorkerId);
+        var visibleWorkflow = await system.WorkflowRuntime.GetVisible(handle.RunId!.Value, readerContext);
+        var serializedChild = System.Text.Json.JsonSerializer.Serialize(visibleChild);
+
+        Assert.NotNull(visibleChild);
+        Assert.Equal(handle.RunId, visibleChild!.WorkflowRunId);
+        Assert.Null(visibleWorkflow);
+        Assert.Contains("\"WorkflowRunId\"", serializedChild, StringComparison.Ordinal);
+        Assert.DoesNotContain("WorkflowProvenance", serializedChild, StringComparison.Ordinal);
+        Assert.DoesNotContain(workflowName, serializedChild, StringComparison.Ordinal);
+        Assert.DoesNotContain(stepName, serializedChild, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ControlDeclaredWorkflowChildWithoutDirectChildWorkerPermission()
+    {
+        var childStarted = new TaskCompletionSource<WorkerId>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var child = WorkDefinition.Create("workflow.delegation.control.restricted-child");
+        var actor = new WorkActor("workflow-parent-controller", "Workflow Parent Controller");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                child,
+                async (context, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult(context.WorkerId);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                },
+                configure: null,
+                authorize: authorization => authorization
+                    .AllowQueueToGroups("child.queue")
+                    .AllowWorkerActionsToGroups("child.control"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.delegation.control.parent"),
+                workflow => workflow.DispatchWork("child", child),
+                authorize: authorization => authorization.AllowOperateToGroups("workflow.control"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor,
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                actor,
+                Groups("workflow.control"),
+                readableDefinitionIds: null),
+        };
+        var session = await system.CreateSession(requestContext);
+        var workflowHandle = await system.WorkflowRuntime.Start(
+            "workflow.delegation.control.parent",
+            requestContext);
+        var childWorkerId = await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var childSnapshot = await system.WorkerOperations.Get(childWorkerId)
+            ?? throw new InvalidOperationException("Expected the workflow child worker.");
+
+        var directCancel = await session.Workers.Execute(childSnapshot.Version, WorkAction.Cancel);
+        var workflowCancel = await system.WorkflowRuntime.Execute(
+            workflowHandle.RunId!.Value,
+            WorkflowAction.Cancel,
+            requestContext);
+        var completion = await workflowHandle.WaitForCompletion();
+
+        await TestEventually.Until(
+            async () => (await system.WorkerOperations.Get(childWorkerId))?.State == WorkerState.Canceled,
+            "Expected workflow cancellation to propagate to its restricted child.");
+        Assert.Equal(WorkActionStatus.Unauthorized, directCancel.Status);
+        Assert.True(workflowCancel.IsAccepted);
+        Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
+    }
+
+    [Fact]
+    public async Task DoNotDelegateControlToWorkerWithoutMatchingAuthoritativeWorkflowProvenance()
+    {
+        var child = WorkDefinition.Create("workflow.delegation.control.unrelated-child");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                child,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                configure: configuration => configuration.DoNotStart(),
+                authorize: authorization => authorization
+                    .AllowQueueToGroups("child.queue")
+                    .AllowWorkerActionsToGroups("child.control"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.delegation.control.provenance"),
+                workflow => workflow.DispatchWork("child", child),
+                authorize: authorization => authorization.AllowOperateToGroups("workflow.control"));
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var creator = new WorkActor("child-creator", "Child Creator");
+        var creatorContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            creator,
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                creator,
+                Groups("child.queue"),
+                readableDefinitionIds: null),
+        };
+        var controller = new WorkActor("workflow-controller", "Workflow Controller");
+        var controllerContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            controller,
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                controller,
+                Groups("workflow.control"),
+                readableDefinitionIds: null),
+        };
+        var creatorSession = await system.CreateSession(creatorContext);
+        var controllerSession = await system.CreateSession(controllerContext);
+        var workflow = system.Workflows.TryGet("workflow.delegation.control.provenance", out var registeredWorkflow)
+            ? registeredWorkflow
+            : throw new InvalidOperationException("Expected the workflow registration.");
+        var run = WorkflowRunState.Create(workflow, controllerContext);
+        var unrelatedHandle = await creatorSession.Queue.Enqueue(child.Name);
+        var unrelatedWorkerId = unrelatedHandle.WorkerId ?? throw new InvalidOperationException(
+            "Expected the unrelated worker to be queued.");
+        run.MarkStepCompleted("child", [unrelatedWorkerId]);
+
+        var cancellation = await WorkflowExecutionSupport.CancelOutstandingChildren(
+            run,
+            controllerSession,
+            system.WorkerOperations.GetAuthoritative,
+            CancellationToken.None,
+            system.WorkerOperations);
+        var unrelatedWorker = await system.WorkerOperations.Get(unrelatedWorkerId);
+
+        Assert.False(cancellation.IsSuccessful);
+        Assert.Contains(cancellation.Messages, message => message.Code == "workable.worker.unauthorized");
+        Assert.Equal(WorkerState.Queued, unrelatedWorker?.State);
+    }
+
+    [Fact]
     public async Task ExecuteDispatchWorkAndCompleteWorkflow()
     {
         var ran = 0;
@@ -375,7 +631,7 @@ public sealed class WorkflowRuntimeShould
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.dispatch.context"),
                 workflow => workflow.DispatchWork(
-                    "dispatch",
+                    "sensitive-internal-step",
                     Work("sample.dispatch"),
                     WorkInput.Empty.WithIdentifier(new WorkIdentifier("existing", "value"))));
         });
@@ -412,12 +668,35 @@ public sealed class WorkflowRuntimeShould
         Assert.Contains(
             childInput.Identifiers!,
             identifier => identifier.Type == "workflow-run" && identifier.Value == handle.RunId!.Value.ToString());
-        Assert.Contains(
+        Assert.DoesNotContain(
             childInput.Identifiers!,
-            identifier => identifier.Type == "workflow-definition" && identifier.Value == "workflow.dispatch.context");
-        Assert.Contains(
-            childInput.Identifiers!,
-            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+            identifier => identifier.Type is "workflow-definition" or "workflow-step");
+
+        var childWorkerId = Assert.Single(Assert.Single(completion.Run!.Steps).WorkerIds);
+        var child = await system.WorkerOperations.Get(childWorkerId)
+            ?? throw new InvalidOperationException("Expected workflow child worker snapshot.");
+        var provenance = child.WorkflowProvenance
+            ?? throw new InvalidOperationException("Expected trusted workflow provenance.");
+        Assert.Equal(handle.RunId!.Value, provenance.RunId);
+        Assert.Equal("workflow.dispatch.context", provenance.DefinitionName);
+        Assert.Equal("sensitive-internal-step", provenance.StepName);
+
+        var session = await system.CreateSession(requestContext);
+        var views = new WorkableViewQueryAdapter();
+        var overview = await views.WorkerOverview(session, childWorkerId);
+        var realtime = await views.WorkerOverviewRealtimeState(session, childWorkerId);
+        Assert.Equal(provenance.RunId, overview?.Worker.WorkflowRunId);
+        Assert.Equal(provenance.RunId, realtime?.Worker.WorkflowRunId);
+        var serializedWorker = System.Text.Json.JsonSerializer.Serialize(child);
+        var serializedOverview = System.Text.Json.JsonSerializer.Serialize(overview?.Worker);
+        Assert.Contains("\"WorkflowRunId\"", serializedWorker, StringComparison.Ordinal);
+        Assert.DoesNotContain("WorkflowProvenance", serializedWorker, StringComparison.Ordinal);
+        Assert.DoesNotContain(provenance.DefinitionName, serializedWorker, StringComparison.Ordinal);
+        Assert.DoesNotContain(provenance.StepName, serializedWorker, StringComparison.Ordinal);
+        Assert.Contains("\"WorkflowRunId\"", serializedOverview, StringComparison.Ordinal);
+        Assert.DoesNotContain("WorkflowProvenance", serializedOverview, StringComparison.Ordinal);
+        Assert.DoesNotContain(provenance.DefinitionName, serializedOverview, StringComparison.Ordinal);
+        Assert.DoesNotContain(provenance.StepName, serializedOverview, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -469,12 +748,11 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal(input.Json, completion.Run!.Input?.Json);
         Assert.Equal(["external-42", "external-42"], received.OrderBy(static item => item, StringComparer.Ordinal).ToArray());
         Assert.All(capturedInputs, captured => Assert.Contains(new WorkIdentifier("external-key", "external-42"), captured.Identifiers!));
-        Assert.Equal(
-            ["archive", "prepare"],
-            capturedInputs
-                .Select(input => input.Identifiers!.Single(identifier => identifier.Type == "workflow-step").Value)
-                .OrderBy(static item => item, StringComparer.Ordinal)
-                .ToArray());
+        Assert.All(
+            capturedInputs,
+            captured => Assert.DoesNotContain(
+                captured.Identifiers!,
+                identifier => identifier.Type is "workflow-definition" or "workflow-step"));
     }
 
     [Fact]
@@ -553,7 +831,7 @@ public sealed class WorkflowRuntimeShould
         Assert.Null(captured!.Json);
         Assert.Contains(
             captured.Identifiers!,
-            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+            identifier => identifier.Type == "workflow-run" && identifier.Value == handle.RunId!.Value.ToString());
     }
 
     [Fact]
@@ -2487,6 +2765,7 @@ public sealed class WorkflowRuntimeShould
         var canceled = await handle.WaitForCompletion();
         Assert.Equal(WorkflowRunStatus.Canceled, canceled.Status);
         store.Requeue(remainingWorkerId);
+        store.RequireWorkflowReadBeforeNextClaim();
 
         var resumedAlpha = 0;
         var resumedBeta = 0;
@@ -2576,7 +2855,7 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal("durable-recovered", payload.ExternalKey);
         Assert.Contains(
             archiveInput.Identifiers!,
-            identifier => identifier.Type == "workflow-step" && identifier.Value == "archive");
+            identifier => identifier.Type == "workflow-run" && identifier.Value == handle.RunId!.Value.ToString());
     }
 
     [Fact]
@@ -4672,6 +4951,7 @@ public sealed class WorkflowRuntimeShould
         private readonly Lock sync = new();
         private readonly Queue<WorkQueueDurabilityEnqueueRequest> pending = [];
         private readonly Dictionary<WorkflowRunId, WorkflowRunPersistenceRecord> workflowRuns = [];
+        private bool requireWorkflowReadBeforeNextClaim;
 
         public List<WorkflowPersistenceInitializationContext> WorkflowInitializations { get; } = [];
 
@@ -4750,6 +5030,13 @@ public sealed class WorkflowRuntimeShould
             List<WorkQueueDurabilityEnqueueRequest> claimed = [];
             lock (this.sync)
             {
+                if (this.requireWorkflowReadBeforeNextClaim && this.WorkflowReadRequests.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        "Expected durable workflow runs to be loaded before durable child work was claimed.");
+                }
+
+                this.requireWorkflowReadBeforeNextClaim = false;
                 while (this.pending.TryDequeue(out var entry))
                 {
                     claimed.Add(entry);
@@ -4766,7 +5053,10 @@ public sealed class WorkflowRuntimeShould
                     entry.Options,
                     entry.Configuration,
                     entry.RequestContext,
-                    entry.CreatedAt);
+                    entry.CreatedAt)
+                {
+                    WorkflowProvenance = entry.WorkflowProvenance,
+                };
             }
 
             await Task.CompletedTask;
@@ -4890,6 +5180,15 @@ public sealed class WorkflowRuntimeShould
                 var request = this.Enqueued.LastOrDefault(entry => entry.WorkerId == workerId)
                     ?? throw new InvalidOperationException($"Expected durable worker '{workerId.Value:D}'.");
                 this.pending.Enqueue(request);
+            }
+        }
+
+        public void RequireWorkflowReadBeforeNextClaim()
+        {
+            lock (this.sync)
+            {
+                this.WorkflowReadRequests.Clear();
+                this.requireWorkflowReadBeforeNextClaim = true;
             }
         }
 

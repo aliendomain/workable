@@ -13,6 +13,7 @@ namespace Workable.PerformanceHarness;
 /// </summary>
 public class BaselineSqlProfilingBenchmarks
 {
+    private const int OperationsPerInvocation = 1_024;
     private SqlCommand representativeCommand = null!;
     private SqlCommand unsupportedValueCommand = null!;
     private Exception failure = null!;
@@ -45,19 +46,43 @@ public class BaselineSqlProfilingBenchmarks
         this.failure = new InvalidOperationException(new string('e', 8_000));
     }
 
-    [Benchmark(Baseline = true)]
+    [Benchmark(Baseline = true, OperationsPerInvoke = OperationsPerInvocation)]
     public object CaptureSuccessfulCommand()
-        => WorkableSqlServerCommandProfilingObserver.CaptureCommandForBenchmark(this.representativeCommand);
+    {
+        object capture = null!;
+        for (var index = 0; index < OperationsPerInvocation; index++)
+        {
+            capture = WorkableSqlServerCommandProfilingObserver.CaptureCommandForBenchmark(this.representativeCommand);
+        }
 
-    [Benchmark]
+        return capture;
+    }
+
+    [Benchmark(OperationsPerInvoke = OperationsPerInvocation)]
     public object CaptureFailedCommand()
-        => WorkableSqlServerCommandProfilingObserver.CaptureFailedCommandForBenchmark(
-            this.representativeCommand,
-            this.failure);
+    {
+        object capture = null!;
+        for (var index = 0; index < OperationsPerInvocation; index++)
+        {
+            capture = WorkableSqlServerCommandProfilingObserver.CaptureFailedCommandForBenchmark(
+                this.representativeCommand,
+                this.failure);
+        }
 
-    [Benchmark]
+        return capture;
+    }
+
+    [Benchmark(OperationsPerInvoke = OperationsPerInvocation)]
     public object CaptureUnsupportedParameterAndWhitespaceStatement()
-        => WorkableSqlServerCommandProfilingObserver.CaptureCommandForBenchmark(this.unsupportedValueCommand);
+    {
+        object capture = null!;
+        for (var index = 0; index < OperationsPerInvocation; index++)
+        {
+            capture = WorkableSqlServerCommandProfilingObserver.CaptureCommandForBenchmark(this.unsupportedValueCommand);
+        }
+
+        return capture;
+    }
 
     [GlobalCleanup]
     public void GlobalCleanup()

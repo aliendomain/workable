@@ -34,7 +34,8 @@ internal static class SampleHostWorkableAdmin
             systemName,
             Actor,
             Groups,
-            readableDefinitionIds: null);
+            readableDefinitionIds: null,
+            isAuthenticated: true);
         return new WorkRequestContext(
             origin,
             description,

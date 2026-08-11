@@ -8,7 +8,9 @@ internal sealed class WorkEventMetadata(
     WorkSubjectId? subjectId,
     WorkConcurrencyKey? concurrencyKey,
     string eventType,
-    Func<IReadOnlySet<WorkIdentifier>>? getIdentifiers = null)
+    Func<IReadOnlySet<WorkIdentifier>>? getIdentifiers = null,
+    WorkEventDefinitionKind definitionKind = WorkEventDefinitionKind.Work,
+    WorkflowDefinitionId? workflowDefinitionId = null)
 {
     private static readonly IReadOnlySet<WorkIdentifier> EmptyIdentifiers = new HashSet<WorkIdentifier>();
     private IReadOnlySet<WorkIdentifier>? identifiers;
@@ -19,6 +21,10 @@ internal sealed class WorkEventMetadata(
 
     public WorkDefinitionId? DefinitionId { get; } = definitionId;
 
+    public WorkEventDefinitionKind DefinitionKind { get; } = definitionKind;
+
+    public WorkflowDefinitionId? WorkflowDefinitionId { get; } = workflowDefinitionId;
+
     public string? DefinitionName { get; } = definitionName;
 
     public WorkSubjectId? SubjectId { get; } = subjectId;
@@ -26,6 +32,10 @@ internal sealed class WorkEventMetadata(
     public WorkConcurrencyKey? ConcurrencyKey { get; } = concurrencyKey;
 
     public string EventType { get; } = eventType;
+
+    public WorkEventDefinitionScope? DefinitionScope { get; } = string.IsNullOrWhiteSpace(definitionName)
+        ? null
+        : new WorkEventDefinitionScope(definitionKind, definitionName);
 
     public bool ContainsIdentifier(WorkIdentifier identifier)
         => this.Identifiers.Contains(identifier);

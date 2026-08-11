@@ -6,6 +6,7 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
     private readonly List<WorkExceptionClassifier> exceptionClassifiers = [];
     private readonly List<WorkAutomaticStartRegistration> automaticStarts = [];
     private readonly List<WorkInitializationRegistration> initializers = [];
+    private bool applyingWorkDefaults;
     private WorkConfiguration configuration = configuration;
 
     public IWorkConfigurationBuilder UseStart(WorkStartConfiguration start)
@@ -377,6 +378,28 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
         return this;
     }
 
+    public IWorkConfigurationBuilder AllowChildExecution(params string[] definitionNames)
+    {
+        this.ThrowIfApplyingWorkDefaults();
+        this.configuration = this.configuration with
+        {
+            ChildExecution = this.configuration.ChildExecution.AllowAdditional(definitionNames),
+        };
+        return this;
+    }
+
+    public IWorkConfigurationBuilder AllowChildExecution(params WorkDefinition[] definitions)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        if (definitions.Any(static definition => definition is null))
+        {
+            throw new ArgumentException("Child work definitions cannot contain null values.", nameof(definitions));
+        }
+
+        this.ThrowIfApplyingWorkDefaults();
+        return this.AllowChildExecution(definitions.Select(static definition => definition.Name).ToArray());
+    }
+
     public IWorkConfigurationBuilder ClassifyExceptions(WorkExceptionClassifier classifier)
     {
         ArgumentNullException.ThrowIfNull(classifier);
@@ -396,6 +419,32 @@ internal sealed class WorkConfigurationBuilder(WorkConfiguration configuration) 
 
     internal WorkConfiguration Build()
         => this.configuration;
+
+    internal void ApplyWorkDefaults(Action<IWorkConfigurationBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+
+        this.applyingWorkDefaults = true;
+        try
+        {
+            configure(this);
+        }
+        finally
+        {
+            this.applyingWorkDefaults = false;
+        }
+    }
+
+    private void ThrowIfApplyingWorkDefaults()
+    {
+        if (this.applyingWorkDefaults)
+        {
+            throw new InvalidOperationException(
+                "AllowChildExecution cannot be used inside WithWorkDefaults because it grants delegated " +
+                "execution authority to every work registration in the defaults scope. Declare " +
+                "AllowChildExecution in the individual work registration's configure callback instead.");
+        }
+    }
 
     internal IReadOnlyList<WorkExceptionClassifier> BuildExceptionClassifiers()
         => [.. this.exceptionClassifiers];

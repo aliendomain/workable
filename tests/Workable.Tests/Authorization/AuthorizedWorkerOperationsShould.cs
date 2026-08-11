@@ -69,6 +69,7 @@ public sealed class AuthorizedWorkerOperationsShould
         Assert.Equal(0, outcome.MatchedWorkerCount);
         Assert.Empty(outcome.Outcomes);
         Assert.Equal(0, query.WorkersCallCount);
+        Assert.Equal(0, inner.BulkCandidateCallCount);
         Assert.Empty(inner.Executed);
     }
 
@@ -89,11 +90,12 @@ public sealed class AuthorizedWorkerOperationsShould
         Assert.Equal(0, outcome.MatchedWorkerCount);
         Assert.Empty(outcome.Outcomes);
         Assert.Equal(0, query.WorkersCallCount);
+        Assert.Equal(0, inner.BulkCandidateCallCount);
         Assert.Empty(inner.Executed);
     }
 
     [Fact]
-    public async Task ScopeBulkActionsToOperableDefinitionsAndForwardWorkerVersions()
+    public async Task UseAuthoritativeBulkCandidatesWithoutQueryingProjectionAndPreserveScope()
     {
         var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
         var hidden = CreateRegisteredWork("hidden.work", authorize => authorize.AllowOperateToGroups("hidden.operate"));
@@ -105,27 +107,22 @@ public sealed class AuthorizedWorkerOperationsShould
             out var inner);
         var first = WorkerId.New();
         var second = WorkerId.New();
-        query.WorkerPages.Enqueue([
-            CreateWorkerOverview(first, visible.Definition, revision: 3),
-            CreateWorkerOverview(second, visible.Definition, revision: 5),
+        inner.BulkCandidates.AddRange([
+            CreateWorkerSnapshot(first, visible.Definition, revision: 3),
+            CreateWorkerSnapshot(second, visible.Definition, revision: 5),
         ]);
-        query.WorkersById[first] = CreateWorkerSnapshot(first, visible.Definition, revision: 3);
-        query.WorkersById[second] = CreateWorkerSnapshot(second, visible.Definition, revision: 5);
         var filter = new WorkerBulkActionFilter("Operations", IncludeSubcategories: false);
 
         var outcome = await operations.ExecuteAll(WorkAction.Cancel, filter);
 
         Assert.Equal(2, outcome.MatchedWorkerCount);
         Assert.Equal(2, outcome.Outcomes.Count);
-        Assert.Equal(1, query.WorkersCallCount);
-        var criteria = query.LastWorkersCriteria ?? throw new InvalidOperationException("Expected worker query criteria.");
-        Assert.Equal("Operations", criteria.Category);
-        Assert.False(criteria.IncludeSubcategories);
-        Assert.Equal(0, criteria.Skip);
-        Assert.Equal(WorkerCriteria.MaximumTake, criteria.Take);
-        var definitionNames = criteria.DefinitionNames
-            ?? throw new InvalidOperationException("Expected scoped definition names.");
-        Assert.Equal(visible.Definition.Name, Assert.Single(definitionNames));
+        Assert.Equal(0, query.WorkersCallCount);
+        Assert.Equal(1, inner.BulkCandidateCallCount);
+        Assert.Equal(filter, inner.LastBulkCandidateFilter);
+        var definitionIds = inner.LastBulkCandidateDefinitionIds
+            ?? throw new InvalidOperationException("Expected scoped definition ids.");
+        Assert.Equal(visible.Definition.Id, Assert.Single(definitionIds));
         Assert.Equal([
             new RecordedAction(new WorkerVersion(first, Revision: 3), WorkAction.Cancel),
             new RecordedAction(new WorkerVersion(second, Revision: 5), WorkAction.Cancel),
@@ -325,14 +322,11 @@ public sealed class AuthorizedWorkerOperationsShould
             out var query,
             out var inner);
         var workerId = WorkerId.New();
-        query.WorkerPages.Enqueue([
-            CreateWorkerOverview(workerId, visible.Definition, revision: 3),
-        ]);
-        query.WorkersById[workerId] = CreateWorkerSnapshot(
+        inner.BulkCandidates.Add(CreateWorkerSnapshot(
             workerId,
             visible.Definition,
             revision: 3,
-            input: WorkInput.FromValue(new QueueInput("denied"), WorkData.DefaultJsonOptions));
+            input: WorkInput.FromValue(new QueueInput("denied"), WorkData.DefaultJsonOptions)));
 
         var outcome = await operations.ExecuteAll(WorkAction.Cancel);
 
@@ -485,6 +479,7 @@ public sealed class AuthorizedWorkerOperationsShould
         return new AuthorizedWorkerOperations(
             catalog,
             inner,
+            inner,
             query,
             new WorkAuthorizationEvaluator(
                 catalog,
@@ -548,27 +543,6 @@ public sealed class AuthorizedWorkerOperationsShould
             now);
     }
 
-    private static WorkerOverviewItem CreateWorkerOverview(
-        WorkerId workerId,
-        WorkDefinition definition,
-        long revision)
-    {
-        var now = DateTimeOffset.UtcNow;
-        return new WorkerOverviewItem(
-            workerId,
-            definition.Name,
-            null,
-            null,
-            new HashSet<WorkIdentifier>(),
-            revision,
-            definition.Category,
-            WorkerState.Queued,
-            null,
-            now,
-            now,
-            now);
-    }
-
     private static WorkRequestContext CreateRequestContext(bool isKnownAuthenticatedUser)
         => WorkRequestContext.Create(
             WorkInvocationChannel.InProcess,
@@ -584,13 +558,35 @@ public sealed class AuthorizedWorkerOperationsShould
 
     private sealed record RecordedReconfigure(WorkerVersion Worker, WorkerReconfiguration Changes);
 
-    private sealed class RecordingWorkerOperations : IWorkerOperations
+    private sealed class RecordingWorkerOperations :
+        IWorkerOperations,
+        IAuthoritativeWorkerBulkCandidateSource
     {
         public List<RecordedAction> Executed { get; } = [];
 
         public List<WorkerActionRequest> ExecutedRequests { get; } = [];
 
         public List<RecordedReconfigure> Reconfigured { get; } = [];
+
+        public List<WorkerSnapshot> BulkCandidates { get; } = [];
+
+        public int BulkCandidateCallCount { get; private set; }
+
+        public WorkerBulkActionFilter? LastBulkCandidateFilter { get; private set; }
+
+        public IReadOnlySet<WorkDefinitionId>? LastBulkCandidateDefinitionIds { get; private set; }
+
+        public IReadOnlyList<WorkerSnapshot> GetBulkActionCandidates(
+            WorkerBulkActionFilter filter,
+            IReadOnlySet<WorkDefinitionId>? definitionIds,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            this.BulkCandidateCallCount++;
+            this.LastBulkCandidateFilter = filter;
+            this.LastBulkCandidateDefinitionIds = definitionIds;
+            return this.BulkCandidates;
+        }
 
         public Task<WorkActionOutcome> Execute(
             WorkerVersion worker,
@@ -630,13 +626,9 @@ public sealed class AuthorizedWorkerOperationsShould
     {
         public Dictionary<WorkerId, WorkerSnapshot> WorkersById { get; } = [];
 
-        public Queue<IReadOnlyList<WorkerOverviewItem>> WorkerPages { get; } = [];
-
         public int WorkerCallCount { get; private set; }
 
         public int WorkersCallCount { get; private set; }
-
-        public WorkerCriteria? LastWorkersCriteria { get; private set; }
 
         public Task<WorkerSnapshot?> Worker(
             WorkerId workerId,
@@ -651,11 +643,9 @@ public sealed class AuthorizedWorkerOperationsShould
             CancellationToken cancellationToken = default)
         {
             this.WorkersCallCount++;
-            this.LastWorkersCriteria = criteria;
-            var workers = this.WorkerPages.Count > 0 ? this.WorkerPages.Dequeue() : [];
             return Task.FromResult(new WorkerQueryResult(
-                workers,
-                workers.Count,
+                [],
+                0,
                 criteria?.Skip ?? 0,
                 criteria?.Take ?? 0));
         }

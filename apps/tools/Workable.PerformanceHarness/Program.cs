@@ -60,9 +60,32 @@ static bool TryRunBenchmarks(string[] args, out int exitCode)
         benchmarkArgs = ["--filter", "*Baseline*"];
     }
 
-    BenchmarkSwitcher
+    var summaries = BenchmarkSwitcher
         .FromAssembly(typeof(BaselineWorkerQueryBenchmarks).Assembly)
-        .Run(benchmarkArgs);
+        .Run(benchmarkArgs)
+        .ToArray();
+    var failedReports = summaries
+        .SelectMany(summary => summary.Reports)
+        .Where(report => !report.Success)
+        .ToArray();
+    var hasCriticalValidationErrors = summaries.Any(summary => summary.HasCriticalValidationErrors);
+    if (summaries.Length == 0 || failedReports.Length > 0 || hasCriticalValidationErrors)
+    {
+        Console.Error.WriteLine();
+        Console.Error.WriteLine("Benchmark run failed validation.");
+        if (summaries.Length == 0)
+        {
+            Console.Error.WriteLine("No benchmark summaries were produced.");
+        }
+
+        foreach (var report in failedReports)
+        {
+            Console.Error.WriteLine($"Failed benchmark: {report.BenchmarkCase.DisplayInfo}");
+        }
+
+        exitCode = 1;
+    }
+
     return true;
 }
 

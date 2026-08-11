@@ -909,6 +909,7 @@ internal static class ScenarioBenchmarkSuite
         var durability = await ResolveDurability(options);
         var runCount = Math.Max(1, options.Workers);
         var branchCount = Math.Max(1, options.ViewSubscriptions);
+        var recoveryPurgeInterval = TimeSpan.FromSeconds(5);
         var requestContext = BenchmarkRequestContexts.CreateAnonymous("Run durable workflow memory recovery benchmark.");
         var before = CaptureMemory();
         var runIds = new List<Guid>(runCount);
@@ -931,7 +932,8 @@ internal static class ScenarioBenchmarkSuite
             durability.ConnectionString,
             options.DurabilitySchemaName,
             resetStore: true,
-            cancellationToken))
+            workflowChildPurgeInterval: recoveryPurgeInterval,
+            cancellationToken: cancellationToken))
         {
             for (var index = 0; index < runCount; index++)
             {
@@ -983,7 +985,8 @@ internal static class ScenarioBenchmarkSuite
             durability.ConnectionString,
             options.DurabilitySchemaName,
             resetStore: false,
-            cancellationToken))
+            workflowChildPurgeInterval: recoveryPurgeInterval,
+            cancellationToken: cancellationToken))
         {
             foreach (var runId in runIds)
             {
@@ -1025,7 +1028,7 @@ internal static class ScenarioBenchmarkSuite
             durability.ConnectionString,
             options.DurabilitySchemaName,
             resetStore: false,
-            cancellationToken))
+            cancellationToken: cancellationToken))
         {
             cleanRestartDurability = await WaitForDurabilityIdle(cleanRestart.System, cancellationToken);
             countsAfterCleanRestart = await ReadDurableStateCounts(
@@ -2799,13 +2802,9 @@ SET ARITHABORT ON;
 	    WorkerId,
     WorkSystemName,
     DefinitionName,
-    IsDurableQueued,
     HasIdempotencyReservation,
-    HasPersistentConcurrency,
     SubjectType,
     SubjectValue,
-    ConcurrencyType,
-    ConcurrencyValue,
     InputJson,
     OptionsJson,
     ConfigurationJson,
@@ -2816,13 +2815,9 @@ SELECT
 	    WorkerId,
 	    WorkSystemName,
 	    DefinitionName,
-	    CAST(0 AS bit),
 	    HasIdempotencyReservation,
-	    HasPersistentConcurrency,
 	    SubjectType,
     SubjectValue,
-    ConcurrencyType,
-    ConcurrencyValue,
     InputJson,
     OptionsJson,
 	    ConfigurationJson,

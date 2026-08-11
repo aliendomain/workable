@@ -20,6 +20,7 @@ internal sealed class WorkflowRuntime
     private readonly WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration;
     private readonly IWorkAuthorizationGroupResolver groupResolver;
     private readonly ILogger? logger;
+    private readonly WorkerOperations? delegatedWorkers;
     private readonly NonDurableWorkflowExecutor nonDurable;
     private readonly DurableWorkflowExecutor? durable;
     private readonly ConcurrentDictionary<WorkflowRunId, WorkflowRunState> runs = new();
@@ -28,6 +29,7 @@ internal sealed class WorkflowRuntime
     private readonly Lock actionGatesSync = new();
     private readonly Dictionary<WorkflowRunId, WorkflowActionGate> actionGates = [];
     private readonly ConcurrentDictionary<WorkflowRunId, byte> cancellationsInProgress = new();
+    private readonly ConcurrentDictionary<WorkflowRunId, byte> recoveryPending = new();
     private readonly ConcurrentDictionary<WorkerId, Lazy<Task>> receiptPersistences = new();
     private readonly ConcurrentDictionary<WorkerId, byte> failedReceiptPersistences = new();
     private readonly ConcurrentDictionary<WorkflowRunId, AutoResumeRetryState> autoResumeRetries = new();
@@ -47,7 +49,9 @@ internal sealed class WorkflowRuntime
         WorkSystemAuthorizationConfiguration systemAuthorizationConfiguration,
         IWorkAuthorizationGroupResolver groupResolver,
         WorkflowEventPublisher? workflowEvents = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        WorkQueueService? delegatedQueue = null,
+        WorkerOperations? delegatedWorkers = null)
     {
         this.systemName = systemName;
         this.requiresAuthorization = requiresAuthorization;
@@ -61,7 +65,14 @@ internal sealed class WorkflowRuntime
         this.systemAuthorizationConfiguration = systemAuthorizationConfiguration;
         this.groupResolver = groupResolver;
         this.logger = logger;
-        this.nonDurable = new NonDurableWorkflowExecutor(createSession, createWorkerHandle, this.workflowEvents, getAuthoritativeWorker);
+        this.delegatedWorkers = delegatedWorkers;
+        this.nonDurable = new NonDurableWorkflowExecutor(
+            createSession,
+            createWorkerHandle,
+            this.workflowEvents,
+            getAuthoritativeWorker,
+            delegatedQueue,
+            delegatedWorkers);
         if (!string.IsNullOrWhiteSpace(systemName))
         {
             this.durable = new DurableWorkflowExecutor(
@@ -72,7 +83,9 @@ internal sealed class WorkflowRuntime
                 persistence,
                 this.workflowEvents,
                 getAuthoritativeWorker,
-                logger);
+                logger,
+                delegatedQueue,
+                delegatedWorkers);
         }
     }
 
@@ -124,6 +137,7 @@ internal sealed class WorkflowRuntime
             this.executions.Clear();
             this.controls.Clear();
             this.cancellationsInProgress.Clear();
+            this.recoveryPending.Clear();
             this.receiptPersistences.Clear();
             this.failedReceiptPersistences.Clear();
             this.autoResumeRetries.Clear();
@@ -158,12 +172,18 @@ internal sealed class WorkflowRuntime
 
     public async Task RecoverDurableRuns(CancellationToken cancellationToken)
     {
+        var recoveredRunIds = await this.LoadDurableRuns(cancellationToken);
+        await this.ResumeRecoveredDurableRuns(recoveredRunIds, cancellationToken);
+    }
+
+    internal async Task<IReadOnlyList<WorkflowRunId>> LoadDurableRuns(CancellationToken cancellationToken)
+    {
         if (!this.persistence.IsAvailable || this.durable is null)
         {
-            return;
+            return [];
         }
 
-        var recoveredBlockedRunIds = new List<WorkflowRunId>();
+        var recoveredRunIds = new List<WorkflowRunId>();
         await foreach (var record in this.persistence.ListRuns(cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -188,7 +208,31 @@ internal sealed class WorkflowRuntime
                 continue;
             }
 
+            this.recoveryPending[run.Id] = 0;
+            recoveredRunIds.Add(run.Id);
             this.AdvanceVersion();
+        }
+
+        return recoveredRunIds;
+    }
+
+    internal async Task ResumeRecoveredDurableRuns(
+        IReadOnlyList<WorkflowRunId> recoveredRunIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(recoveredRunIds);
+        var recoveredBlockedRunIds = new List<WorkflowRunId>();
+        foreach (var runId in recoveredRunIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!this.runs.TryGetValue(runId, out var run) ||
+                !this.catalog.TryGet(run.DefinitionName, out var workflow))
+            {
+                this.recoveryPending.TryRemove(runId, out _);
+                continue;
+            }
+
+            this.recoveryPending.TryRemove(runId, out _);
             if (IsFinal(run.GetStatus()))
             {
                 await this.TryPurgeFinalRunIfChildrenGone(run, cancellationToken);
@@ -505,7 +549,8 @@ internal sealed class WorkflowRuntime
                     run,
                     cancelSession,
                     this.getAuthoritativeWorker,
-                    cancellationToken);
+                    cancellationToken,
+                    this.delegatedWorkers);
                 if (!childCancellation.IsSuccessful)
                 {
                     return WorkflowActionOutcome.Invalid(action, runId, run.ToSnapshot(), childCancellation.Messages);
@@ -761,7 +806,8 @@ internal sealed class WorkflowRuntime
                     await this.CreateControlSession(
                         control.CancellationRequestContext ?? run.RequestContext),
                     this.getAuthoritativeWorker,
-                    CancellationToken.None);
+                    CancellationToken.None,
+                    this.delegatedWorkers);
                 if (!childCancellation.IsSuccessful)
                 {
                     completion = run.Block(childCancellation.Messages);
@@ -833,7 +879,8 @@ internal sealed class WorkflowRuntime
                         await this.CreateControlSession(
                             control.CancellationRequestContext ?? run.RequestContext),
                         this.getAuthoritativeWorker,
-                        CancellationToken.None);
+                        CancellationToken.None,
+                        this.delegatedWorkers);
                     if (!childCancellation.IsSuccessful)
                     {
                         var blocked = run.Block(childCancellation.Messages);
@@ -873,7 +920,8 @@ internal sealed class WorkflowRuntime
                 run,
                 await this.CreateControlSession(run.RequestContext),
                 this.getAuthoritativeWorker,
-                CancellationToken.None);
+                CancellationToken.None,
+                this.delegatedWorkers);
             var paused = run.Pause();
             if (workflow.Definition.Coordination.IsDurable)
             {
@@ -917,14 +965,15 @@ internal sealed class WorkflowRuntime
             return;
         }
 
-        if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
-            !this.runs.TryGetValue(runId, out var run) ||
-            !run.StepContainsWorker(stepName, worker.Id))
+        if (!TryGetWorkflowProvenance(worker, out var provenance) ||
+            !this.runs.TryGetValue(provenance.RunId, out var run) ||
+            !string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) ||
+            !run.StepContainsWorker(provenance.StepName, worker.Id))
         {
             return;
         }
 
-        await this.TryAutoResumeBlockedRun(runId, cancellationToken);
+        await this.TryAutoResumeBlockedRun(provenance.RunId, cancellationToken);
     }
 
     private Task<WorkflowRunCompletion> RunExecution(
@@ -1136,9 +1185,10 @@ internal sealed class WorkflowRuntime
     {
         ArgumentNullException.ThrowIfNull(worker);
 
-        if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
-            !this.runs.TryGetValue(runId, out var run) ||
-            !run.StepContainsWorker(stepName, worker.Id))
+        if (!TryGetWorkflowProvenance(worker, out var provenance) ||
+            !this.runs.TryGetValue(provenance.RunId, out var run) ||
+            !string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) ||
+            !run.StepContainsWorker(provenance.StepName, worker.Id))
         {
             return;
         }
@@ -1151,14 +1201,19 @@ internal sealed class WorkflowRuntime
 
         var receipt = new WorkflowChildReceipt(
             worker.Id,
-            stepName,
+            provenance.StepName,
             worker.DefinitionName,
             worker.State,
             worker.StateChangedAt,
             worker.Messages,
             worker.Output);
         this.catalog.TryGet(run.DefinitionName, out var workflow);
-        await this.PersistWorkflowChildReceiptCoalesced(run, stepName, receipt, workflow);
+        await this.PersistWorkflowChildReceiptCoalesced(run, provenance.StepName, receipt, workflow);
+
+        if (this.recoveryPending.ContainsKey(run.Id))
+        {
+            return;
+        }
 
         if (worker.State == WorkerState.Canceled &&
             workflow is not null &&
@@ -1377,7 +1432,8 @@ internal sealed class WorkflowRuntime
                     run,
                     await this.createSession(run.RequestContext, cancellationToken),
                     this.getAuthoritativeWorker,
-                    CancellationToken.None);
+                    CancellationToken.None,
+                    this.delegatedWorkers);
                 if (!childCancellation.IsSuccessful)
                 {
                     var blocked = run.Block(childCancellation.Messages);
@@ -1424,9 +1480,10 @@ internal sealed class WorkflowRuntime
     {
         ArgumentNullException.ThrowIfNull(worker);
 
-        if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
-            !this.runs.TryGetValue(runId, out var run) ||
-            !run.StepContainsWorker(stepName, worker.Id))
+        if (!TryGetWorkflowProvenance(worker, out var provenance) ||
+            !this.runs.TryGetValue(provenance.RunId, out var run) ||
+            !string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) ||
+            !run.StepContainsWorker(provenance.StepName, worker.Id))
         {
             return false;
         }
@@ -1452,9 +1509,10 @@ internal sealed class WorkflowRuntime
         ArgumentNullException.ThrowIfNull(worker);
 
         return this.failedReceiptPersistences.ContainsKey(worker.Id) &&
-            TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) &&
-            this.runs.TryGetValue(runId, out var run) &&
-            run.StepContainsWorker(stepName, worker.Id);
+            TryGetWorkflowProvenance(worker, out var provenance) &&
+            this.runs.TryGetValue(provenance.RunId, out var run) &&
+            string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) &&
+            run.StepContainsWorker(provenance.StepName, worker.Id);
     }
 
     internal async Task ObservePurgedWorkflowChild(
@@ -1463,9 +1521,10 @@ internal sealed class WorkflowRuntime
     {
         ArgumentNullException.ThrowIfNull(worker);
 
-        if (!TryGetWorkflowIdentifiers(worker, out var runId, out var stepName) ||
-            !this.runs.TryGetValue(runId, out var run) ||
-            !run.StepContainsWorker(stepName, worker.Id) ||
+        if (!TryGetWorkflowProvenance(worker, out var provenance) ||
+            !this.runs.TryGetValue(provenance.RunId, out var run) ||
+            !string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) ||
+            !run.StepContainsWorker(provenance.StepName, worker.Id) ||
             !IsFinal(run.GetStatus()))
         {
             return;
@@ -1591,23 +1650,19 @@ internal sealed class WorkflowRuntime
             _ => false,
         };
 
-    private static bool TryGetWorkflowIdentifiers(
+    private static bool TryGetWorkflowProvenance(
         WorkerSnapshot worker,
-        out WorkflowRunId runId,
-        out string stepName)
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out WorkflowProvenance? provenance)
     {
-        var workflowRunIdentifier = worker.Identifiers.FirstOrDefault(identifier => identifier.Type == "workflow-run");
-        var workflowStepIdentifier = worker.Identifiers.FirstOrDefault(identifier => identifier.Type == "workflow-step");
-        if (!Guid.TryParse(workflowRunIdentifier.Value, out var parsedRunId) ||
-            string.IsNullOrWhiteSpace(workflowStepIdentifier.Value))
+        provenance = worker.WorkflowProvenance;
+        if (provenance is null ||
+            string.IsNullOrWhiteSpace(provenance.DefinitionName) ||
+            string.IsNullOrWhiteSpace(provenance.StepName))
         {
-            runId = default;
-            stepName = string.Empty;
+            provenance = null;
             return false;
         }
 
-        runId = new WorkflowRunId(parsedRunId);
-        stepName = workflowStepIdentifier.Value;
         return true;
     }
 
@@ -1639,7 +1694,8 @@ internal sealed class WorkflowRuntime
                 this.systemName,
                 requestContext.Actor,
                 groups,
-                readableDefinitionIds: null);
+                readableDefinitionIds: null,
+                isAuthenticated: requestContext.IsAuthenticated);
         return (isAllowed, authorization);
     }
 

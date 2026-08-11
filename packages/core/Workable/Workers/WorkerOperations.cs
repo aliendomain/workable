@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 namespace Workable;
 internal sealed class WorkerOperations :
     IWorkerOperations,
+    IAuthoritativeWorkerBulkCandidateSource,
     IDisposable
 {
     private readonly WorkSystemCatalog catalog;
@@ -67,7 +68,8 @@ internal sealed class WorkerOperations :
         WorkSystemQueueDiagnosticsTracker queueDiagnostics,
         WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics,
         IWorkPersistenceStore? persistenceStore,
-        WorkExecutionDiagnosticsCoordinator? executionDiagnostics)
+        WorkExecutionDiagnosticsCoordinator? executionDiagnostics,
+        Func<WorkerRecord, IChildWorkQueueService>? childQueueFactory = null)
     {
         this.catalog = catalog;
         this.getSystemState = getSystemState;
@@ -113,7 +115,8 @@ internal sealed class WorkerOperations :
             new WorkInitializationExecutor(rootServices),
             iterationStatuses: iterationStatusStream,
             profilingConfiguration: profilingConfiguration,
-            executionDiagnostics: executionDiagnostics);
+            executionDiagnostics: executionDiagnostics,
+            childQueueFactory: childQueueFactory);
         var exceptionHandler = new WorkerExecutionExceptionHandler(
             new WorkExceptionClassifierChain(systemExceptionClassifiers, globalExceptionClassifiers, this.logger),
             this.logger);
@@ -168,7 +171,8 @@ internal sealed class WorkerOperations :
         WorkInput? input,
         WorkerOptions? options,
         WorkRequestContext requestContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkflowProvenance? workflowProvenance = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -226,7 +230,8 @@ internal sealed class WorkerOperations :
             runtimePlan,
             storedRequestContext,
             DateTimeOffset.UtcNow,
-            cancellationToken);
+            cancellationToken,
+            workflowProvenance);
 
         if (!acceptance.Outcome.IsAccepted)
         {
@@ -423,6 +428,13 @@ internal sealed class WorkerOperations :
 
     internal async Task StartDispatching(CancellationToken cancellationToken)
     {
+        await this.PrepareDispatching(cancellationToken);
+        this.StartPreparedWorkerExecution();
+        this.StartPreparedBackgroundTasks();
+    }
+
+    internal async Task PrepareDispatching(CancellationToken cancellationToken)
+    {
         lock (this.lifecycleSync)
         {
             if (this.systemExecutionLifetime.IsCancellationRequested)
@@ -437,8 +449,13 @@ internal sealed class WorkerOperations :
         await this.persistence.InitializeAndDrain(
             [.. this.catalog.RegisteredWork.Select(work => work.Definition)],
             cancellationToken);
+    }
 
-        this.dispatcher.Start(this.GetSystemExecutionLifetimeToken());
+    internal void StartPreparedWorkerExecution()
+        => this.dispatcher.Start(this.GetSystemExecutionLifetimeToken());
+
+    internal void StartPreparedBackgroundTasks()
+    {
         this.failedWorkerAutoCancel.Start();
         this.retention.Start();
         this.persistence.StartBackgroundTasks();
@@ -592,7 +609,7 @@ internal sealed class WorkerOperations :
         ArgumentNullException.ThrowIfNull(requestContext);
 
         filter ??= WorkerBulkActionFilter.All;
-        var candidates = this.GetBulkActionCandidates(filter);
+        var candidates = this.GetBulkActionCandidateRecords(filter, definitionIds: null);
         var outcomes = new List<WorkActionOutcome>(candidates.Count);
         foreach (var candidate in candidates)
         {
@@ -760,23 +777,53 @@ internal sealed class WorkerOperations :
         return Task.FromResult(outcome);
     }
 
-    private IReadOnlyList<WorkerRecord> GetBulkActionCandidates(WorkerBulkActionFilter filter)
+    IReadOnlyList<WorkerSnapshot> IAuthoritativeWorkerBulkCandidateSource.GetBulkActionCandidates(
+        WorkerBulkActionFilter filter,
+        IReadOnlySet<WorkDefinitionId>? definitionIds,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(filter.Category))
+        cancellationToken.ThrowIfCancellationRequested();
+        var candidates = this.GetBulkActionCandidateRecords(filter, definitionIds);
+        var snapshots = new List<WorkerSnapshot>(candidates.Count);
+        foreach (var candidate in candidates)
         {
-            return [.. this.workers.Values];
+            cancellationToken.ThrowIfCancellationRequested();
+            snapshots.Add(candidate.ToSnapshot());
         }
 
-        var definitionIds = this.catalog
-            .ListByCategory(filter.Category, filter.IncludeSubcategories)
-            .Select(definition => definition.Id)
-            .ToHashSet();
-        if (definitionIds.Count == 0)
+        return snapshots;
+    }
+
+    private IReadOnlyList<WorkerRecord> GetBulkActionCandidateRecords(
+        WorkerBulkActionFilter filter,
+        IReadOnlySet<WorkDefinitionId>? definitionIds)
+    {
+        if (definitionIds is { Count: 0 })
         {
             return [];
         }
 
-        return [.. definitionIds
+        if (string.IsNullOrWhiteSpace(filter.Category) &&
+            (definitionIds is null ||
+                (definitionIds.Count == this.catalog.Definitions.Count &&
+                    this.catalog.Definitions.All(definition => definitionIds.Contains(definition.Id)))))
+        {
+            return [.. this.workers.Values];
+        }
+
+        var definitions = string.IsNullOrWhiteSpace(filter.Category)
+            ? this.catalog.Definitions
+            : this.catalog.ListByCategory(filter.Category, filter.IncludeSubcategories);
+        var candidateDefinitionIds = definitions
+            .Where(definition => definitionIds is null || definitionIds.Contains(definition.Id))
+            .Select(definition => definition.Id)
+            .ToHashSet();
+        if (candidateDefinitionIds.Count == 0)
+        {
+            return [];
+        }
+
+        return [.. candidateDefinitionIds
             .SelectMany(definitionId => this.index.ByDefinition(definitionId))
             .Distinct()
             .Select(workerId => this.workers.TryGetValue(workerId, out var worker) ? worker : null)
@@ -830,10 +877,32 @@ internal sealed class WorkerOperations :
 
     private void InterruptWorker(WorkerRecord worker, WorkInterruptionReason reason)
     {
+        if (reason == WorkInterruptionReason.LeaseLost && worker.State == WorkerState.Failed)
+        {
+            this.ForgetFailedWorkerAfterLeaseLoss(worker);
+            return;
+        }
+
         if (worker.RequestInterrupt(reason))
         {
             this.HandleAcceptedInterruption(worker);
         }
+    }
+
+    private void ForgetFailedWorkerAfterLeaseLoss(WorkerRecord worker)
+    {
+        if (!this.TryRemoveWorker(worker.Id, out _))
+        {
+            return;
+        }
+
+        this.failedWorkerAutoCancel.Forget(worker.Id);
+        this.retention.Forget(worker.Id);
+        this.concurrency.Forget(worker);
+        this.index.Forget(worker);
+        this.ForgetIterationStatuses(worker.Id);
+        this.readModel.ForgetWorkers([worker.Id]);
+        this.ScheduleConcurrencyDrain(worker.Work.Definition.Id);
     }
 
     private void HandleAcceptedInterruption(WorkerRecord worker, bool signalCompletion = true)
@@ -1295,7 +1364,7 @@ internal sealed class WorkerOperations :
         }
 
         var snapshot = worker.ToSnapshot();
-        if (!snapshot.Identifiers.Any(identifier => identifier.Type == "workflow-run"))
+        if (snapshot.WorkflowProvenance is null)
         {
             return;
         }
@@ -1311,7 +1380,7 @@ internal sealed class WorkerOperations :
         }
 
         var snapshot = worker.ToSnapshot();
-        if (!snapshot.Identifiers.Any(identifier => identifier.Type == "workflow-run"))
+        if (snapshot.WorkflowProvenance is null)
         {
             return;
         }
@@ -1327,7 +1396,7 @@ internal sealed class WorkerOperations :
         }
 
         var snapshot = worker.ToSnapshot();
-        if (!snapshot.Identifiers.Any(identifier => identifier.Type == "workflow-run"))
+        if (snapshot.WorkflowProvenance is null)
         {
             return false;
         }
@@ -1343,7 +1412,7 @@ internal sealed class WorkerOperations :
         }
 
         var snapshot = worker.ToSnapshot();
-        return snapshot.Identifiers.Any(identifier => identifier.Type == "workflow-run") &&
+        return snapshot.WorkflowProvenance is not null &&
             this.workflowChildFinalizationRetryGuard(snapshot);
     }
 
@@ -1398,6 +1467,14 @@ internal sealed class WorkerOperations :
         cancellationToken.ThrowIfCancellationRequested();
 
         var worker = materialized.Worker;
+        if (worker.State == WorkerState.Failed)
+        {
+            this.concurrency.Synchronize(worker);
+            this.SynchronizeFailedWorkerAutoCancel(worker);
+            this.workerEvents.Failed(worker);
+            return Task.CompletedTask;
+        }
+
         this.workerEvents.Queued(worker);
 
         if (materialized.ShouldScheduleStart)

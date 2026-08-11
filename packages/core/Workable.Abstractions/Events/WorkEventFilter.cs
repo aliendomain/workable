@@ -25,6 +25,13 @@ public sealed record WorkEventFilter(
     IReadOnlySet<string>? EventTypes = null)
 {
     /// <summary>
+    /// Gets the optional work or workflow definition namespace to include.
+    /// </summary>
+    public WorkEventDefinitionKind? DefinitionKind { get; init; }
+
+    internal IReadOnlySet<WorkEventDefinitionScope>? AuthorizedDefinitions { get; init; }
+
+    /// <summary>
     /// Determines whether the supplied event matches this filter.
     /// </summary>
     /// <param name="workEvent">The event to evaluate.</param>
@@ -33,7 +40,11 @@ public sealed record WorkEventFilter(
     {
         ArgumentNullException.ThrowIfNull(workEvent);
 
-        return (this.WorkerId is null || this.WorkerId == workEvent.WorkerId) &&
+        return (this.DefinitionKind is null || this.DefinitionKind == workEvent.DefinitionKind) &&
+            (this.AuthorizedDefinitions is not { Count: > 0 } ||
+                workEvent.DefinitionScope is { } definitionScope &&
+                    this.AuthorizedDefinitions.Contains(definitionScope)) &&
+            (this.WorkerId is null || this.WorkerId == workEvent.WorkerId) &&
             (this.DefinitionName is null || string.Equals(this.DefinitionName, workEvent.WorkDefinitionName, StringComparison.OrdinalIgnoreCase)) &&
             (this.DefinitionNames is not { Count: > 0 } ||
                 (!string.IsNullOrWhiteSpace(workEvent.WorkDefinitionName) &&

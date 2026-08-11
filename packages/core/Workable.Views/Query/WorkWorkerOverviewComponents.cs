@@ -83,7 +83,13 @@ public sealed record WorkWorkerOverviewWorker(
     string DefinitionName,
     string DefinitionCategory,
     IReadOnlyList<WorkIdentifier> Identifiers,
-    int ConfigDifferenceCount);
+    int ConfigDifferenceCount)
+{
+    /// <summary>
+    /// Gets the trusted workflow run associated with the worker, when the worker belongs to a workflow.
+    /// </summary>
+    public WorkflowRunId? WorkflowRunId { get; init; }
+}
 
 /// <summary>
 /// Describes the channel and actor that created or affected a worker or timeline item.

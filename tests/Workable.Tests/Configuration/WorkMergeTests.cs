@@ -146,6 +146,7 @@ public sealed class WorkMergeTests
                 MinimumLogLevel = LogLevel.Debug,
                 ProfileCaptureMode = WorkProfileCaptureMode.Full,
             },
+            ChildExecution = WorkChildExecutionConfiguration.Default.AllowAdditional("original.child"),
         };
         var overrides = WorkConfiguration.Default with
         {
@@ -190,6 +191,7 @@ public sealed class WorkMergeTests
             {
                 IsEnabled = false,
             },
+            ChildExecution = WorkChildExecutionConfiguration.Default.AllowAdditional("override.child"),
         };
 
         var merged = original.MergeRuntimeOptions(overrides);
@@ -203,6 +205,7 @@ public sealed class WorkMergeTests
         Assert.Equal(overrides.Retention, merged.Retention);
         Assert.Equal(original.ExecutionDiagnostics, merged.ExecutionDiagnostics);
         Assert.Equal(original.Invocation, merged.Invocation);
+        Assert.Equal(original.ChildExecution, merged.ChildExecution);
     }
 
     [Fact]

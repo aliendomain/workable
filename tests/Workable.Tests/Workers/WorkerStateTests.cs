@@ -769,12 +769,22 @@ public sealed class WorkerStateTests
             definition,
             (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
         await system.Start();
-        var handle = await system.Queue.Enqueue(
-            definition.Name,
-            WorkInput.Empty.WithIdentifier(new WorkIdentifier("workflow-run", Guid.NewGuid().ToString("D"))));
+        var inMemorySystem = (InMemoryWorkSystem)system;
+        var catalog = (WorkSystemCatalog)system.Catalog;
+        var registeredWork = catalog.TryGetWork(definition.Name, out var registered)
+            ? registered
+            : throw new InvalidOperationException("Expected retention test work to be registered.");
+        var runId = WorkflowRunId.New();
+        var handle = await inMemorySystem.WorkerOperations.CreateWorker(
+            registeredWork,
+            WorkInput.Empty.WithIdentifier(new WorkIdentifier("workflow-run", runId.ToString())),
+            options: null,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            CancellationToken.None,
+            new WorkflowProvenance(runId, "workflow.retention", "dispatch"));
         var completion = await handle.WaitForCompletion();
         var workerId = RequiredCompletionWorker(completion).Id;
-        var operations = ((InMemoryWorkSystem)system).WorkerOperations;
+        var operations = inMemorySystem.WorkerOperations;
         var retryRequired = true;
         var attempts = 0;
         operations.SetWorkflowChildFinalizationRetryGuard(_ => retryRequired);

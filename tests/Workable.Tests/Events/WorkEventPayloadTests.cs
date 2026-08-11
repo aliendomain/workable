@@ -186,8 +186,11 @@ public sealed class WorkEventPayloadTests
         var completedData = RequiredData(completed);
 
         Assert.Equal("events.workflow", started.WorkDefinitionName);
+        Assert.Equal(WorkEventDefinitionKind.Workflow, started.DefinitionKind);
+        Assert.Null(started.WorkDefinitionId);
+        Assert.NotNull(started.WorkflowDefinitionId);
         Assert.Contains(started.Identifiers, identifier => identifier.Type == "workflow-run");
-        Assert.Contains(started.Identifiers, identifier => identifier.Type == "workflow-definition" && identifier.Value == "events.workflow");
+        Assert.DoesNotContain(started.Identifiers, identifier => identifier.Type is "workflow-definition" or "workflow-step");
         Assert.Equal("events.workflow", startedData.GetProperty("run").GetProperty("definitionName").GetString());
         Assert.Equal("Running", startedData.GetProperty("run").GetProperty("status").GetString());
         Assert.Equal("Run workflow event payload test.", startedData.GetProperty("origin").GetProperty("description").GetString());
@@ -840,6 +843,4 @@ public sealed class WorkEventPayloadTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
-
-
 

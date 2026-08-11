@@ -119,25 +119,16 @@ internal static class WorkflowExecutionSupport
             ?? WorkflowCanceledChildBehavior.Block;
     }
 
-    public static WorkInput AddWorkflowIdentifiers(
+    public static WorkInput AddWorkflowRunIdentifier(
         WorkInput? input,
-        WorkflowRunId runId,
-        string workflowDefinitionName,
-        string stepName)
+        WorkflowRunId runId)
         => ((input ?? WorkInput.Empty) with
             {
                 Identifiers = input?.Identifiers?
-                    .Where(static identifier => !IsReservedWorkflowIdentifier(identifier.Type))
+                    .Where(static identifier => !WorkflowProvenanceRules.IsRunIdentifier(identifier.Type))
                     .ToHashSet(),
             })
-            .WithIdentifier(new WorkIdentifier("workflow-run", runId.ToString()))
-            .WithIdentifier(new WorkIdentifier("workflow-definition", workflowDefinitionName))
-            .WithIdentifier(new WorkIdentifier("workflow-step", stepName));
-
-    private static bool IsReservedWorkflowIdentifier(string type)
-        => type.Equals("workflow-run", StringComparison.OrdinalIgnoreCase) ||
-            type.Equals("workflow-definition", StringComparison.OrdinalIgnoreCase) ||
-            type.Equals("workflow-step", StringComparison.OrdinalIgnoreCase);
+            .WithIdentifier(new WorkIdentifier(WorkflowProvenanceRules.RunIdentifierType, runId.ToString()));
 
     public static WorkInput? ResolveDispatchInput(
         DispatchWorkflowStepDefinition step,
@@ -244,11 +235,13 @@ internal static class WorkflowExecutionSupport
         WorkflowRunState run,
         IWorkSystemSession session,
         Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkerOperations? delegatedWorkers = null)
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(session);
 
+        var delegatedChildOperations = ResolveDelegatedChildOperations(session, delegatedWorkers);
         var failures = new List<WorkMessage>();
         foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
         {
@@ -260,7 +253,12 @@ internal static class WorkflowExecutionSupport
                     break;
                 }
 
-                var outcome = await session.Workers.Execute(snapshot.Version, WorkAction.Cancel, cancellationToken);
+                var childOperations = ResolveChildOperations(
+                    run,
+                    snapshot,
+                    session,
+                    delegatedChildOperations);
+                var outcome = await childOperations.Execute(snapshot.Version, WorkAction.Cancel, cancellationToken);
                 if (outcome.IsAccepted || outcome.Status == WorkActionStatus.NotFound ||
                     outcome.Worker?.IsFinal == true || outcome.Worker?.State == WorkerState.Canceling)
                 {
@@ -292,11 +290,13 @@ internal static class WorkflowExecutionSupport
         WorkflowRunState run,
         IWorkSystemSession session,
         Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkerOperations? delegatedWorkers = null)
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(session);
 
+        var delegatedChildOperations = ResolveDelegatedChildOperations(session, delegatedWorkers);
         foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
         {
             var snapshot = await GetSettledWorkerSnapshot(workerId, session, getAuthoritativeWorker, cancellationToken);
@@ -307,7 +307,12 @@ internal static class WorkflowExecutionSupport
 
             if (snapshot.State is WorkerState.Queued or WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying)
             {
-                await session.Workers.Execute(snapshot.Version, WorkAction.Pause, cancellationToken);
+                var childOperations = ResolveChildOperations(
+                    run,
+                    snapshot,
+                    session,
+                    delegatedChildOperations);
+                await childOperations.Execute(snapshot.Version, WorkAction.Pause, cancellationToken);
             }
         }
     }
@@ -316,11 +321,13 @@ internal static class WorkflowExecutionSupport
         WorkflowRunState run,
         IWorkSystemSession session,
         Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkerOperations? delegatedWorkers = null)
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(session);
 
+        var delegatedChildOperations = ResolveDelegatedChildOperations(session, delegatedWorkers);
         foreach (var workerId in run.GetOutstandingWorkerIds().Distinct())
         {
             while (true)
@@ -336,7 +343,12 @@ internal static class WorkflowExecutionSupport
                     break;
                 }
 
-                var outcome = await session.Workers.Execute(snapshot.Version, WorkAction.Start, cancellationToken);
+                var childOperations = ResolveChildOperations(
+                    run,
+                    snapshot,
+                    session,
+                    delegatedChildOperations);
+                var outcome = await childOperations.Execute(snapshot.Version, WorkAction.Start, cancellationToken);
                 if (outcome.IsAccepted || outcome.Worker?.State is WorkerState.Running or WorkerState.Waiting or WorkerState.Retrying or WorkerState.Completed)
                 {
                     break;
@@ -350,6 +362,32 @@ internal static class WorkflowExecutionSupport
                 await Task.Delay(WorkerControlPollInterval, cancellationToken);
             }
         }
+    }
+
+    private static IWorkerOperations? ResolveDelegatedChildOperations(
+        IWorkSystemSession session,
+        WorkerOperations? delegatedWorkers)
+        => delegatedWorkers is not null && session is WorkSystemSession systemSession
+            ? new SessionWorkerOperations(delegatedWorkers, systemSession.RequestContext)
+            : null;
+
+    private static IWorkerOperations ResolveChildOperations(
+        WorkflowRunState run,
+        WorkerSnapshot snapshot,
+        IWorkSystemSession session,
+        IWorkerOperations? delegatedChildOperations)
+        => delegatedChildOperations is not null && IsAuthoritativeChildOf(run, snapshot)
+            ? delegatedChildOperations
+            : session.Workers;
+
+    internal static bool IsAuthoritativeChildOf(WorkflowRunState run, WorkerSnapshot snapshot)
+    {
+        var provenance = snapshot.WorkflowProvenance;
+        return provenance is not null &&
+            provenance.RunId == run.Id &&
+            string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(provenance.StepName) &&
+            run.StepContainsWorker(provenance.StepName, snapshot.Id);
     }
 
     private static async Task<WorkerSnapshot?> GetSettledWorkerSnapshot(
