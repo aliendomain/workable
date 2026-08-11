@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Workable;
 /// <summary>
@@ -54,6 +55,7 @@ public sealed record WorkEvent
     /// <param name="data">The optional structured event payload.</param>
     /// <param name="definitionKind">The namespace of the definition that produced the event.</param>
     /// <param name="workflowDefinitionId">The optional workflow definition id associated with a workflow event.</param>
+    [JsonConstructor]
     public WorkEvent(
         DateTimeOffset occurredAt,
         WorkSystemId workSystemId,
@@ -142,6 +144,7 @@ public sealed record WorkEvent
     /// <summary>
     /// Gets the additional searchable identifiers associated with the event.
     /// </summary>
+    [JsonConverter(typeof(WorkEventIdentifierSetJsonConverter))]
     public IReadOnlySet<WorkIdentifier> Identifiers { get; }
 
     /// <summary>
@@ -164,4 +167,19 @@ public sealed record WorkEvent
         => this.Data is { ValueKind: not JsonValueKind.Null and not JsonValueKind.Undefined } data
             ? data.Deserialize<T>(options ?? WorkEventJson.Options)
             : default;
+}
+
+internal sealed class WorkEventIdentifierSetJsonConverter : JsonConverter<IReadOnlySet<WorkIdentifier>>
+{
+    public override IReadOnlySet<WorkIdentifier> Read(
+        ref Utf8JsonReader reader,
+        Type typeToConvert,
+        JsonSerializerOptions options)
+        => JsonSerializer.Deserialize<HashSet<WorkIdentifier>>(ref reader, options) ?? [];
+
+    public override void Write(
+        Utf8JsonWriter writer,
+        IReadOnlySet<WorkIdentifier> value,
+        JsonSerializerOptions options)
+        => JsonSerializer.Serialize(writer, value.ToArray(), options);
 }
