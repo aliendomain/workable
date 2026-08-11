@@ -6,7 +6,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ErrorBanner, FeedbackBanner } from "@/components/workable/console/feedback-panel";
+import {
+  ErrorBanner,
+  FeedbackBanner,
+  transientFeedbackAutoDismissMs,
+} from "@/components/workable/console/feedback-panel";
 import {
   formatDateTime,
   workableFetch,
@@ -119,6 +123,7 @@ function AuthorizedProfilingCaptureRulesCard({
   const deleteRule = async (rule: WorkableProfilingCaptureRule) => {
     setPendingTarget(rule.id);
     setError(undefined);
+    setStatus(undefined);
     try {
       await workableFetch<void>(connection, `profiling/capture-rules/${rule.id}`, { method: "DELETE" });
       setStatus("Full profile capture rule removed.");
@@ -149,7 +154,14 @@ function AuthorizedProfilingCaptureRulesCard({
       </CardHeader>
       <CardContent className="space-y-4">
         {error ? <ErrorBanner message={error} title="Profile capture unavailable" /> : null}
-        {status ? <FeedbackBanner message={status} title="Profile capture updated" tone="success" /> : null}
+        {status ? (
+          <FeedbackBanner
+            autoDismissAfterMs={transientFeedbackAutoDismissMs}
+            message={status}
+            title="Profile capture updated"
+            tone="success"
+          />
+        ) : null}
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">Matching workers</span>

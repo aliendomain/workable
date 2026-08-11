@@ -6,7 +6,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ErrorBanner, FeedbackBanner } from "@/components/workable/console/feedback-panel";
+import {
+  ErrorBanner,
+  FeedbackBanner,
+  transientFeedbackAutoDismissMs,
+} from "@/components/workable/console/feedback-panel";
 import {
   formatDateTime,
   workableFetch,
@@ -107,6 +111,7 @@ export function ExecutionDiagnosticsCaptureCard({
   const deleteRule = async (rule: WorkableExecutionDiagnosticCaptureRule) => {
     setPending(rule.id);
     setError(undefined);
+    setStatus(undefined);
     try {
       await workableFetch<void>(connection, `execution-diagnostics/capture-rules/${rule.id}`, { method: "DELETE" });
       setStatus("Persistent diagnostic capture stopped. Existing artifacts retain their original expiry.");
@@ -137,7 +142,14 @@ export function ExecutionDiagnosticsCaptureCard({
       </CardHeader>
       <CardContent className="space-y-4">
         {error ? <ErrorBanner message={error} title="Persistent diagnostics unavailable" /> : null}
-        {status ? <FeedbackBanner message={status} title="Capture updated" tone="success" /> : null}
+        {status ? (
+          <FeedbackBanner
+            autoDismissAfterMs={transientFeedbackAutoDismissMs}
+            message={status}
+            title="Capture updated"
+            tone="success"
+          />
+        ) : null}
         {!loading && !available ? (
           <ErrorBanner
             message="Register an execution diagnostics repository, such as Workable SQL Server persistence, to enable this control."

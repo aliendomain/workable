@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckCircle2, CircleDot, ShieldAlert, TriangleAlert, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   semanticBadgeToneClass,
@@ -10,6 +10,8 @@ import {
 } from "@/lib/ui/state-tones";
 
 export type FeedbackTone = "error" | "info" | "success" | "warning";
+
+export const transientFeedbackAutoDismissMs = 5_000;
 
 const feedbackToneStyles = {
   error: {
@@ -104,17 +106,31 @@ export function ErrorBanner({
 }
 
 export function FeedbackBanner({
+  autoDismissAfterMs,
   message,
   onDismiss,
   title,
   tone,
 }: {
+  autoDismissAfterMs?: number;
   message: string;
   onDismiss?: () => void;
   title: string;
   tone: FeedbackTone;
 }) {
   const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (!autoDismissAfterMs || dismissed || !message) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setDismissed(true);
+      onDismiss?.();
+    }, autoDismissAfterMs);
+    return () => window.clearTimeout(timer);
+  }, [autoDismissAfterMs, dismissed, message, onDismiss]);
 
   if (!message || dismissed) {
     return null;
