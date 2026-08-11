@@ -142,16 +142,23 @@ public sealed class WorkableRealtimeHub(
     public async Task UnwatchView(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await EnsureCanAccessNamedSystem(
-            system,
-            systemName,
-            CreateRequestContext());
-        await viewSubscriptions.UnwatchView(
-            this.Context.ConnectionId,
-            this.Groups,
-            system,
-            subscriptionId,
-            this.Context.ConnectionAborted);
+        try
+        {
+            await EnsureCanAccessNamedSystem(
+                system,
+                systemName,
+                CreateRequestContext());
+            await viewSubscriptions.UnwatchView(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                subscriptionId,
+                this.Context.ConnectionAborted);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while its view subscription was being removed.
+        }
     }
 
     /// <summary>
@@ -226,16 +233,23 @@ public sealed class WorkableRealtimeHub(
     public async Task UnwatchWorkerOverview(string subscriptionId, string? systemName = null)
     {
         var system = ResolveSystem(systemName);
-        await EnsureCanAccessNamedSystem(
-            system,
-            systemName,
-            CreateRequestContext());
-        await workerOverviewSubscriptions.Unwatch(
-            this.Context.ConnectionId,
-            this.Groups,
-            system,
-            subscriptionId,
-            this.Context.ConnectionAborted);
+        try
+        {
+            await EnsureCanAccessNamedSystem(
+                system,
+                systemName,
+                CreateRequestContext());
+            await workerOverviewSubscriptions.Unwatch(
+                this.Context.ConnectionId,
+                this.Groups,
+                system,
+                subscriptionId,
+                this.Context.ConnectionAborted);
+        }
+        catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
+        {
+            // The client disconnected while its worker-overview subscription was being removed.
+        }
     }
 
     /// <summary>
