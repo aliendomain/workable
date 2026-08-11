@@ -10,7 +10,8 @@ public sealed class WorkableRealtimeWorkflowViewsShould
         systemName: null,
         new WorkActor("workflow-viewer", "Workflow Viewer", "viewer@example.test"),
         ["workflow.readers"],
-        []);
+        [],
+        isAuthenticated: true);
 
     [Theory]
     [InlineData("workflow-runs", true)]
@@ -20,15 +21,23 @@ public sealed class WorkableRealtimeWorkflowViewsShould
         => Assert.Equal(expected, WorkableRealtimeWorkflowViews.IsWorkflowView(viewName));
 
     [Fact]
-    public void CreateAuthenticatedSignalRAdapterRequestContexts()
+    public void PreserveSnapshotAuthenticationStateInSignalRAdapterRequestContexts()
     {
-        var context = WorkableRealtimeWorkflowViews.CreateRequestContext(Authorization);
+        var authenticated = WorkableRealtimeWorkflowViews.CreateRequestContext(Authorization);
+        var unauthenticatedAuthorization = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            Authorization.Actor,
+            Authorization.Groups,
+            readableDefinitionIds: []);
+        var unauthenticated = WorkableRealtimeWorkflowViews.CreateRequestContext(unauthenticatedAuthorization);
 
-        Assert.Same(Authorization, context.Authorization);
-        Assert.Equal(Authorization.Actor, context.Actor);
-        Assert.Equal(WorkInvocationChannel.SignalR, context.Channel);
-        Assert.Equal(WorkOriginSurface.WorkableAdapter, context.Surface);
-        Assert.True(context.IsAuthenticated);
+        Assert.Same(Authorization, authenticated.Authorization);
+        Assert.Equal(Authorization.Actor, authenticated.Actor);
+        Assert.Equal(WorkInvocationChannel.SignalR, authenticated.Channel);
+        Assert.Equal(WorkOriginSurface.WorkableAdapter, authenticated.Surface);
+        Assert.True(authenticated.IsAuthenticated);
+        Assert.Same(unauthenticatedAuthorization, unauthenticated.Authorization);
+        Assert.False(unauthenticated.IsAuthenticated);
     }
 
     [Fact]

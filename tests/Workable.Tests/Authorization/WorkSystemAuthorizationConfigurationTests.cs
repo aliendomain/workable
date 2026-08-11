@@ -272,6 +272,61 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
+    public async Task AuthorizedBulkActionsUseAuthoritativeWorkersAndPreserveScopeFilters()
+    {
+        var allowedBilling = PausedDefinition("bulk.allowed.billing") with { Category = "Billing:Invoices" };
+        var allowedEmail = PausedDefinition("bulk.allowed.email") with { Category = "Email" };
+        var hiddenBilling = PausedDefinition("bulk.hidden.billing") with { Category = "Billing:Credit" };
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["seeder"] = Groups("work.admin"),
+                ["operator"] = Groups("allowed.operate"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .ConfigureAuthorization(authorization => authorization.WorkAdministrators("work.admin"))
+                .AddWork(
+                    allowedBilling,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowOperateToGroups("allowed.operate"))
+                .AddWork(
+                    allowedEmail,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowOperateToGroups("allowed.operate"))
+                .AddWork(
+                    hiddenBilling,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowOperateToGroups("hidden.operate")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var seeder = await system.CreateSession(CreateRequestContext("seeder"));
+        var allowedBillingWorker = await seeder.Queue.Enqueue(allowedBilling.Name);
+        var allowedEmailWorker = await seeder.Queue.Enqueue(allowedEmail.Name);
+        var hiddenBillingWorker = await seeder.Queue.Enqueue(hiddenBilling.Name);
+        var session = await system.CreateSession(CreateRequestContext("operator"));
+
+        var outcome = await session.Workers.ExecuteAll(
+            WorkAction.Cancel,
+            new WorkerBulkActionFilter("Billing"));
+
+        Assert.Equal(1, outcome.MatchedWorkerCount);
+        Assert.Equal(1, outcome.AcceptedCount);
+        Assert.Equal(
+            WorkerState.Canceled,
+            (await seeder.Query.Worker(allowedBillingWorker.WorkerId!.Value))?.State);
+        Assert.Equal(
+            WorkerState.Queued,
+            (await seeder.Query.Worker(allowedEmailWorker.WorkerId!.Value))?.State);
+        Assert.Equal(
+            WorkerState.Queued,
+            (await seeder.Query.Worker(hiddenBillingWorker.WorkerId!.Value))?.State);
+    }
+
+    [Fact]
     public async Task AuthorizedSessionReturnsNotFoundForMissingWorkerOperationsWithinOperateScope()
     {
         var definition = PausedDefinition("missing.operate");
@@ -681,6 +736,97 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
+    public async Task FactoryIssuedAuthorizationSnapshotIsReusedByTheSameSystem()
+    {
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>
+                {
+                    ["reader"] = Groups("snapshot.read"),
+                }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                WorkDefinition.Create("snapshot.reuse"),
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowReadToGroups("snapshot.read")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var firstSession = Assert.IsType<WorkSystemSession>(
+            await system.CreateSession(CreateRequestContext("reader")));
+        var issuedSnapshot = Assert.IsType<WorkAuthorizationSnapshot>(
+            firstSession.RequestContext.Authorization);
+
+        var secondSession = Assert.IsType<WorkSystemSession>(
+            await system.CreateSession(firstSession.RequestContext));
+
+        Assert.Same(issuedSnapshot, secondSession.RequestContext.Authorization);
+        Assert.Single(secondSession.Catalog.Definitions);
+    }
+
+    [Fact]
+    public async Task ClonedAuthorizationSnapshotIsRecomputedBeforeReuse()
+    {
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>
+                {
+                    ["reader"] = Groups("snapshot.read"),
+                }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                WorkDefinition.Create("snapshot.clone"),
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowReadToGroups("snapshot.read")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var firstSession = Assert.IsType<WorkSystemSession>(
+            await system.CreateSession(CreateRequestContext("reader")));
+        var issuedSnapshot = Assert.IsType<WorkAuthorizationSnapshot>(
+            firstSession.RequestContext.Authorization);
+        var forgedClone = issuedSnapshot with { ReadFingerprint = "forged" };
+        var clonedContext = firstSession.RequestContext with { Authorization = forgedClone };
+
+        var secondSession = Assert.IsType<WorkSystemSession>(
+            await system.CreateSession(clonedContext));
+        var replacement = Assert.IsType<WorkAuthorizationSnapshot>(
+            secondSession.RequestContext.Authorization);
+
+        Assert.NotSame(forgedClone, replacement);
+        Assert.Equal(issuedSnapshot.ReadFingerprint, replacement.ReadFingerprint);
+        Assert.Single(secondSession.Catalog.Definitions);
+    }
+
+    [Fact]
+    public async Task CachedAuthorizationProjectionDoesNotSurviveGroupRevocation()
+    {
+        var groupsByActor = new Dictionary<string, IReadOnlySet<string>>
+        {
+            ["reader"] = Groups("snapshot.read"),
+        };
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(groupsByActor))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                WorkDefinition.Create("snapshot.revocation"),
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowReadToGroups("snapshot.read")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var authorized = await system.CreateSession(CreateRequestContext("reader"));
+        Assert.Single(authorized.Catalog.Definitions);
+
+        groupsByActor["reader"] = Groups();
+        var revoked = await system.CreateSession(CreateRequestContext("reader"));
+
+        Assert.Empty(revoked.Catalog.Definitions);
+        var authorizedSnapshot = Assert.IsType<WorkAuthorizationSnapshot>(
+            Assert.IsType<WorkSystemSession>(authorized).RequestContext.Authorization);
+        var revokedSnapshot = Assert.IsType<WorkAuthorizationSnapshot>(
+            Assert.IsType<WorkSystemSession>(revoked).RequestContext.Authorization);
+        Assert.NotEqual(authorizedSnapshot.ReadFingerprint, revokedSnapshot.ReadFingerprint);
+    }
+
+    [Fact]
     public async Task AuthorizationSnapshotForDifferentActorIsIgnored()
     {
         var definition = PausedDefinition("snapshot.actor-mismatch");
@@ -835,8 +981,11 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var session = await system.CreateSession(CreateKnownAuthenticatedRequestContext("known-user"));
 
         var queued = await session.Queue.Enqueue(definition.Name);
+        var effectiveContext = Assert.IsType<WorkSystemSession>(session).RequestContext;
+        var snapshot = Assert.IsType<WorkAuthorizationSnapshot>(effectiveContext.Authorization);
 
         Assert.True(queued.QueueOutcome.IsAccepted);
+        Assert.True(snapshot.IsAuthenticated);
     }
 
     [Fact]
@@ -865,7 +1014,32 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
-    public void AuthorizationSnapshotFingerprintDependsOnReadableDefinitionsNotGroups()
+    public async Task CachedAuthorizationProjectionSeparatesAuthenticationState()
+    {
+        var definition = PausedDefinition("known.authenticated.cache");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowQueueToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+
+        var authenticated = await system.CreateSession(CreateKnownAuthenticatedRequestContext("same-user"));
+        var authenticatedQueue = await authenticated.Queue.Enqueue(definition.Name);
+        var unauthenticated = await system.CreateSession(CreateRequestContext("same-user"));
+        var unauthenticatedQueue = await unauthenticated.Queue.Enqueue(definition.Name);
+
+        Assert.True(authenticatedQueue.QueueOutcome.IsAccepted);
+        Assert.Equal(WorkQueueStatus.Unauthorized, unauthenticatedQueue.QueueOutcome.Status);
+    }
+
+    [Fact]
+    public void AuthorizationSnapshotFingerprintIncludesCompleteProjectionScope()
     {
         var actor = new WorkActor(Id: "snapshot-user");
         var first = WorkAuthorizationSnapshot.CreateForSystem(
@@ -884,8 +1058,48 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             ["billing.read"],
             [new WorkDefinitionId(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))]);
 
-        Assert.Equal(first.ReadFingerprint, second.ReadFingerprint);
+        Assert.NotEqual(first.ReadFingerprint, second.ReadFingerprint);
         Assert.NotEqual(first.ReadFingerprint, third.ReadFingerprint);
+
+        var otherSystem = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: "another-system",
+            actor,
+            ["billing.read"],
+            [new WorkDefinitionId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))]);
+        var workflowReadable = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            actor,
+            ["billing.read"],
+            [new WorkDefinitionId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))],
+            [new WorkflowDefinitionId(Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"))]);
+        var diagnosticsReadable = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            actor,
+            ["billing.read"],
+            [new WorkDefinitionId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))],
+            canViewDiagnostics: true);
+        var authenticated = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            actor,
+            ["billing.read"],
+            [new WorkDefinitionId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))],
+            isAuthenticated: true);
+        var delimiterInOneGroup = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            actor,
+            ["billing|read"],
+            [new WorkDefinitionId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))]);
+        var delimiterBetweenGroups = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            actor,
+            ["billing", "read"],
+            [new WorkDefinitionId(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))]);
+
+        Assert.NotEqual(first.ReadFingerprint, otherSystem.ReadFingerprint);
+        Assert.NotEqual(first.ReadFingerprint, workflowReadable.ReadFingerprint);
+        Assert.NotEqual(first.ReadFingerprint, diagnosticsReadable.ReadFingerprint);
+        Assert.NotEqual(first.ReadFingerprint, authenticated.ReadFingerprint);
+        Assert.NotEqual(delimiterInOneGroup.ReadFingerprint, delimiterBetweenGroups.ReadFingerprint);
     }
 
     private static Task<WorkExecutionResult> SuccessfulWork(

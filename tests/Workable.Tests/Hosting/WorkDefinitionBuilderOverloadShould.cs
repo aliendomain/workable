@@ -83,6 +83,64 @@ public sealed class WorkDefinitionBuilderOverloadShould
         Assert.Throws<ArgumentNullException>(() => defaulting.WithWorkDefaults(null!));
     }
 
+    [Fact]
+    public void RejectChildExecutionGrantsFromWorkDefaults()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new ServiceCollection().AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .WithWorkDefaults(
+                    register: work => work.AddWork(Definition("builder.parent"), Raw),
+                    configure: configuration => configuration.AllowChildExecution("builder.child"))));
+
+        Assert.Equal(
+            "AllowChildExecution cannot be used inside WithWorkDefaults because it grants delegated " +
+            "execution authority to every work registration in the defaults scope. Declare " +
+            "AllowChildExecution in the individual work registration's configure callback instead.",
+            exception.Message);
+    }
+
+    [Fact]
+    public void RejectChildExecutionGrantsFromNestedWorkDefaults()
+    {
+        var child = Definition("builder.child");
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new ServiceCollection().AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .WithWorkDefaults(
+                    register: outer => outer.WithWorkDefaults(
+                        register: inner => inner.AddWork(Definition("builder.parent"), Raw),
+                        configure: configuration => configuration.AllowChildExecution(child)),
+                    configure: configuration => configuration.ConfigureLogging(level: LogLevel.Warning))));
+
+        Assert.Contains("AllowChildExecution cannot be used inside WithWorkDefaults", exception.Message);
+    }
+
+    [Fact]
+    public void PermitChildExecutionGrantsOnIndividualRegistrationsInsideWorkDefaults()
+    {
+        var child = Definition("builder.child");
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder
+            .RequireAuthorization(false)
+            .WithWorkDefaults(
+                register: work => work
+                    .AddWork(
+                        Definition("builder.parent"),
+                        Raw,
+                        configure: configuration => configuration.AllowChildExecution(child))
+                    .AddWork(child, Raw),
+                configure: configuration => configuration.ConfigureLogging(level: LogLevel.Warning)));
+
+        using var provider = services.BuildServiceProvider();
+        var catalog = provider.GetRequiredService<IWorkSystemRegistry>().Default.Catalog;
+
+        Assert.True(catalog.TryGet("builder.parent", out var parent));
+        Assert.True(parent.Configuration.ChildExecution.Allows(child.Name));
+        Assert.Equal(LogLevel.Warning, parent.Configuration.Logging.Level);
+    }
+
     private static WorkDefinition Definition(string name) => WorkDefinition.Create(name, category: "Builder:Overloads");
 
     private static Task<WorkExecutionResult> Raw(

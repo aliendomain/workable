@@ -140,7 +140,8 @@ public sealed class WorkerExecutionInvokerTests
             RegisteredWorkRuntimePlan runtimePlan,
             WorkRequestContext requestContext,
             DateTimeOffset now,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            WorkflowProvenance? workflowProvenance = null)
             => throw new NotSupportedException();
 
         public void SignalAccepted(WorkerRecord worker)

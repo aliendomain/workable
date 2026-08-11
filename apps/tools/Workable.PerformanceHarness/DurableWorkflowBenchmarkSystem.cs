@@ -9,7 +9,7 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
 {
     private const string SystemName = "workflow-benchmarks";
     private const string SchemaName = "workable_perf";
-    private static readonly TimeSpan BenchmarkWorkflowChildPurgeInterval = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan BenchmarkWorkflowChildPurgeInterval = TimeSpan.FromMinutes(5);
     private readonly ServiceProvider provider;
     private readonly WorkRequestContext requestContext;
     private readonly string schemaName;
@@ -40,6 +40,7 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
         string? durabilityConnectionString = null,
         string schemaName = SchemaName,
         bool resetStore = true,
+        TimeSpan? workflowChildPurgeInterval = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(childExecutorFactory);
@@ -58,6 +59,7 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
             cancellationToken);
 
         var services = new ServiceCollection();
+        var childPurgeInterval = workflowChildPurgeInterval ?? BenchmarkWorkflowChildPurgeInterval;
         services.AddWorkableSqlServerDurableQueue(connectionString, schemaName);
         services.AddWorkableSystem(SystemName, builder =>
         {
@@ -67,7 +69,7 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
                 childExecutorFactory(0),
                 configuration => configuration
                     .QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1))
-                    .ConfigureRetention(purgeInterval: BenchmarkWorkflowChildPurgeInterval));
+                    .ConfigureRetention(purgeInterval: childPurgeInterval));
 
             for (var index = 0; index < Math.Max(1, branchCount); index++)
             {
@@ -76,7 +78,7 @@ internal sealed class DurableWorkflowBenchmarkSystem : IAsyncDisposable
                     childExecutorFactory(index),
                     configuration => configuration
                         .QueueDurably(fallbackPollingInterval: TimeSpan.FromSeconds(1))
-                        .ConfigureRetention(purgeInterval: BenchmarkWorkflowChildPurgeInterval));
+                        .ConfigureRetention(purgeInterval: childPurgeInterval));
             }
 
             builder.AddWorkflow(

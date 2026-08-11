@@ -136,7 +136,8 @@ internal sealed class WorkableHttpRequestAccessContext(
             systemName,
             actor,
             await this.GetGroups(systemName, cancellationToken),
-            readableDefinitionIds: null);
+            readableDefinitionIds: null,
+            isAuthenticated: this.GetBaseContext().IsAuthenticated);
         this.authorizationBySystem[cacheKey] = authorization;
         return authorization;
     }

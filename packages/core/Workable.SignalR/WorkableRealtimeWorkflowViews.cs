@@ -44,7 +44,7 @@ internal static class WorkableRealtimeWorkflowViews
                 authorization.Actor,
                 WorkOriginSurface.WorkableAdapter),
             Authorization: authorization,
-            IsAuthenticated: true);
+            IsAuthenticated: authorization.IsAuthenticated);
 
     private static async Task<WorkComponentResult> CreateComponent(
         IWorkSystem system,

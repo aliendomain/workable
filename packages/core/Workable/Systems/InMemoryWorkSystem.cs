@@ -117,6 +117,7 @@ internal sealed class InMemoryWorkSystem :
             persistenceStore,
             this.Name);
         this.readModel = new WorkSystemReadModel(this.catalog, () => this.State, this.Name, this.metrics, this.changes);
+        WorkQueueService? executionQueue = null;
         this.workers = new WorkerOperations(
             this.catalog,
             () => this.State,
@@ -137,11 +138,17 @@ internal sealed class InMemoryWorkSystem :
             this.queueDiagnostics,
             this.idempotencyDiagnostics,
             persistenceStore,
-            this.executionDiagnostics);
+            this.executionDiagnostics,
+            childQueueFactory: worker =>
+                worker.Work.Definition.Configuration.ChildExecution.AllowedDefinitionNames.Count == 0
+                    ? UnavailableChildWorkQueueService.Instance
+                    : new ChildWorkQueueService(
+                        executionQueue ?? throw new InvalidOperationException("The work queue has not been initialized."),
+                        worker));
         this.diagnostics = new WorkSystemDiagnostics(this.queueDiagnostics, this.readModel, this.workers);
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
-        this.queue = new WorkQueueService(this.catalog, this.workers, this.queueDiagnostics);
+        this.queue = executionQueue = new WorkQueueService(this.catalog, this.workers, this.queueDiagnostics);
         this.groupResolver = rootServices.GetRequiredService<IWorkAuthorizationGroupResolver>();
         this.sessions = new WorkSystemSessionFactory(
             this.Id,
@@ -172,7 +179,9 @@ internal sealed class InMemoryWorkSystem :
             this.authorization,
             this.groupResolver,
             workflowEvents,
-            this.logger);
+            this.logger,
+            delegatedQueue: this.queue,
+            delegatedWorkers: this.workers);
         this.workers.SetWorkflowChildFinalizationObserver(this.workflowRuntime.ObserveFinalWorkflowChild);
         this.workers.SetWorkflowChildFinalizationRetryGuard(this.workflowRuntime.ShouldRetryWorkflowChildFinalization);
         this.workers.SetWorkflowChildRetentionGuard(this.workflowRuntime.ShouldKeepWorkflowChildWorker);
@@ -435,7 +444,7 @@ internal sealed class InMemoryWorkSystem :
     private async Task StartCore(CancellationToken cancellationToken = default)
     {
         await this.lifecycleLock.WaitAsync(cancellationToken);
-        var dispatchingStarted = false;
+        var dispatchPreparationStarted = false;
         var lifecycleStarted = false;
         try
         {
@@ -462,11 +471,14 @@ internal sealed class InMemoryWorkSystem :
             }
             await this.workflowPersistence.Initialize(this.workflows.Definitions, cancellationToken);
             this.workflowRuntime.StartExecutionLifetime();
-            await this.workers.StartDispatching(cancellationToken);
-            dispatchingStarted = true;
+            var recoveredWorkflowRunIds = await this.workflowRuntime.LoadDurableRuns(cancellationToken);
+            dispatchPreparationStarted = true;
+            await this.workers.PrepareDispatching(cancellationToken);
+            this.workers.StartPreparedWorkerExecution();
+            this.workers.StartPreparedBackgroundTasks();
             this.State = WorkSystemState.Started;
             lifecycleStarted = true;
-            await this.workflowRuntime.RecoverDurableRuns(cancellationToken);
+            await this.workflowRuntime.ResumeRecoveredDurableRuns(recoveredWorkflowRunIds, cancellationToken);
             await this.NotifyStarted(cancellationToken);
             await this.QueueAutomaticallyStartedWork(cancellationToken);
             await this.QueueStartupWork(cancellationToken);
@@ -475,7 +487,7 @@ internal sealed class InMemoryWorkSystem :
         {
             var cleanupExceptions = new List<Exception>();
             TryCleanup(() => this.workflowRuntime.CancelExecutionLifetime(), cleanupExceptions);
-            if (dispatchingStarted)
+            if (dispatchPreparationStarted)
             {
                 await TryCleanupAsync(
                     () => this.workers.StopDispatching(CancellationToken.None),

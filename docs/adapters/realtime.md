@@ -343,7 +343,12 @@ public sealed record WorkableRealtimeEvent(
     WorkConcurrencyKey? ConcurrencyKey,
     IReadOnlyList<WorkIdentifier> Identifiers,
     string EventType,
-    JsonElement? Data);
+    JsonElement? Data)
+{
+    public WorkEventDefinitionKind DefinitionKind { get; init; }
+    public WorkDefinitionId? WorkDefinitionId { get; init; }
+    public WorkflowDefinitionId? WorkflowDefinitionId { get; init; }
+}
 ```
 
 ```csharp
@@ -367,7 +372,7 @@ Workflow lifecycle events use the same transport envelope and can be filtered by
 - `workflow.failed`
 - `workflow.canceled`
 
-The event envelope keeps `WorkDefinitionName` equal to the workflow definition name and includes identifiers such as `workflow-run`, `workflow-definition`, and, when relevant, `workflow-step`.
+The event envelope keeps `WorkDefinitionName` equal to the workflow definition name, sets `DefinitionKind` to `Workflow`, carries `WorkflowDefinitionId`, and includes the system-reserved `workflow-run` identifier. Step events carry the step name in their event payload. Work and workflow definitions may share a name; the typed definition namespace and stable ids keep their authorization scopes distinct.
 
 ### Event Filters
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Workable;
 /// <summary>
@@ -6,6 +7,38 @@ namespace Workable;
 /// </summary>
 public sealed record WorkEvent
 {
+    /// <summary>
+    /// Initializes a work event using the original work-definition event shape.
+    /// </summary>
+    public WorkEvent(
+        DateTimeOffset occurredAt,
+        WorkSystemId workSystemId,
+        string? workSystemName,
+        WorkerId? workerId,
+        WorkDefinitionId? workDefinitionId,
+        string? workDefinitionName,
+        WorkSubjectId? subjectId,
+        WorkConcurrencyKey? concurrencyKey,
+        IReadOnlySet<WorkIdentifier> identifiers,
+        string eventType,
+        JsonElement? data)
+        : this(
+            occurredAt,
+            workSystemId,
+            workSystemName,
+            workerId,
+            workDefinitionId,
+            workDefinitionName,
+            subjectId,
+            concurrencyKey,
+            identifiers,
+            eventType,
+            data,
+            WorkEventDefinitionKind.Work,
+            workflowDefinitionId: null)
+    {
+    }
+
     /// <summary>
     /// Creates a work event.
     /// </summary>
@@ -20,6 +53,9 @@ public sealed record WorkEvent
     /// <param name="identifiers">The additional searchable identifiers associated with the event.</param>
     /// <param name="eventType">The event-type name.</param>
     /// <param name="data">The optional structured event payload.</param>
+    /// <param name="definitionKind">The namespace of the definition that produced the event.</param>
+    /// <param name="workflowDefinitionId">The optional workflow definition id associated with a workflow event.</param>
+    [JsonConstructor]
     public WorkEvent(
         DateTimeOffset occurredAt,
         WorkSystemId workSystemId,
@@ -31,7 +67,9 @@ public sealed record WorkEvent
         WorkConcurrencyKey? concurrencyKey,
         IReadOnlySet<WorkIdentifier> identifiers,
         string eventType,
-        JsonElement? data)
+        JsonElement? data,
+        WorkEventDefinitionKind definitionKind,
+        WorkflowDefinitionId? workflowDefinitionId = null)
     {
         this.OccurredAt = occurredAt;
         this.WorkSystemId = workSystemId;
@@ -44,6 +82,11 @@ public sealed record WorkEvent
         this.Identifiers = identifiers;
         this.EventType = eventType;
         this.Data = data;
+        this.DefinitionKind = definitionKind;
+        this.WorkflowDefinitionId = workflowDefinitionId;
+        this.DefinitionScope = string.IsNullOrWhiteSpace(workDefinitionName)
+            ? null
+            : new WorkEventDefinitionScope(definitionKind, workDefinitionName);
     }
 
     /// <summary>
@@ -72,6 +115,18 @@ public sealed record WorkEvent
     public WorkDefinitionId? WorkDefinitionId { get; }
 
     /// <summary>
+    /// Gets the namespace of the definition that produced the event.
+    /// </summary>
+    public WorkEventDefinitionKind DefinitionKind { get; }
+
+    /// <summary>
+    /// Gets the optional workflow definition id associated with a workflow event.
+    /// </summary>
+    public WorkflowDefinitionId? WorkflowDefinitionId { get; }
+
+    internal WorkEventDefinitionScope? DefinitionScope { get; }
+
+    /// <summary>
     /// Gets the optional definition name associated with the event.
     /// </summary>
     public string? WorkDefinitionName { get; }
@@ -89,6 +144,7 @@ public sealed record WorkEvent
     /// <summary>
     /// Gets the additional searchable identifiers associated with the event.
     /// </summary>
+    [JsonConverter(typeof(WorkEventIdentifierSetJsonConverter))]
     public IReadOnlySet<WorkIdentifier> Identifiers { get; }
 
     /// <summary>
@@ -111,4 +167,19 @@ public sealed record WorkEvent
         => this.Data is { ValueKind: not JsonValueKind.Null and not JsonValueKind.Undefined } data
             ? data.Deserialize<T>(options ?? WorkEventJson.Options)
             : default;
+}
+
+internal sealed class WorkEventIdentifierSetJsonConverter : JsonConverter<IReadOnlySet<WorkIdentifier>>
+{
+    public override IReadOnlySet<WorkIdentifier> Read(
+        ref Utf8JsonReader reader,
+        Type typeToConvert,
+        JsonSerializerOptions options)
+        => JsonSerializer.Deserialize<HashSet<WorkIdentifier>>(ref reader, options) ?? [];
+
+    public override void Write(
+        Utf8JsonWriter writer,
+        IReadOnlySet<WorkIdentifier> value,
+        JsonSerializerOptions options)
+        => JsonSerializer.Serialize(writer, value.ToArray(), options);
 }

@@ -9,6 +9,8 @@ internal sealed class RecordingSignalRGroupManager : IGroupManager
 
     public bool FailAdds { get; init; }
 
+    public bool HonorCancellationOnRemove { get; init; }
+
     public List<SignalRGroupCall> Adds { get; } = [];
 
     public List<SignalRGroupCall> Removes { get; } = [];
@@ -35,6 +37,11 @@ internal sealed class RecordingSignalRGroupManager : IGroupManager
         CancellationToken cancellationToken = default)
     {
         this.Removes.Add(new SignalRGroupCall(connectionId, groupName));
+        if (this.HonorCancellationOnRemove)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
         return Task.CompletedTask;
     }
 

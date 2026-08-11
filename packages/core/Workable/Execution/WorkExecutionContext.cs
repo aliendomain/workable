@@ -11,6 +11,7 @@ internal sealed class WorkExecutionContext(
     Func<WorkInterruptionReason?> InterruptionReasonCallback,
     IWorkProfiler Profile,
     IServiceProvider Services,
+    IChildWorkQueueService ChildQueue,
     IWorkIterationStatusPublisher Status,
     Func<WorkIdentifier, bool> AddIdentifierCallback,
     Action<FailedWorkerAutoCancelOverride> ConfigureFailedWorkerAutoCancelCallback,
@@ -45,6 +46,8 @@ internal sealed class WorkExecutionContext(
 
     public IServiceProvider Services { get; } = Services;
 
+    internal IChildWorkQueueService ChildQueue { get; } = ChildQueue;
+
     public IWorkIterationStatusPublisher Status { get; } = Status;
 
     public bool AddIdentifier(WorkIdentifier identifier)
@@ -53,6 +56,14 @@ internal sealed class WorkExecutionContext(
     internal WorkMessage? RequestedFailure => this.requestedFailure?.Message;
 
     internal bool IsRequestedFailureTransient => this.requestedFailure?.IsTransient == true;
+
+    internal void RevokeChildExecution()
+    {
+        if (this.ChildQueue is ChildWorkQueueService childQueue)
+        {
+            childQueue.Revoke();
+        }
+    }
 
     public void Fail(string code, string message, string? target = null, bool transient = false)
     {

@@ -48,6 +48,16 @@ public sealed record WorkerSnapshot(
     public WorkOrigin Origin => this.RequestContext.Origin;
 
     /// <summary>
+    /// Gets the system-assigned workflow run identifier when this worker was created by a workflow.
+    /// </summary>
+    public WorkflowRunId? WorkflowRunId => this.WorkflowProvenance?.RunId;
+
+    /// <summary>
+    /// Gets the trusted workflow provenance used internally to validate workflow containment.
+    /// </summary>
+    internal WorkflowProvenance? WorkflowProvenance { get; init; }
+
+    /// <summary>
     /// Gets the current worker version composed from <see cref="Id"/> and <see cref="Revision"/>.
     /// </summary>
     public WorkerVersion Version => new(this.Id, this.Revision);

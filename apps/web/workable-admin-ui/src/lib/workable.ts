@@ -670,6 +670,7 @@ export type WorkWorkerOverviewWorker = {
   createdOrigin: WorkWorkerOverviewOrigin;
   definitionName: string;
   definitionCategory: string;
+  workflowRunId?: { value: string } | null;
   identifiers?: WorkTypedValue[];
   configDifferenceCount: number;
 };

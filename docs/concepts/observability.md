@@ -65,10 +65,12 @@ public sealed record WorkEvent(
     WorkConcurrencyKey? ConcurrencyKey,
     IReadOnlySet<WorkIdentifier> Identifiers,
     string EventType,
-    JsonElement? Data);
+    JsonElement? Data,
+    WorkEventDefinitionKind DefinitionKind = WorkEventDefinitionKind.Work,
+    WorkflowDefinitionId? WorkflowDefinitionId = null);
 ```
 
-The envelope is stable and filterable. It carries the system id, optional system name, worker, definition id and name, subject, concurrency key, identifiers, event type, and selective event data.
+The envelope is stable and filterable. It carries the system id, optional system name, worker, typed definition namespace, the corresponding stable work or workflow definition id, definition name, subject, concurrency key, identifiers, event type, and selective event data. Work and workflow definitions may share a name; `DefinitionKind` and the typed definition ids keep their identities and authorization scopes separate.
 
 Event data is selective and bounded. Worker lifecycle events include a worker summary and lightweight `keys` when keys are available, plus targeted enrichments for realtime consumers such as retained summary counts, latest iteration data, and structured log details. They still do not include worker input, full worker messages, full logs, full iteration history, or full worker detail. Query worker detail when a consumer needs those heavier fields.
 
@@ -116,7 +118,7 @@ Workflow runs also publish event types through the same event stream:
 
 `workflow.resume` is published both for explicit workflow-start requests against paused or blocked runs and for automatic resumes triggered after blocked failed child workers complete successfully.
 
-Workflow events keep `WorkDefinitionName` equal to the workflow definition name and use identifiers such as `workflow-run`, `workflow-definition`, and `workflow-step` so event consumers can filter one workflow run or one workflow node without introducing a separate transport.
+Workflow events keep `WorkDefinitionName` equal to the workflow definition name, set `DefinitionKind` to `Workflow`, carry `WorkflowDefinitionId`, and use the system-reserved `workflow-run` identifier so event consumers can filter one workflow run without introducing a separate transport. Ordinary workers cannot claim this identifier. Step events carry the step name in their event payload.
 
 ## Payloads
 

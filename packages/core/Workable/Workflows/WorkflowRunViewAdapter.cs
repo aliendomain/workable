@@ -736,9 +736,7 @@ public sealed class WorkflowRunViewAdapter
     }
 
     private static string? GetWorkflowStepName(WorkerSnapshot worker)
-        => worker.Identifiers
-            .FirstOrDefault(identifier => string.Equals(identifier.Type, "workflow-step", StringComparison.Ordinal))
-            .Value;
+        => worker.WorkflowProvenance?.StepName;
 
     private static IEnumerable<string> GetWorkflowStepNames(WorkflowStepDefinition step)
     {

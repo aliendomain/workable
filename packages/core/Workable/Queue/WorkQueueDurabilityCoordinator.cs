@@ -21,7 +21,9 @@ internal sealed class WorkQueueDurabilityCoordinator(
     TimeSpan? retryDelay = null,
     TimeSpan? leaseDuration = null,
     int batchSize = 100,
-    int recentClaimSampleCapacity = 0)
+    int recentClaimSampleCapacity = 0,
+    Func<WorkQueueDurabilityFailedEntry, CancellationToken, Task>? acceptPersistedFailedEntry = null,
+    TimeSpan? cleanupRetryDelay = null)
 {
     private readonly ConcurrentDictionary<WorkerId, WorkQueueDurabilityLease> leases = [];
     private readonly ConcurrentDictionary<WorkerId, byte> idempotencyReservations = [];
@@ -38,6 +40,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private readonly TimeSpan defaultReaderPollInterval = readerPollInterval ?? WorkQueueDurabilityConfiguration.DefaultFallbackPollingInterval;
     private readonly TimeSpan leaseRenewalInterval = leaseRenewalInterval ?? TimeSpan.FromSeconds(10);
     private readonly TimeSpan retryDelay = retryDelay ?? TimeSpan.FromSeconds(1);
+    private readonly TimeSpan cleanupRetryDelay = cleanupRetryDelay ?? TimeSpan.FromSeconds(10);
     private readonly TimeSpan cleanupDebounce = TimeSpan.FromMilliseconds(50);
     private readonly TimeSpan leaseDuration = leaseDuration ?? TimeSpan.FromMinutes(1);
     private readonly string ownerId = $"{Environment.MachineName}:{Guid.NewGuid():N}";
@@ -48,6 +51,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private long readerSignals;
     private int readerSignalPending;
     private Task? readerTask;
+    private Task? failedRecoveryTask;
     private Task? leaseRenewalTask;
     private Task? cleanupTask;
 
@@ -100,9 +104,31 @@ internal sealed class WorkQueueDurabilityCoordinator(
             loggedStoreUnavailableWarning = true;
         }
 
+        if (this.activeStore.SupportsFailedWorkerRecovery)
+        {
+            try
+            {
+                await this.RetryStartupDrainUntilSucceeded(
+                    this.RecoverFailedUntilEmpty,
+                    "failed-work recovery",
+                    cancellationToken);
+            }
+            catch (WorkPersistenceStoreUnavailableException exception)
+            {
+                if (!loggedStoreUnavailableWarning)
+                {
+                    this.LogStartupDrainFailure(exception);
+                    loggedStoreUnavailableWarning = true;
+                }
+            }
+        }
+
         try
         {
-            await this.DrainUntilEmpty(cancellationToken, stopWhenStoreUnavailable: true);
+            await this.RetryStartupDrainUntilSucceeded(
+                this.DrainReadyUntilEmpty,
+                "ready-work drain",
+                cancellationToken);
         }
         catch (WorkPersistenceStoreUnavailableException exception)
         {
@@ -213,8 +239,9 @@ internal sealed class WorkQueueDurabilityCoordinator(
         WorkConfiguration configuration,
         WorkRequestContext requestContext,
         DateTimeOffset createdAt,
-        WorkQueueDurabilityIdempotency? idempotency)
-        => new(
+        WorkQueueDurabilityIdempotency? idempotency,
+        WorkflowProvenance? workflowProvenance = null)
+        => new WorkQueueDurabilityEnqueueRequest(
             workSystemId,
             workSystemName,
             workerId,
@@ -225,7 +252,10 @@ internal sealed class WorkQueueDurabilityCoordinator(
             requestContext,
             createdAt,
             idempotency,
-            options.QueueDurabilityTransaction);
+            options.QueueDurabilityTransaction)
+        {
+            WorkflowProvenance = workflowProvenance,
+        };
 
     public WorkIdempotencyPersistenceRequest CreateIdempotencyRequest(
         WorkerId workerId,
@@ -253,6 +283,11 @@ internal sealed class WorkQueueDurabilityCoordinator(
 
         var executionToken = getSystemExecutionToken();
         this.readerTask = Task.Run(() => this.RunReader(executionToken), CancellationToken.None);
+        if (this.activeStore.SupportsFailedWorkerRecovery)
+        {
+            this.failedRecoveryTask = Task.Run(() => this.RunFailedRecovery(executionToken), CancellationToken.None);
+        }
+
         this.leaseRenewalTask = Task.Run(() => this.RunLeaseRenewal(executionToken), CancellationToken.None);
         this.cleanupTask = Task.Run(() => this.RunCleanup(CancellationToken.None), CancellationToken.None);
     }
@@ -266,7 +301,10 @@ internal sealed class WorkQueueDurabilityCoordinator(
 
         var flushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await this.cleanup.Writer.WriteAsync(
-            new WorkQueueDurabilityCleanupItem(default, WorkQueueDurabilityCleanupKind.Flush, flushed),
+            new WorkQueueDurabilityCleanupItem(
+                default,
+                WorkQueueDurabilityCleanupKind.Flush,
+                Flushed: flushed),
             cancellationToken);
         await flushed.Task.WaitAsync(cancellationToken);
     }
@@ -384,7 +422,10 @@ internal sealed class WorkQueueDurabilityCoordinator(
         }
     }
 
-    public void RetainFailed(WorkerId workerId)
+    public void RetainFailed(
+        WorkerId workerId,
+        DateTimeOffset failedAt,
+        IReadOnlyList<WorkMessage> messages)
     {
         if (this.activeStore is null ||
             !this.leases.ContainsKey(workerId) &&
@@ -394,8 +435,11 @@ internal sealed class WorkQueueDurabilityCoordinator(
             return;
         }
 
-        this.QueueCleanup(workerId, WorkQueueDurabilityCleanupKind.RetainFailed);
+        this.QueueCleanup(workerId, WorkQueueDurabilityCleanupKind.RetainFailed, failedAt, messages);
     }
+
+    public void TrackRetainedFailure(WorkerId workerId)
+        => this.retainedFailures[workerId] = 0;
 
     public void DeleteFinal(WorkerId workerId)
     {
@@ -412,18 +456,23 @@ internal sealed class WorkQueueDurabilityCoordinator(
 
     private async Task RunReader(CancellationToken cancellationToken)
     {
+        var waitForSignal = true;
         while (!cancellationToken.IsCancellationRequested && isAcceptingWork())
         {
             try
             {
-                var signaled = await this.WaitForReaderSignalOrFallback(cancellationToken);
-                if (signaled)
+                if (waitForSignal)
                 {
-                    Interlocked.Exchange(ref this.readerSignalPending, 0);
+                    var signaled = await this.WaitForReaderSignalOrFallback(cancellationToken);
+                    if (signaled)
+                    {
+                        Interlocked.Exchange(ref this.readerSignalPending, 0);
+                    }
                 }
 
-                await this.DrainUntilEmpty(cancellationToken);
+                await this.DrainReadyUntilEmpty(cancellationToken);
                 this.RecordReaderSuccess();
+                waitForSignal = true;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -432,6 +481,41 @@ internal sealed class WorkQueueDurabilityCoordinator(
             catch (Exception exception)
             {
                 this.RecordReaderFailure(exception);
+                this.LogRetryingDurabilityFailure("ready-work reader", exception, this.retryDelay);
+                waitForSignal = false;
+                if (!await this.DelayUnlessStopping(this.retryDelay, cancellationToken))
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    private async Task RunFailedRecovery(CancellationToken cancellationToken)
+    {
+        var waitForRecoveryInterval = true;
+        while (!cancellationToken.IsCancellationRequested && isAcceptingWork())
+        {
+            try
+            {
+                if (waitForRecoveryInterval)
+                {
+                    await Task.Delay(this.leaseDuration, cancellationToken);
+                }
+
+                await this.RecoverFailedUntilEmpty(cancellationToken);
+                this.RecordReaderSuccess();
+                waitForRecoveryInterval = true;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                this.RecordReaderFailure(exception);
+                this.LogRetryingDurabilityFailure("failed-work recovery", exception, this.retryDelay);
+                waitForRecoveryInterval = false;
                 if (!await this.DelayUnlessStopping(this.retryDelay, cancellationToken))
                 {
                     return;
@@ -443,10 +527,14 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private Task<bool> WaitForReaderSignalOrFallback(CancellationToken cancellationToken)
         => this.readerSignal.WaitAsync(this.ReaderPollInterval, cancellationToken);
 
-    private void QueueCleanup(WorkerId workerId, WorkQueueDurabilityCleanupKind kind)
+    private void QueueCleanup(
+        WorkerId workerId,
+        WorkQueueDurabilityCleanupKind kind,
+        DateTimeOffset? failedAt = null,
+        IReadOnlyList<WorkMessage>? messages = null)
     {
         this.diagnostics.TrackCleanupQueued(workerId);
-        var item = new WorkQueueDurabilityCleanupItem(workerId, kind);
+        var item = new WorkQueueDurabilityCleanupItem(workerId, kind, failedAt, messages);
         if (!this.cleanup.Writer.TryWrite(item))
         {
             _ = Task.Run(async () =>
@@ -500,7 +588,11 @@ internal sealed class WorkQueueDurabilityCoordinator(
             catch (Exception exception)
             {
                 this.RecordCleanupFailure(exception);
-                if (!await this.DelayUnlessStopping(TimeSpan.FromSeconds(10), cancellationToken))
+                this.LogRetryingDurabilityFailure(
+                    "durable cleanup",
+                    exception,
+                    this.cleanupRetryDelay);
+                if (!await this.DelayUnlessStopping(this.cleanupRetryDelay, cancellationToken))
                 {
                     return;
                 }
@@ -550,16 +642,16 @@ internal sealed class WorkQueueDurabilityCoordinator(
             return null;
         }
 
-        var latestByWorker = new Dictionary<WorkerId, WorkQueueDurabilityCleanupKind>();
+        var latestByWorker = new Dictionary<WorkerId, WorkQueueDurabilityCleanupItem>();
         foreach (var item in pending.Where(item =>
             item.Kind == WorkQueueDurabilityCleanupKind.DeleteFinal ||
             !latestByWorker.ContainsKey(item.WorkerId)))
         {
-            latestByWorker[item.WorkerId] = item.Kind;
+            latestByWorker[item.WorkerId] = item;
         }
 
         var delete = CreateCleanupRequests(latestByWorker, WorkQueueDurabilityCleanupKind.DeleteFinal);
-        var retain = CreateCleanupRequests(latestByWorker, WorkQueueDurabilityCleanupKind.RetainFailed);
+        var retain = this.CreateFailureRequests(latestByWorker);
 
         await this.ProcessCleanupItems(
             delete,
@@ -573,12 +665,16 @@ internal sealed class WorkQueueDurabilityCoordinator(
             },
             cancellationToken);
 
-        await this.ProcessCleanupItems(
+        await this.ProcessFailureItems(
             retain,
             this.activeStore.RetainFailed,
             item =>
             {
-                this.RemoveLeaseIfCurrent(item.Lease);
+                if (!this.activeStore.SupportsFailedWorkerRecovery)
+                {
+                    this.RemoveLeaseIfCurrent(item.Lease);
+                }
+
                 this.retainedFailures[item.WorkerId] = 0;
                 this.diagnostics.TrackCleanupCompleted(item.WorkerId);
             },
@@ -588,13 +684,13 @@ internal sealed class WorkQueueDurabilityCoordinator(
     }
 
     private List<WorkQueueDurabilityCleanupRequest> CreateCleanupRequests(
-        Dictionary<WorkerId, WorkQueueDurabilityCleanupKind> items,
+        Dictionary<WorkerId, WorkQueueDurabilityCleanupItem> items,
         WorkQueueDurabilityCleanupKind kind)
     {
         var requests = new List<WorkQueueDurabilityCleanupRequest>();
         foreach (var item in items)
         {
-            if (item.Value != kind)
+            if (item.Value.Kind != kind)
             {
                 continue;
             }
@@ -604,6 +700,67 @@ internal sealed class WorkQueueDurabilityCoordinator(
         }
 
         return requests;
+    }
+
+    private List<WorkQueueDurabilityFailureRequest> CreateFailureRequests(
+        Dictionary<WorkerId, WorkQueueDurabilityCleanupItem> items)
+    {
+        var requests = new List<WorkQueueDurabilityFailureRequest>();
+        foreach (var item in items.Values)
+        {
+            if (item.Kind != WorkQueueDurabilityCleanupKind.RetainFailed ||
+                item.FailedAt is not { } failedAt)
+            {
+                continue;
+            }
+
+            this.leases.TryGetValue(item.WorkerId, out var lease);
+            requests.Add(new WorkQueueDurabilityFailureRequest(
+                item.WorkerId,
+                lease,
+                failedAt,
+                item.Messages ?? []));
+        }
+
+        return requests;
+    }
+
+    private async Task ProcessFailureItems(
+        List<WorkQueueDurabilityFailureRequest> requests,
+        Func<IReadOnlyList<WorkQueueDurabilityFailureRequest>, CancellationToken, Task> cleanupAction,
+        Action<WorkQueueDurabilityFailureRequest> completed,
+        CancellationToken cancellationToken)
+    {
+        while (requests.Count > 0 && !cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await cleanupAction(requests, cancellationToken);
+                foreach (var request in requests)
+                {
+                    completed(request);
+                }
+
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (WorkQueueDurabilityLeaseLostException exception)
+            {
+                this.HandleLostLeases(exception.Leases);
+                var lostWorkerIds = exception.Leases.Select(lease => lease.WorkerId).ToHashSet();
+                this.diagnostics.TrackCleanupCompleted(lostWorkerIds);
+
+                foreach (var request in requests.Where(request => !lostWorkerIds.Contains(request.WorkerId)))
+                {
+                    completed(request);
+                }
+
+                return;
+            }
+        }
     }
 
     private async Task ProcessCleanupItems(
@@ -641,13 +798,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
 
                 return;
             }
-            catch
-            {
-                if (!await this.DelayUnlessStopping(TimeSpan.FromSeconds(10), cancellationToken))
-                {
-                    return;
-                }
-            }
         }
     }
 
@@ -681,6 +831,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
             catch (Exception exception)
             {
                 this.RecordLeaseRenewalFailure(exception);
+                this.LogRetryingDurabilityFailure("lease renewal", exception, this.retryDelay);
                 if (!await this.DelayUnlessStopping(this.retryDelay, cancellationToken))
                 {
                     return;
@@ -689,29 +840,57 @@ internal sealed class WorkQueueDurabilityCoordinator(
         }
     }
 
-    private async Task DrainUntilEmpty(
-        CancellationToken cancellationToken,
-        bool stopWhenStoreUnavailable = false)
+    private async Task DrainReadyUntilEmpty(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            if (await this.DrainReadyOnce(cancellationToken) == 0)
+            {
+                return;
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private async Task RecoverFailedUntilEmpty(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            if (await this.RecoverFailedOnce(cancellationToken) == 0)
+            {
+                return;
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private async Task RetryStartupDrainUntilSucceeded(
+        Func<CancellationToken, Task> drain,
+        string operation,
+        CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                if (await this.DrainOnce(cancellationToken) == 0)
-                {
-                    return;
-                }
+                await drain(cancellationToken);
+                this.RecordReaderSuccess();
+                return;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
-            catch (WorkPersistenceStoreUnavailableException) when (stopWhenStoreUnavailable)
+            catch (WorkPersistenceStoreUnavailableException)
             {
                 throw;
             }
-            catch
+            catch (Exception exception)
             {
+                this.RecordReaderFailure(exception);
+                this.LogRetryingDurabilityFailure(operation, exception, this.retryDelay);
                 if (!await this.DelayUnlessStopping(this.retryDelay, cancellationToken))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -723,7 +902,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
         cancellationToken.ThrowIfCancellationRequested();
     }
 
-    private async Task<int> DrainOnce(CancellationToken cancellationToken)
+    private async Task<int> DrainReadyOnce(CancellationToken cancellationToken)
     {
         if (this.activeStore is null)
         {
@@ -769,6 +948,52 @@ internal sealed class WorkQueueDurabilityCoordinator(
         return entries.Count;
     }
 
+    private async Task<int> RecoverFailedOnce(CancellationToken cancellationToken)
+    {
+        if (this.activeStore is null ||
+            !this.activeStore.SupportsFailedWorkerRecovery ||
+            acceptPersistedFailedEntry is null)
+        {
+            return 0;
+        }
+
+        var request = new WorkQueueDurabilityClaimRequest(
+            workSystemName,
+            this.ownerId,
+            BatchSize: this.claimBatchSize,
+            LeaseDuration: this.leaseDuration);
+        var entries = new List<WorkQueueDurabilityFailedEntry>();
+        var claimStartedAt = this.recordClaimSamples ? DateTimeOffset.UtcNow : default;
+        var claimStopwatch = Stopwatch.StartNew();
+        await foreach (var entry in this.activeStore.ClaimFailed(request, cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            entries.Add(entry);
+        }
+
+        claimStopwatch.Stop();
+        var acceptanceStopwatch = Stopwatch.StartNew();
+        try
+        {
+            foreach (var entry in entries)
+            {
+                await acceptPersistedFailedEntry(entry, cancellationToken);
+            }
+        }
+        finally
+        {
+            acceptanceStopwatch.Stop();
+            this.diagnostics.RecordClaim(
+                entries.Count,
+                claimStopwatch.Elapsed,
+                acceptanceStopwatch.Elapsed,
+                this.recordClaimSamples ? claimStartedAt : null,
+                this.recordClaimSamples ? DateTimeOffset.UtcNow : null);
+        }
+
+        return entries.Count;
+    }
+
     private void ConfigureFallbackPolling(IReadOnlyList<WorkDefinition> definitions)
     {
         var configuredInterval = definitions
@@ -789,6 +1014,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
         foreach (var lostLease in lostLeases.Where(this.RemoveLeaseIfCurrent))
         {
             removedCount++;
+            this.retainedFailures.TryRemove(lostLease.WorkerId, out _);
             this.diagnostics.TrackCleanupCompleted(lostLease.WorkerId);
             leaseLost(lostLease.WorkerId);
         }
@@ -876,6 +1102,20 @@ internal sealed class WorkQueueDurabilityCoordinator(
             detail);
     }
 
+    private void LogRetryingDurabilityFailure(
+        string operation,
+        Exception exception,
+        TimeSpan retryAfter)
+    {
+        var systemName = string.IsNullOrWhiteSpace(workSystemName) ? "default" : workSystemName;
+        logger?.LogWarning(
+            exception,
+            "Workable {DurabilityOperation} failed for system '{WorkSystemName}'. Retrying in {RetryDelay}.",
+            operation,
+            systemName,
+            retryAfter);
+    }
+
     private string CreateStoreUnreachableMessage(Exception exception)
     {
         var systemName = string.IsNullOrWhiteSpace(workSystemName) ? "default" : workSystemName;
@@ -886,6 +1126,8 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private sealed record WorkQueueDurabilityCleanupItem(
         WorkerId WorkerId,
         WorkQueueDurabilityCleanupKind Kind,
+        DateTimeOffset? FailedAt = null,
+        IReadOnlyList<WorkMessage>? Messages = null,
         TaskCompletionSource? Flushed = null);
 
     private sealed record AcceptedWorkerWaiter(

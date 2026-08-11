@@ -8,7 +8,10 @@ using System.Threading.Channels;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Connections;
+using Microsoft.AspNetCore.Http.Connections.Features;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.TestHost;
@@ -1708,6 +1711,81 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task UnwatchViewSuppressesCancellationAfterTheConnectionIsAborted()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var subscriptions = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
+        var groups = new RecordingSignalRGroupManager
+        {
+            HonorCancellationOnRemove = true,
+        };
+        const string connectionId = "cancelled-view-connection";
+        const string subscriptionId = "cancelled-view";
+        await subscriptions.WatchView(
+            connectionId,
+            groups,
+            system,
+            subscriptionId,
+            "overview",
+            new WorkViewCriteria(),
+            RealtimeAuthorization(),
+            CancellationToken.None);
+        using var hub = ActivatorUtilities.CreateInstance<WorkableRealtimeHub>(host.Services);
+        var context = new CancelableHubCallerContext(
+            connectionId,
+            host.Services,
+            CreateTransportPrincipal());
+        hub.Context = context;
+        hub.Groups = groups;
+        context.Abort();
+
+        await hub.UnwatchView(subscriptionId);
+
+        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
+        Assert.Single(groups.Removes);
+    }
+
+    [Fact]
+    public async Task UnwatchWorkerOverviewSuppressesCancellationAfterTheConnectionIsAborted()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var subscriptions = host.Services.GetRequiredService<WorkableRealtimeWorkerOverviewSubscriptions>();
+        var groups = new RecordingSignalRGroupManager
+        {
+            HonorCancellationOnRemove = true,
+        };
+        const string connectionId = "cancelled-worker-overview-connection";
+        const string subscriptionId = "cancelled-worker-overview";
+        var watch = subscriptions.Watch(
+            connectionId,
+            groups,
+            system,
+            subscriptionId,
+            WorkerId.New(),
+            new WorkWorkerOverviewRealtimeCriteria(),
+            RealtimeAuthorization(),
+            CancellationToken.None);
+        var add = await groups.WaitForAdd();
+        subscriptions.SetStreaming(add.GroupName, isStreaming: true);
+        await watch;
+        using var hub = ActivatorUtilities.CreateInstance<WorkableRealtimeHub>(host.Services);
+        var context = new CancelableHubCallerContext(
+            connectionId,
+            host.Services,
+            CreateTransportPrincipal());
+        hub.Context = context;
+        hub.Groups = groups;
+        context.Abort();
+
+        await hub.UnwatchWorkerOverview(subscriptionId);
+
+        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
+        Assert.Single(groups.Removes);
+    }
+
+    [Fact]
     public async Task HubDisconnectReleasesEverySubscriptionKind()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -2744,6 +2822,53 @@ public sealed class WorkableSignalRTests
             name: "SignalR User",
             email: "signalr.user@example.test",
             groups: groups);
+
+    private static WorkAuthorizationSnapshot RealtimeAuthorization()
+        => WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            new WorkActor("signalr-user-1", "SignalR User"),
+            ["signalr.read"],
+            readableDefinitionIds: null);
+
+    private sealed class CancelableHubCallerContext : HubCallerContext
+    {
+        private readonly CancellationTokenSource connectionAborted = new();
+        private readonly FeatureCollection features = new();
+
+        public CancelableHubCallerContext(
+            string connectionId,
+            IServiceProvider services,
+            ClaimsPrincipal user)
+        {
+            this.ConnectionId = connectionId;
+            this.User = user;
+            var httpContext = new DefaultHttpContext
+            {
+                RequestServices = services,
+                User = user,
+            };
+            this.features.Set<IHttpContextFeature>(new TestHttpContextFeature(httpContext));
+        }
+
+        public override string ConnectionId { get; }
+
+        public override string? UserIdentifier => this.User?.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        public override ClaimsPrincipal? User { get; }
+
+        public override IDictionary<object, object?> Items { get; } = new Dictionary<object, object?>();
+
+        public override IFeatureCollection Features => this.features;
+
+        public override CancellationToken ConnectionAborted => this.connectionAborted.Token;
+
+        public override void Abort() => this.connectionAborted.Cancel();
+    }
+
+    private sealed class TestHttpContextFeature(HttpContext httpContext) : IHttpContextFeature
+    {
+        public HttpContext? HttpContext { get; set; } = httpContext;
+    }
 
     private static WorkEventStream GetEventStream(IWorkSystem system)
     {

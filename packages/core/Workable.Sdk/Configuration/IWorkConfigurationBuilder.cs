@@ -252,6 +252,26 @@ public interface IWorkConfigurationBuilder
     IWorkConfigurationBuilder AllowInvocationFrom(params WorkInvocationChannel[] channels);
 
     /// <summary>
+    /// Declares work definitions that this work may execute through its scoped
+    /// <c>IChildWorkQueueService</c> without requiring the initiating caller to have direct queue access to them.
+    /// This registration-specific grant cannot be applied through <c>WithWorkDefaults</c>, refer to the
+    /// same definition, or form a cycle with other child-execution grants.
+    /// </summary>
+    /// <param name="definitionNames">The case-insensitive child work definition names.</param>
+    /// <returns>The same builder so additional configuration can be chained.</returns>
+    IWorkConfigurationBuilder AllowChildExecution(params string[] definitionNames);
+
+    /// <summary>
+    /// Declares work definitions that this work may execute through its scoped
+    /// <c>IChildWorkQueueService</c> without requiring the initiating caller to have direct queue access to them.
+    /// This registration-specific grant cannot be applied through <c>WithWorkDefaults</c>, refer to the
+    /// same definition, or form a cycle with other child-execution grants.
+    /// </summary>
+    /// <param name="definitions">The child work definitions.</param>
+    /// <returns>The same builder so additional configuration can be chained.</returns>
+    IWorkConfigurationBuilder AllowChildExecution(params WorkDefinition[] definitions);
+
+    /// <summary>
     /// Adds an exception classifier that applies only to the current work definition registration.
     /// </summary>
     /// <param name="classifier">The classifier Workable evaluates when this work throws.</param>

@@ -12,7 +12,8 @@ internal sealed class WorkerExecutionInvoker(
     WorkInitializationExecutor initialization,
     WorkIterationStatusStream? iterationStatuses = null,
     WorkSystemProfilingConfiguration? profilingConfiguration = null,
-    WorkExecutionDiagnosticsCoordinator? executionDiagnostics = null)
+    WorkExecutionDiagnosticsCoordinator? executionDiagnostics = null,
+    Func<WorkerRecord, IChildWorkQueueService>? childQueueFactory = null)
 {
     public async Task<WorkerExecutionInvocationResult> Execute(WorkerRecord worker, CancellationToken cancellationToken)
     {
@@ -52,30 +53,38 @@ internal sealed class WorkerExecutionInvoker(
 
             await using var scope = rootServices.CreateAsyncScope();
             var context = this.CreateContext(worker, scope.ServiceProvider, executionOptions);
-            var executor = worker.Work.ExecutorFactory(scope.ServiceProvider);
-            using var executionScope = activeProfile?.CreateMethodScope(
-                executor.GetType(),
-                nameof(IWorkExecutor.Execute),
-                worker.Input);
-            var result = ApplyRequestedFailure(
-                await executor.Execute(context, worker.Input, cancellationToken),
-                context);
-            executionScope?.SetResult(new
+            using var childQueueScope = ChildWorkQueueContext.Begin(context.ChildQueue);
+            try
             {
-                result.Result.HasErrors,
-                MessageCount = result.Result.Messages.Count,
-            });
+                var executor = worker.Work.ExecutorFactory(scope.ServiceProvider);
+                using var executionScope = activeProfile?.CreateMethodScope(
+                    executor.GetType(),
+                    nameof(IWorkExecutor.Execute),
+                    worker.Input);
+                var invocation = ApplyRequestedFailure(
+                    await executor.Execute(context, worker.Input, cancellationToken),
+                    context);
+                executionScope?.SetResult(new
+                {
+                    invocation.Result.HasErrors,
+                    MessageCount = invocation.Result.Messages.Count,
+                });
 
-            if (worker.Configuration.Coordination.Durability.CompleteDurably &&
-                !result.Result.HasErrors &&
-                worker.State == WorkerState.Running &&
-                !context.IsDurableCompletionRecorded)
-            {
-                throw new InvalidOperationException(
-                    "Durable completion is enabled for this work. Successful executor code must call IWorkExecutionContext.CompleteDurably with the developer-owned transaction before committing it.");
+                if (worker.Configuration.Coordination.Durability.CompleteDurably &&
+                    !invocation.Result.HasErrors &&
+                    worker.State == WorkerState.Running &&
+                    !context.IsDurableCompletionRecorded)
+                {
+                    throw new InvalidOperationException(
+                        "Durable completion is enabled for this work. Successful executor code must call IWorkExecutionContext.CompleteDurably with the developer-owned transaction before committing it.");
+                }
+
+                return invocation;
             }
-
-            return result;
+            finally
+            {
+                context.RevokeChildExecution();
+            }
         }
         catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
         {
@@ -111,6 +120,7 @@ internal sealed class WorkerExecutionInvoker(
             () => worker.InterruptionReason,
             profiler,
             services,
+            childQueueFactory?.Invoke(worker) ?? UnavailableChildWorkQueueService.Instance,
             iterationStatuses is null
                 ? EmptyWorkIterationStatusPublisher.Instance
                 : new WorkIterationStatusPublisher(

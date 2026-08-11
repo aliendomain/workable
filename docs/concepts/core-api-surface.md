@@ -58,7 +58,7 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 - Sibling branches execute concurrently. Each branch can contain dispatch, fan-out, nested parallel, and branch-local join steps in sequential order.
 - `DispatchEach` defaults canceled children to `Continue`; a step can instead use `Block` or `CancelWorkflow` without changing ordinary `DispatchWork` cancellation behavior.
 - Workflow steps dispatch existing work definitions; they do not introduce a separate executor implementation model.
-- Workflows start by name with optional workflow input, forward the original actor, origin, and authentication state from `WorkRequestContext` to child work, and add `workflow-run`, `workflow-definition`, and `workflow-step` identifiers to child work input.
+- Workflows start by name with optional workflow input, forward the original actor, origin, and authentication state from `WorkRequestContext` to child work, add a system-reserved `workflow-run` identifier to child work input, and retain system-owned workflow provenance for its run, definition, and step.
 - `IWorkflowCommandDispatcher` provides a standardized in-process start-and-optionally-wait path for callers that want system resolution, workflow authorization, execution, and completion mapping in one helper.
 - Persisted workflow runs and queued workers retain actor, origin, and authentication state from `WorkRequestContext`, but do not retain precomputed authorization snapshots.
 - Workflow actions are `Start`, `Pause`, and `Cancel`. `Paused` and `Blocked` workflow runs can be started again, and blocked runs also resume automatically when their outstanding failed child workers are restarted and later complete successfully.

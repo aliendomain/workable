@@ -320,7 +320,10 @@ public class WorkableViewQueryAdapter
                 worker.DefinitionName,
                 worker.DefinitionCategory,
                 worker.Identifiers.ToArray(),
-                CountWorkerOverviewConfigurationDifferences(worker, definition)),
+                CountWorkerOverviewConfigurationDifferences(worker, definition))
+            {
+                WorkflowRunId = worker.WorkflowRunId,
+            },
             worker.Input,
             latestIteration is null
                 ? null
@@ -471,7 +474,10 @@ public class WorkableViewQueryAdapter
                 worker.DefinitionName,
                 worker.DefinitionCategory,
                 worker.Identifiers.ToArray(),
-                CountWorkerOverviewConfigurationDifferences(worker, definition)),
+                CountWorkerOverviewConfigurationDifferences(worker, definition))
+            {
+                WorkflowRunId = worker.WorkflowRunId,
+            },
             latestIteration is null
                 ? null
                 : CreateWorkerOverviewLatestIteration(

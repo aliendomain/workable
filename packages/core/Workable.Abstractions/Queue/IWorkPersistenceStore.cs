@@ -8,6 +8,11 @@ namespace Workable;
 public interface IWorkPersistenceStore
 {
     /// <summary>
+    /// Gets whether the provider keeps failed durable entries leased and can restore them after restart.
+    /// </summary>
+    bool SupportsFailedWorkerRecovery => false;
+
+    /// <summary>
     /// Initializes the persistence store for a system and its registered definitions.
     /// </summary>
     /// <param name="context">The system and definition context to initialize.</param>
@@ -39,6 +44,17 @@ public interface IWorkPersistenceStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Claims retained failed durable entries for control-plane recovery without making them executable.
+    /// </summary>
+    /// <param name="request">The claim request describing ownership and batch limits.</param>
+    /// <param name="cancellationToken">A token that cancels the claim operation.</param>
+    /// <returns>The retained failed entries whose leases were successfully claimed.</returns>
+    IAsyncEnumerable<WorkQueueDurabilityFailedEntry> ClaimFailed(
+        WorkQueueDurabilityClaimRequest request,
+        CancellationToken cancellationToken = default)
+        => EmptyFailedEntries();
+
+    /// <summary>
     /// Renews ownership leases for previously claimed durable queue entries.
     /// </summary>
     /// <param name="leases">The claimed leases to renew.</param>
@@ -55,6 +71,21 @@ public interface IWorkPersistenceStore
     /// <param name="workers">The workers whose durable entries should be retained as failed.</param>
     /// <param name="cancellationToken">A token that cancels the retention operation.</param>
     Task RetainFailed(IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retains durable queue records and the state required to restore failed workers after restart.
+    /// </summary>
+    /// <remarks>
+    /// The default implementation preserves compatibility with providers that retain only worker identity.
+    /// </remarks>
+    /// <param name="workers">The failed workers and failure state to retain.</param>
+    /// <param name="cancellationToken">A token that cancels the retention operation.</param>
+    Task RetainFailed(
+        IReadOnlyList<WorkQueueDurabilityFailureRequest> workers,
+        CancellationToken cancellationToken = default)
+        => this.RetainFailed(
+            workers.Select(static worker => new WorkQueueDurabilityCleanupRequest(worker.WorkerId, worker.Lease)).ToArray(),
+            cancellationToken);
 
     /// <summary>
     /// Deletes durable queue records for final workers.
@@ -203,6 +234,12 @@ public interface IWorkPersistenceStore
         await Task.CompletedTask;
         yield break;
     }
+
+    private static async IAsyncEnumerable<WorkQueueDurabilityFailedEntry> EmptyFailedEntries()
+    {
+        await Task.CompletedTask;
+        yield break;
+    }
 }
 
 /// <summary>
@@ -275,6 +312,11 @@ public sealed record WorkQueueDurabilityEnqueueRequest(
     /// Gets the origin metadata extracted from <see cref="RequestContext"/>.
     /// </summary>
     public WorkOrigin Origin => this.RequestContext.Origin;
+
+    /// <summary>
+    /// Gets the system-assigned workflow provenance that the provider must retain, when one exists.
+    /// </summary>
+    public WorkflowProvenance? WorkflowProvenance { get; init; }
 }
 
 /// <summary>
@@ -347,6 +389,45 @@ public sealed record WorkQueueDurabilityEntry(
     /// Gets the origin metadata extracted from <see cref="RequestContext"/>.
     /// </summary>
     public WorkOrigin Origin => this.RequestContext.Origin;
+
+    /// <summary>
+    /// Gets the retained system-assigned workflow provenance, when one exists.
+    /// </summary>
+    public WorkflowProvenance? WorkflowProvenance { get; init; }
+}
+
+/// <summary>
+/// Represents one claimed retained failure restored for operator control.
+/// </summary>
+/// <param name="Lease">The claimed lease associated with the retained failure.</param>
+/// <param name="DefinitionName">The registered definition name associated with the worker.</param>
+/// <param name="Input">The retained input payload, when one exists.</param>
+/// <param name="Options">The effective worker options for the worker.</param>
+/// <param name="Configuration">The effective work configuration for the worker.</param>
+/// <param name="RequestContext">The caller context recorded for the worker.</param>
+/// <param name="CreatedAt">The time the worker was created.</param>
+/// <param name="FailedAt">The time the worker entered the failed state.</param>
+/// <param name="Messages">The retained failure messages.</param>
+public sealed record WorkQueueDurabilityFailedEntry(
+    WorkQueueDurabilityLease Lease,
+    string DefinitionName,
+    WorkInput? Input,
+    WorkerOptions Options,
+    WorkConfiguration Configuration,
+    WorkRequestContext RequestContext,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset FailedAt,
+    IReadOnlyList<WorkMessage> Messages)
+{
+    /// <summary>
+    /// Gets the origin metadata extracted from <see cref="RequestContext"/>.
+    /// </summary>
+    public WorkOrigin Origin => this.RequestContext.Origin;
+
+    /// <summary>
+    /// Gets the retained system-assigned workflow provenance, when one exists.
+    /// </summary>
+    public WorkflowProvenance? WorkflowProvenance { get; init; }
 }
 
 /// <summary>
@@ -368,6 +449,19 @@ public sealed record WorkQueueDurabilityLease(
 public sealed record WorkQueueDurabilityCleanupRequest(
     WorkerId WorkerId,
     WorkQueueDurabilityLease? Lease);
+
+/// <summary>
+/// Identifies a failed durable entry and the state required to restore it after process restart.
+/// </summary>
+/// <param name="WorkerId">The identifier of the failed worker.</param>
+/// <param name="Lease">The lease that must still be owned, when one exists.</param>
+/// <param name="FailedAt">The time the worker entered the failed state.</param>
+/// <param name="Messages">The failure messages retained for operator inspection.</param>
+public sealed record WorkQueueDurabilityFailureRequest(
+    WorkerId WorkerId,
+    WorkQueueDurabilityLease? Lease,
+    DateTimeOffset FailedAt,
+    IReadOnlyList<WorkMessage> Messages);
 
 /// <summary>
 /// Represents one durable workflow-run snapshot.

@@ -38,7 +38,9 @@ public sealed class WorkConfigurationBuilderShould
                 limitReachedBehavior: WorkConcurrencyLimitReachedBehavior.DeferStart,
                 overrideBehavior: WorkConcurrencyOverrideBehavior.Strict)
             .RejectDuplicateSubjects(WorkIdempotencyConflictPolicy.RejectDuplicates)
-            .AllowInvocationFrom(WorkInvocationChannel.Mcp, WorkInvocationChannel.SignalR);
+            .AllowInvocationFrom(WorkInvocationChannel.Mcp, WorkInvocationChannel.SignalR)
+            .AllowChildExecution("child.one")
+            .AllowChildExecution(WorkDefinition.Create("child.two"));
 
         var configuration = builder.Build();
 
@@ -77,6 +79,8 @@ public sealed class WorkConfigurationBuilderShould
         Assert.Equal(WorkIdempotencyConflictPolicy.RejectDuplicates, configuration.Coordination.Idempotency.ConflictPolicy);
         Assert.True(configuration.Invocation.Allows(WorkInvocationChannel.Mcp));
         Assert.True(configuration.Invocation.Allows(WorkInvocationChannel.SignalR));
+        Assert.True(configuration.ChildExecution.Allows("CHILD.ONE"));
+        Assert.True(configuration.ChildExecution.Allows("child.two"));
     }
 
     [Fact]

@@ -19,7 +19,7 @@ SQL persistence registration is host-level service configuration, not a setting 
 
 ## Schema deployment
 
-`AutoDeploySchema` defaults to `true`. Each Workable system validates the execution-diagnostics tables during startup and applies additive schema changes through the same `SchemaVersion` table used by durable queue and workflow persistence. Execution diagnostics has its own component version; it does not share the queue component's version number.
+`AutoDeploySchema` defaults to `true`. Each Workable system validates the execution-diagnostics tables during startup and applies only the ordered migrations newer than the installed diagnostics component version in the same `SchemaVersion` table used by durable queue and workflow persistence. A database with no Workable objects receives the complete current schema directly. Existing Workable tables without version metadata fail deployment rather than being assumed current. Execution diagnostics has its own component version; it does not share the queue component's version number.
 
 For environments where applications cannot change schemas, disable automatic deployment and apply the generated script before startup:
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
@@ -119,9 +120,36 @@ internal sealed class WorkableBenchmarkSystem : IAsyncDisposable
         }
 
         // Keep benchmark methods focused on the target operation, not initial projection catch-up.
-        await session.Query.Workers(new WorkerCriteria(Take: 1), cancellationToken);
+        await WaitForReadModelToSettle(session, cancellationToken);
 
         return new WorkableBenchmarkSystem(provider, system, session, requestContext, definitions);
+    }
+
+    internal Task WaitForReadModelToSettle(CancellationToken cancellationToken = default)
+        => WaitForReadModelToSettle(this.Session, cancellationToken);
+
+    private static async Task WaitForReadModelToSettle(
+        IWorkSystemSession session,
+        CancellationToken cancellationToken)
+    {
+        var timeout = Stopwatch.StartNew();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var diagnostics = session.Diagnostics.ReadModel;
+            if (diagnostics.PendingUpdateCount == 0 &&
+                diagnostics.AppliedSequence == diagnostics.EnqueuedSequence)
+            {
+                return;
+            }
+
+            if (timeout.Elapsed >= TimeSpan.FromSeconds(10))
+            {
+                throw new TimeoutException("The benchmark read model did not settle.");
+            }
+
+            await Task.Delay(1, cancellationToken);
+        }
     }
 
     internal static string ActorId(int index)

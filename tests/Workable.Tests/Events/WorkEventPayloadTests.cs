@@ -8,6 +8,44 @@ namespace Workable.Tests;
 public sealed class WorkEventPayloadTests
 {
     [Fact]
+    public void JsonRoundTripsTypedWorkflowEventThroughTheFullConstructor()
+    {
+        var occurredAt = DateTimeOffset.UtcNow;
+        var systemId = WorkSystemId.New();
+        var workflowDefinitionId = WorkflowDefinitionId.New();
+        var runIdentifier = new WorkIdentifier("workflow-run", WorkflowRunId.New().ToString());
+        var expected = new WorkEvent(
+            occurredAt,
+            systemId,
+            workSystemName: "events-system",
+            workerId: null,
+            workDefinitionId: null,
+            workDefinitionName: "events.workflow.serialization",
+            subjectId: null,
+            concurrencyKey: null,
+            identifiers: new HashSet<WorkIdentifier> { runIdentifier },
+            eventType: "workflow.started",
+            data: JsonSerializer.SerializeToElement(new { status = "Running" }),
+            WorkEventDefinitionKind.Workflow,
+            workflowDefinitionId);
+
+        var json = JsonSerializer.Serialize(expected);
+        var actual = Assert.IsType<WorkEvent>(JsonSerializer.Deserialize<WorkEvent>(json));
+
+        Assert.Equal(occurredAt, actual.OccurredAt);
+        Assert.Equal(systemId, actual.WorkSystemId);
+        Assert.Equal("events-system", actual.WorkSystemName);
+        Assert.Null(actual.WorkerId);
+        Assert.Null(actual.WorkDefinitionId);
+        Assert.Equal("events.workflow.serialization", actual.WorkDefinitionName);
+        Assert.Equal(WorkEventDefinitionKind.Workflow, actual.DefinitionKind);
+        Assert.Equal(workflowDefinitionId, actual.WorkflowDefinitionId);
+        Assert.Contains(runIdentifier, actual.Identifiers);
+        Assert.Equal("workflow.started", actual.EventType);
+        Assert.Equal("Running", actual.Data?.GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task QueueAndCompletionEventsCarryThinWorkerPayloadsAndKeysAtEventTime()
     {
         var definition = WorkDefinition.Create("events.payload", "Publishes event payloads.");
@@ -186,8 +224,11 @@ public sealed class WorkEventPayloadTests
         var completedData = RequiredData(completed);
 
         Assert.Equal("events.workflow", started.WorkDefinitionName);
+        Assert.Equal(WorkEventDefinitionKind.Workflow, started.DefinitionKind);
+        Assert.Null(started.WorkDefinitionId);
+        Assert.NotNull(started.WorkflowDefinitionId);
         Assert.Contains(started.Identifiers, identifier => identifier.Type == "workflow-run");
-        Assert.Contains(started.Identifiers, identifier => identifier.Type == "workflow-definition" && identifier.Value == "events.workflow");
+        Assert.DoesNotContain(started.Identifiers, identifier => identifier.Type is "workflow-definition" or "workflow-step");
         Assert.Equal("events.workflow", startedData.GetProperty("run").GetProperty("definitionName").GetString());
         Assert.Equal("Running", startedData.GetProperty("run").GetProperty("status").GetString());
         Assert.Equal("Run workflow event payload test.", startedData.GetProperty("origin").GetProperty("description").GetString());
@@ -840,6 +881,3 @@ public sealed class WorkEventPayloadTests
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }
-
-
-

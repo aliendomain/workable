@@ -6,6 +6,8 @@ For configuration source order, precedence, and override rules that apply to eve
 
 By default, failed workers stay in `Failed` until someone explicitly starts or cancels them. Opting into failed-worker auto-cancel changes only the worker disposition. Workable still retains the failed iteration, messages, and failure details that explain what happened.
 
+Durably queued failed workers persist their failed disposition and failure time. After a process restart, Workable restores them in `Failed` without executing them. Failed-row recovery runs during startup and on a separate lease-duration interval, not on the normal ready-work notification path. If auto-cancel is enabled and the persisted deadline has already passed, the normal failed-worker scheduler cancels them after restoration.
+
 ## Settings
 
 | Setting | Default | Description |

@@ -158,6 +158,8 @@ SQL Server treats `LeaseId` as a fencing token. Lease renewal, failed-row retent
 
 The SQL Server integration includes a CLI project at `apps/tools/Workable.SqlServer.Cli`.
 
+`schema generate` emits the complete current schema for a fresh installation. `schema apply` and runtime auto-deployment first inspect the component versions in `SchemaVersion`: an empty database receives the current schema directly, while a versioned database runs only the ordered migrations newer than its installed queue, workflow, or diagnostics version. A database containing Workable tables without version metadata is rejected as an ambiguous legacy or partial deployment instead of being silently treated as fresh.
+
 Generate the schema script:
 
 ```powershell
@@ -199,4 +201,4 @@ $env:WORKABLE_SQLSERVER_CONNECTION_STRING="Server=(localdb)\MSSQLLocalDB;Databas
 dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema apply --schema workable
 ```
 
-The generated and applied schema are produced by the same `WorkableSqlServerSchema` helper used by the runtime initializer, so the CLI and runtime stay in sync.
+The generated current schema and the ordered upgrade migrations are owned by the same `WorkableSqlServerSchema` helper used by the runtime initializer, so the CLI and runtime stay in sync.

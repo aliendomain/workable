@@ -10,7 +10,10 @@ internal sealed record WorkflowRunSnapshot(
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
     IReadOnlyList<WorkMessage> Messages,
-    IReadOnlyList<WorkflowChildReceipt> ChildReceipts);
+    IReadOnlyList<WorkflowChildReceipt> ChildReceipts)
+{
+    public WorkflowDefinitionId DefinitionId { get; init; }
+}
 
 internal sealed record WorkflowStepRunSnapshot(
     string Name,

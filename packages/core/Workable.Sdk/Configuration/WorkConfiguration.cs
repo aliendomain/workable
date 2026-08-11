@@ -26,6 +26,12 @@ public sealed record WorkConfiguration(
     WorkInvocationConfiguration Invocation)
 {
     /// <summary>
+    /// Gets the definition-scoped allowlist for delegated child execution.
+    /// </summary>
+    public WorkChildExecutionConfiguration ChildExecution { get; init; } =
+        WorkChildExecutionConfiguration.Default;
+
+    /// <summary>
     /// Gets the persistent execution-diagnostics policy for this work definition.
     /// </summary>
     public WorkExecutionDiagnosticsPersistenceConfiguration ExecutionDiagnostics { get; init; } =
@@ -67,6 +73,7 @@ public sealed record WorkConfiguration(
                 // overrides must not enable or disable capture for an individual worker.
                 // Invocation is intentionally excluded. Allowed invocation channels are a
                 // design-time contract for the work definition, not a runtime worker option.
+                // Child execution is also definition-scoped and cannot be changed per worker.
             };
 
     /// <summary>

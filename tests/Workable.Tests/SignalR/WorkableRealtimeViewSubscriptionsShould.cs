@@ -8,6 +8,35 @@ namespace Workable.Tests;
 public sealed class WorkableRealtimeViewSubscriptionsShould
 {
     [Fact]
+    public async Task SeparateGroupsWhenWorkflowProjectionAuthorizationDiffers()
+    {
+        var subscriptions = new WorkableRealtimeViewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        await using var system = CreateSystem();
+        var criteria = Criteria("workflowRuns", WorkComponentShapes.Standard);
+        var readableWorkflow = await subscriptions.WatchView(
+            "connection-1",
+            groups,
+            system,
+            "workflow-runs-readable",
+            "workflow-runs",
+            criteria,
+            Authorization([WorkflowDefinitionId.New()]),
+            CancellationToken.None);
+        var hiddenWorkflow = await subscriptions.WatchView(
+            "connection-2",
+            groups,
+            system,
+            "workflow-runs-hidden",
+            "workflow-runs",
+            criteria,
+            Authorization(),
+            CancellationToken.None);
+
+        Assert.NotEqual(readableWorkflow.GroupName, hiddenWorkflow.GroupName);
+    }
+
+    [Fact]
     public async Task WaitForTheSharedChangeStreamBeforeSeedingAView()
     {
         var subscriptions = new WorkableRealtimeViewSubscriptions();
@@ -372,12 +401,14 @@ public sealed class WorkableRealtimeViewSubscriptionsShould
         return services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
     }
 
-    private static WorkAuthorizationSnapshot Authorization()
+    private static WorkAuthorizationSnapshot Authorization(
+        IReadOnlyList<WorkflowDefinitionId>? readableWorkflowDefinitionIds = null)
         => WorkAuthorizationSnapshot.CreateForSystem(
             systemName: null,
             new WorkActor("signalr-view-subscription-user", "SignalR View Subscription User"),
             ["signalr.read"],
-            readableDefinitionIds: null);
+            readableDefinitionIds: null,
+            readableWorkflowDefinitionIds);
 
     private sealed class DelayedFirstAddGroupManager : IGroupManager
     {

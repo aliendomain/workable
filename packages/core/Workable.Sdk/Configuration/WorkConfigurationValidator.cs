@@ -27,6 +27,7 @@ internal static class WorkConfigurationValidator
         ValidateRetention(configuration.Retention, messages);
         ValidateCoordination(configuration.Coordination, configuration.Recurrence, messages);
         ValidateInvocation(configuration.Invocation, messages);
+        ValidateChildExecution(configuration.ChildExecution, messages);
         return messages;
     }
 
@@ -384,6 +385,19 @@ internal static class WorkConfigurationValidator
                 "workable.configuration.invocation.channels_required",
                 "Invocation configuration requires at least one allowed channel.",
                 "configuration.invocation.allowedChannels"));
+        }
+    }
+
+    private static void ValidateChildExecution(
+        WorkChildExecutionConfiguration childExecution,
+        List<WorkMessage> messages)
+    {
+        if (childExecution.AllowedDefinitionNames.Any(string.IsNullOrWhiteSpace))
+        {
+            messages.Add(WorkMessage.Error(
+                "workable.configuration.child_execution.definition_name_required",
+                "Child execution configuration cannot contain an empty definition name.",
+                "configuration.childExecution.allowedDefinitionNames"));
         }
     }
 

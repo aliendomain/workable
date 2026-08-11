@@ -164,6 +164,85 @@ Fluent authorization overrides attribute authorization.
 
 Within `WithWorkDefaults(...)`, the group-level `authorize` callback runs before any per-work `authorize` callback. That means a specific work can refine or replace the grouped authorization without repeating the shared policy for every sibling registration.
 
+## Delegated Child Execution
+
+An authorized parent may execute explicitly declared child work without requiring the initiating actor to have the child's direct queue permission. This is scoped execution delegation, similar to a caller executing a stored procedure without receiving direct access to its underlying tables.
+
+Declare every allowed parent-to-child edge during work configuration:
+
+```csharp
+var child = WorkDefinition.Create("orders.internal.reserve-stock");
+var parent = WorkDefinition.Create("orders.place");
+
+builder.AddWork(
+    child,
+    ReserveStock,
+    configure: null,
+    authorize: auth => auth.AllowQueueToGroups("inventory.internal"));
+
+builder.AddWork<PlaceOrderExecutor>(
+    parent,
+    configure: configuration => configuration.AllowChildExecution(child),
+    authorize: auth => auth.AllowQueueToGroups("orders.place"));
+```
+
+`AllowChildExecution(...)` is a registration-specific authority grant and cannot be placed in
+`WithWorkDefaults`. Declare each edge in the individual parent registration's `configure` callback;
+Workable rejects a defaults-scoped grant during registration with an explanatory exception.
+
+The executor receives `IChildWorkQueueService` from its execution scope:
+
+```csharp
+public sealed class PlaceOrderExecutor(IChildWorkQueueService children) : IWorkExecutor
+{
+    public async Task<WorkExecutionResult> Execute(
+        IWorkExecutionContext context,
+        WorkInput? input,
+        CancellationToken cancellationToken)
+    {
+        var reservationInput = ValidateAndCreateReservationInput(input);
+        var child = await children.Enqueue(
+            "orders.internal.reserve-stock",
+            reservationInput,
+            cancellationToken: cancellationToken);
+        var completion = await child.WaitForCompletion(cancellationToken);
+        return completion.IsCompletedSuccessfully
+            ? WorkExecutionResult.Success()
+            : WorkExecutionResult.Failure(completion.Messages);
+    }
+}
+```
+
+The delegation rules are deliberately narrow:
+
+- direct queueing of the child still checks the child's authorization
+- the scoped child queue can target only definitions declared by `AllowChildExecution(...)`
+- the queue is revoked when the parent execution attempt returns
+- the child keeps the initiating actor and origin for authorization and audit
+- child input validation, configuration validation, capacity, concurrency, idempotency, and durability still apply
+- child-execution relationships are code-defined and cannot be changed through runtime definition reconfiguration
+- the relationship graph must be acyclic; catalog startup rejects self-references and reports the path of any cycle
+
+The parent executor is the security boundary for delegated input. It must validate any caller-controlled business
+scope before constructing the child input, must not forward arbitrary `WorkerOptions`, and must bound caller-driven
+fan-out. Child queue authorization—including requirements that inspect input or options—is intentionally bypassed.
+Workable still applies the child's ordinary input and configuration validation, but it cannot enforce application-level
+rules such as which account, tenant, or order the parent is permitted to affect.
+
+Each edge in a nested chain must be declared. Permission to execute parent A can reach child C only when A declares B and B independently declares C. The initiating actor never receives a general session that can queue B or C directly.
+
+Workflow dispatch edges are declarations by construction. Once a caller is authorized to start a workflow, its `DispatchWork(...)` and `DispatchEach(...)` steps can execute their declared child definitions without separate child queue permission. Direct child reads and direct worker controls remain independently authorized. Workflow pause, resume, and cancel may propagate to that run's own outstanding children without granting the caller direct control of those workers.
+
+Before propagating workflow pause, resume, or cancel with delegated authority, Workable revalidates the
+authoritative worker snapshot. Its system-assigned workflow provenance must match the current run, definition,
+and step, and that run must record the worker under the same step. The system-reserved `workflow-run` identifier
+remains searchable correlation metadata and is never accepted as authority. A provenance mismatch falls back to the caller's
+ordinary authorized worker operations instead of using delegated control.
+
+Public worker query and realtime projections expose only the trusted workflow run id. The workflow definition and
+step portions of provenance stay inside the runtime and trusted persistence-provider boundary so child-worker read
+permission does not disclose workflow structure. Reading the referenced run remains independently authorized.
+
 ## Workflow Authorization
 
 Workflow definitions use the same `WorkDefinitionAuthorization` metadata shape and the same `IWorkAuthorizationBuilder` fluent model as work definitions.
@@ -183,6 +262,10 @@ builder.AddWorkflow(
 ```
 
 Starting a workflow checks workflow operate permission.
+
+Declared workflow child dispatch uses the workflow's accepted execution authority rather than the initiating actor's direct permission on each child definition. This does not grant the actor permission to queue those child definitions outside the workflow.
+
+Workflow pause, resume, and cancel use the same containment boundary when they propagate to the run's own outstanding child workers. Performing the equivalent worker action directly still requires permission on the child definition.
 
 Workflow runs store actor, origin, and authentication state from the start request context.
 
@@ -446,7 +529,7 @@ For the built-in `Workable.HttpApi` adapter, those group and access resolutions 
 
 That cache is intentionally request-scoped and assumes normal sequential pipeline use. It should not be treated as safe for parallel mutation by multiple concurrent authorization tasks inside one HTTP request without adding synchronization.
 
-The request context can also carry `IsAuthenticated`. Workable uses that together with the resolved actor to evaluate `AllowOperateToKnownAuthenticatedUsers()`.
+The request context can also carry `IsAuthenticated`. Workable uses that together with the resolved actor to evaluate `AllowOperateToKnownAuthenticatedUsers()`. Canonical authorization snapshots retain this authentication state and include it in their read-visibility fingerprint so delayed projection work cannot elevate or discard it while replaying the snapshot.
 
 SignalR needs one extra step because broadcasts happen after the original request is gone. On subscribe:
 
@@ -454,4 +537,4 @@ SignalR needs one extra step because broadcasts happen after the original reques
 - Workable computes the caller's readable definition set
 - Workable stores a `WorkAuthorizationSnapshot` on the realtime subscription
 
-The broadcaster later recreates a session from that snapshot, and shared realtime groups are keyed by a read-visibility fingerprint instead of the caller's raw group list. That lets callers share broadcasts only when they can see the same work.
+The broadcaster later recreates a session from that snapshot, preserving the original authentication state, and shared realtime groups are keyed by a read-visibility fingerprint instead of the caller's raw group list. That lets callers share broadcasts only when they can see the same work.

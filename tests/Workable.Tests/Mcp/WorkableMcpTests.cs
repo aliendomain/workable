@@ -1550,7 +1550,10 @@ public sealed class WorkableMcpTests
         Assert.Equal("mcp-42", payload.ExternalKey);
         Assert.Contains(
             captured.Identifiers!,
-            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+            identifier => identifier.Type == "workflow-run");
+        Assert.DoesNotContain(
+            captured.Identifiers!,
+            identifier => identifier.Type is "workflow-definition" or "workflow-step");
     }
 
     [Fact]

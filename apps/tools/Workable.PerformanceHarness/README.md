@@ -116,6 +116,10 @@ The default `--benchmarks` command runs only benchmark classes whose names conta
 
 BenchmarkDotNet writes CSV, GitHub-flavored Markdown, and HTML reports under `BenchmarkDotNet.Artifacts/results`.
 
+The benchmark command exits nonzero when BenchmarkDotNet reports a failed benchmark, a critical validation error, or no benchmark summaries. Treat an `NA` result as a failed run rather than as a timing result. Benchmarks that consume or mutate their prepared fixture must either recreate it for every invocation or use `InvocationCount(1)` so repeated measurement does not observe exhausted state.
+
+BenchmarkDotNet multimodal-distribution warnings are not execution failures, but the affected result is not suitable for a regression decision by itself. Rerun that benchmark group in isolation and use a job whose measured iteration is long enough for the operation. If the focused distribution remains multimodal, report the modes separately or benchmark the underlying states separately instead of comparing only the combined mean.
+
 The workflow microbenchmarks batch `4096` workflow runs inside each measured invocation and use `OperationsPerInvoke` so BenchmarkDotNet still reports per-workflow cost while ShortRun stays above the minimum-iteration guidance.
 
 Realtime transport delivery is intentionally measured through the scenario runner rather than the default BenchmarkDotNet baseline set. The async SignalR delivery path is a better fit for the harness-style scenarios above because they can do explicit warmup, event-count validation, bounded end-to-end waits, and a dedicated low-latency host configuration.
@@ -142,6 +146,7 @@ Current benchmark groups:
 - `BaselineDurableSoakBenchmarks` measures larger SQL-backed queue, completion, and follow-up query batches to catch durable memory or latency regressions.
 - `BaselineWorkflowDispatchBenchmarks` measures single-dispatch workflow startup and completion overhead and reports per-workflow cost from batched invocations.
 - `BaselineWorkflowParallelJoinBenchmarks` measures parallel branch fan-out and join bookkeeping across branch counts and reports per-workflow cost from batched invocations.
+- `BaselineWorkflowChildControlBenchmarks` measures pause propagation across 32,768 authoritative workflow children, waiting for read-model quiescence before and after the measured operation so background publication cannot race the result.
 - `BaselineDurableWorkflowRecoveryBenchmarks` measures startup recovery for interrupted durable workflow runs.
 - `BaselineDurableChildReconnectBenchmarks` measures partial durable workflow recovery where only unfinished child branches should resume.
 - `BaselineHttpApiBenchmarks` measures end-to-end HTTP queue, worker action, and workflow control requests.

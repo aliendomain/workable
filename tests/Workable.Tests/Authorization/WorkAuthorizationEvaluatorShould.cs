@@ -75,7 +75,7 @@ public sealed class WorkAuthorizationEvaluatorShould
         Assert.True(evaluator.HasReadAllWorkAccess());
         Assert.True(evaluator.HasOperateAllWorkAccess());
         Assert.True(evaluator.HasSystemOperateAllWorkAccess());
-        Assert.Empty(evaluator.OperableDefinitionNamesFor(WorkAction.Purge));
+        Assert.Empty(evaluator.OperableDefinitionIdsFor(WorkAction.Purge));
     }
 
     [Theory]
@@ -204,7 +204,7 @@ public sealed class WorkAuthorizationEvaluatorShould
             Groups("operators"),
             isKnownAuthenticatedUser: true);
 
-        Assert.Equal([allowed.Definition.Name], evaluator.OperableDefinitionNamesFor(action));
+        Assert.Equal([allowed.Definition.Id], evaluator.OperableDefinitionIdsFor(action));
     }
 
     [Fact]
@@ -220,7 +220,7 @@ public sealed class WorkAuthorizationEvaluatorShould
             isKnownAuthenticatedUser: true);
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            evaluator.OperableDefinitionNamesFor((WorkAction)int.MaxValue));
+            evaluator.OperableDefinitionIdsFor((WorkAction)int.MaxValue));
 
         Assert.Contains(int.MaxValue.ToString(), exception.Message, StringComparison.Ordinal);
     }

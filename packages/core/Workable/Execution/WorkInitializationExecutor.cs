@@ -65,12 +65,26 @@ internal sealed class WorkInitializationExecutor(IServiceProvider rootServices)
 
         await using var scope = rootServices.CreateAsyncScope();
         var context = createContext(worker, scope.ServiceProvider);
-        return await this.RunInitializer(
-            registration,
-            context,
-            scope.ServiceProvider,
-            worker.Input,
-            cancellationToken);
+        using var childQueueScope = ChildWorkQueueContext.Begin(
+            context is WorkExecutionContext activeContext
+                ? activeContext.ChildQueue
+                : UnavailableChildWorkQueueService.Instance);
+        try
+        {
+            return await this.RunInitializer(
+                registration,
+                context,
+                scope.ServiceProvider,
+                worker.Input,
+                cancellationToken);
+        }
+        finally
+        {
+            if (context is WorkExecutionContext workContext)
+            {
+                workContext.RevokeChildExecution();
+            }
+        }
     }
 
     private async Task<WorkExecutionResult> RunInitializer(

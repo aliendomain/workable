@@ -4,7 +4,9 @@ internal sealed class NonDurableWorkflowExecutor(
     Func<WorkRequestContext, CancellationToken, ValueTask<IWorkSystemSession>> createSession,
     Func<WorkerId, IWorkerHandle>? createWorkerHandle = null,
     WorkflowEventPublisher? workflowEvents = null,
-    Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null)
+    Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null,
+    WorkQueueService? delegatedQueue = null,
+    WorkerOperations? delegatedWorkers = null)
 {
     internal NonDurableWorkflowExecutor(
         Func<WorkRequestContext, IWorkSystemSession> createSession,
@@ -52,7 +54,12 @@ internal sealed class NonDurableWorkflowExecutor(
                 cancellationToken);
             if (wasPaused)
             {
-                await WorkflowExecutionSupport.ResumeOutstandingChildren(run, session, getAuthoritativeWorker, cancellationToken);
+                await WorkflowExecutionSupport.ResumeOutstandingChildren(
+                    run,
+                    session,
+                    getAuthoritativeWorker,
+                    cancellationToken,
+                    delegatedWorkers);
             }
 
             foreach (var step in workflow.Steps)
@@ -111,7 +118,8 @@ internal sealed class NonDurableWorkflowExecutor(
                     run,
                     session,
                     getAuthoritativeWorker,
-                    CancellationToken.None);
+                    CancellationToken.None,
+                    delegatedWorkers);
             }
             return run.Pause();
         }
@@ -405,12 +413,18 @@ internal sealed class NonDurableWorkflowExecutor(
         var publisher = workflowEvents ?? new WorkflowEventPublisher(default, null, new WorkEventStream());
         publisher.StepUpdated(run.ToSnapshot(), step.Name);
         var workDefinitionName = step.WorkDefinition.Name;
-        var input = WorkflowExecutionSupport.AddWorkflowIdentifiers(
+        var input = WorkflowExecutionSupport.AddWorkflowRunIdentifier(
             WorkflowExecutionSupport.ResolveDispatchInput(step, run),
-            run.Id,
-            run.DefinitionName,
-            step.Name);
-        var handle = await session.Queue.Enqueue(workDefinitionName, input, cancellationToken: cancellationToken);
+            run.Id);
+        var handle = delegatedQueue is null
+            ? await session.Queue.Enqueue(workDefinitionName, input, cancellationToken: cancellationToken)
+            : await delegatedQueue.EnqueueWorkflowChild(
+                workDefinitionName,
+                input,
+                options: null,
+                run.RequestContext,
+                new WorkflowProvenance(run.Id, run.DefinitionName, step.Name),
+                cancellationToken);
         if (!handle.QueueOutcome.IsAccepted)
         {
             run.FailStep(step.Name, handle.QueueOutcome.Messages);
@@ -474,13 +488,19 @@ internal sealed class NonDurableWorkflowExecutor(
         }
 
         var dispatchedHandles = new List<IWorkerHandle>();
-        foreach (var input in expansion.Inputs.Select(itemInput => WorkflowExecutionSupport.AddWorkflowIdentifiers(
+        foreach (var input in expansion.Inputs.Select(itemInput => WorkflowExecutionSupport.AddWorkflowRunIdentifier(
                      itemInput,
-                     run.Id,
-                     run.DefinitionName,
-                     step.Name)))
+                     run.Id)))
         {
-            var handle = await session.Queue.Enqueue(workDefinitionName, input, cancellationToken: cancellationToken);
+            var handle = delegatedQueue is null
+                ? await session.Queue.Enqueue(workDefinitionName, input, cancellationToken: cancellationToken)
+                : await delegatedQueue.EnqueueWorkflowChild(
+                    workDefinitionName,
+                    input,
+                    options: null,
+                    run.RequestContext,
+                    new WorkflowProvenance(run.Id, run.DefinitionName, step.Name),
+                    cancellationToken);
             if (!handle.QueueOutcome.IsAccepted)
             {
                 return new DispatchEachResult(false, [], WorkflowRunStatus.Failed, handle.QueueOutcome.Messages);

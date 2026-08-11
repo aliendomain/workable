@@ -39,6 +39,8 @@ SET NUMERIC_ROUNDABORT OFF;
     private readonly TimeSpan enqueueBatchWindow = options.EnqueueBatchWindow;
     private int scheduledEnqueueBatchFlushes;
 
+    public bool SupportsFailedWorkerRecovery => true;
+
     public async Task Initialize(WorkQueueDurabilityInitializationContext context, CancellationToken cancellationToken = default)
     {
         try
@@ -554,6 +556,7 @@ SELECT @RequiresClaimLock = CASE
 	        SELECT 1
 	        FROM {this.queueTable} queue WITH (READPAST)
 	        WHERE queue.WorkSystemName = @WorkSystemName
+	          AND queue.Disposition = N'Ready'
 	          AND queue.HasPersistentConcurrency = 1
 	          AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now)
 	    )
@@ -563,25 +566,35 @@ SELECT @RequiresClaimLock = CASE
 
 IF @RequiresClaimLock = 0
 	BEGIN
-	    ;WITH ready AS
-	        (
-	            SELECT TOP (@BatchSize) queue.WorkerId
-	            FROM {this.queueTable} queue WITH (UPDLOCK, READPAST, ROWLOCK)
-	            WHERE queue.WorkSystemName = @WorkSystemName
-	              AND queue.HasPersistentConcurrency = 0
-	              AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now)
-	            ORDER BY queue.DefinitionName, queue.CreatedAt, queue.WorkerId
-	        )
+	    DECLARE @Ready TABLE
+	    (
+	        WorkerId uniqueidentifier NOT NULL PRIMARY KEY
+	    );
+
+	    -- Materialize candidates without update locks, then mutate through the primary key.
+	    -- Cleanup deletes primary-key rows before maintaining the ready index, so using the
+	    -- same lock order avoids claim/cleanup deadlocks. The update predicate rechecks
+	    -- eligibility in case another consumer leases a candidate between the two statements.
+	    INSERT INTO @Ready (WorkerId)
+	    SELECT TOP (@BatchSize) queue.WorkerId
+	    FROM {this.queueTable} queue WITH (READPAST)
+	    WHERE queue.WorkSystemName = @WorkSystemName
+	      AND queue.Disposition = N'Ready'
+	      AND queue.HasPersistentConcurrency = 0
+	      AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now)
+	    ORDER BY queue.DefinitionName, queue.CreatedAt, queue.WorkerId;
+
 	    UPDATE queue
-	    SET ClaimedBy = @OwnerId,
-	        ClaimedAt = @Now,
-	        LeaseId = @LeaseId,
+	    SET LeaseId = @LeaseId,
 	        LeaseExpiresAt = @LeaseExpiresAt
 	    OUTPUT inserted.WorkerId
 	    INTO @Claimed
-	    FROM {this.queueTable} queue
-	    INNER JOIN ready
-	        ON ready.WorkerId = queue.WorkerId;
+	    FROM {this.queueTable} queue WITH (UPDLOCK, READPAST, ROWLOCK, INDEX(PK_WorkableWorkQueueEntries))
+	    INNER JOIN @Ready ready
+	        ON ready.WorkerId = queue.WorkerId
+	    WHERE queue.Disposition = N'Ready'
+	      AND queue.HasPersistentConcurrency = 0
+	      AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now);
 	END
 	ELSE
 	BEGIN
@@ -604,6 +617,7 @@ IF @RequiresClaimLock = 0
 	        SELECT queue.*
 	        FROM {this.queueTable} queue WITH (UPDLOCK, READPAST, ROWLOCK)
 	        WHERE queue.WorkSystemName = @WorkSystemName
+	          AND queue.Disposition = N'Ready'
 	          AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now)
 	    ),
 	ranked AS
@@ -662,9 +676,7 @@ ready AS
 	        ORDER BY ranked.DefinitionName, ranked.CreatedAt, ranked.WorkerId
 	)
 	UPDATE queue
-	SET ClaimedBy = @OwnerId,
-	    ClaimedAt = @Now,
-	    LeaseId = @LeaseId,
+	SET LeaseId = @LeaseId,
 	    LeaseExpiresAt = @LeaseExpiresAt,
 	    ConcurrencyBucket = CASE
 	        WHEN ready.HasPersistentConcurrency = 1 THEN N'Executing'
@@ -694,6 +706,7 @@ END;
 	       entries.OptionsJson,
 	       entries.ConfigurationJson,
 	       entries.OriginJson,
+	       entries.WorkflowProvenanceJson,
 	       queue.CreatedAt
 	FROM @Claimed claimed
 	INNER JOIN {this.queueTable} queue
@@ -703,7 +716,6 @@ END;
 """;
                 Add(command, "@BatchSize", request.BatchSize);
                 Add(command, "@WorkSystemName", NormalizeWorkSystemName(request.WorkSystemName));
-                Add(command, "@OwnerId", request.OwnerId);
                 Add(command, "@LeaseId", leaseId);
                 Add(command, "@LeaseExpiresAt", expiresAt);
                 Add(command, "@ClaimLockResource", $"WorkableQueueClaim:{NormalizeWorkSystemName(request.WorkSystemName)}");
@@ -729,7 +741,10 @@ END;
                             DeserializeWorkerOptions(reader, 3) ?? WorkerOptions.Default,
                             Deserialize<WorkConfiguration>(reader, 4) ?? WorkConfiguration.Default,
                             requestContext,
-                            reader.GetFieldValue<DateTimeOffset>(6)));
+                            reader.GetFieldValue<DateTimeOffset>(7))
+                        {
+                            WorkflowProvenance = Deserialize<WorkflowProvenance>(reader, 6),
+                        });
                     }
 
                     entries.Sort(static (left, right) =>
@@ -747,6 +762,101 @@ END;
                         return createdAtComparison != 0
                             ? createdAtComparison
                             : left.Lease.WorkerId.Value.CompareTo(right.Lease.WorkerId.Value);
+                    });
+                }
+
+                return entries;
+            });
+
+        foreach (var entry in entries)
+        {
+            yield return entry;
+        }
+    }
+
+    public async IAsyncEnumerable<WorkQueueDurabilityFailedEntry> ClaimFailed(
+        WorkQueueDurabilityClaimRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var entries = await ExecuteWithStoreUnavailableHandling(
+            "claiming retained failed work",
+            async () =>
+            {
+                await using var connection = new SqlConnection(options.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                var leaseId = Guid.NewGuid().ToString("N");
+                var expiresAt = DateTimeOffset.UtcNow.Add(request.LeaseDuration);
+                await using var command = connection.CreateCommand();
+                command.CommandText = RequiredDmlSetOptions + $"""
+DECLARE @Claimed TABLE
+(
+    WorkerId uniqueidentifier NOT NULL PRIMARY KEY
+);
+
+DECLARE @Now datetimeoffset = SYSDATETIMEOFFSET();
+
+;WITH ready AS
+(
+    SELECT TOP (@BatchSize) queue.WorkerId
+    FROM {this.queueTable} queue WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE queue.WorkSystemName = @WorkSystemName
+      AND queue.Disposition = N'Failed'
+      AND (queue.LeaseExpiresAt IS NULL OR queue.LeaseExpiresAt <= @Now)
+    ORDER BY queue.DefinitionName, queue.CreatedAt, queue.WorkerId
+)
+UPDATE queue
+SET LeaseId = @LeaseId,
+    LeaseExpiresAt = @LeaseExpiresAt
+OUTPUT inserted.WorkerId INTO @Claimed
+FROM {this.queueTable} queue
+INNER JOIN ready
+    ON ready.WorkerId = queue.WorkerId;
+
+SELECT queue.WorkerId,
+       queue.DefinitionName,
+       entries.InputJson,
+       entries.OptionsJson,
+       entries.ConfigurationJson,
+       entries.OriginJson,
+       entries.WorkflowProvenanceJson,
+       queue.CreatedAt,
+       COALESCE(entries.FailedAt, entries.CreatedAt),
+       entries.FailureMessagesJson
+FROM @Claimed claimed
+INNER JOIN {this.queueTable} queue
+    ON queue.WorkerId = claimed.WorkerId
+INNER JOIN {this.entriesTable} entries
+    ON entries.WorkerId = claimed.WorkerId;
+""";
+                Add(command, "@BatchSize", request.BatchSize);
+                Add(command, "@WorkSystemName", NormalizeWorkSystemName(request.WorkSystemName));
+                Add(command, "@LeaseId", leaseId);
+                Add(command, "@LeaseExpiresAt", expiresAt);
+
+                var entries = new List<WorkQueueDurabilityFailedEntry>();
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var workerId = new WorkerId(reader.GetGuid(0));
+                    var messages = Deserialize<WorkMessage[]>(reader, 9) ??
+                    [
+                        WorkMessage.Warning(
+                            "workable.queue_durability.legacy_failure_restored",
+                            "Workable restored a retained failed worker whose original failure messages were not persisted.",
+                            "worker"),
+                    ];
+                    entries.Add(new WorkQueueDurabilityFailedEntry(
+                        new WorkQueueDurabilityLease(workerId, request.OwnerId, leaseId),
+                        reader.GetString(1),
+                        Deserialize<WorkInput>(reader, 2),
+                        DeserializeWorkerOptions(reader, 3) ?? WorkerOptions.Default,
+                        Deserialize<WorkConfiguration>(reader, 4) ?? WorkConfiguration.Default,
+                        DeserializeRequestContext(reader, 5),
+                        reader.GetFieldValue<DateTimeOffset>(7),
+                        reader.GetFieldValue<DateTimeOffset>(8),
+                        messages)
+                    {
+                        WorkflowProvenance = Deserialize<WorkflowProvenance>(reader, 6),
                     });
                 }
 
@@ -834,6 +944,18 @@ WHERE renewed.WorkerId IS NULL;
     public Task RetainFailed(
         IReadOnlyList<WorkQueueDurabilityCleanupRequest> workers,
         CancellationToken cancellationToken = default)
+        => this.RetainFailed(
+            workers.Select(static worker => new WorkQueueDurabilityFailureRequest(
+                worker.WorkerId,
+                worker.Lease,
+                DateTimeOffset.UtcNow,
+                []))
+            .ToArray(),
+            cancellationToken);
+
+    public Task RetainFailed(
+        IReadOnlyList<WorkQueueDurabilityFailureRequest> workers,
+        CancellationToken cancellationToken = default)
     {
         if (workers.Count == 0)
         {
@@ -841,19 +963,23 @@ WHERE renewed.WorkerId IS NULL;
         }
 
         return ExecuteOwned(RequiredDmlSetOptions + $"""
-DECLARE @CleanupWorkers TABLE
+DECLARE @FailedWorkers TABLE
 (
     WorkerId uniqueidentifier NOT NULL,
-    LeaseId nvarchar(64) NULL
+    LeaseId nvarchar(64) NULL,
+    FailedAt datetimeoffset NOT NULL,
+    MessagesJson nvarchar(max) NULL
 );
 
-INSERT INTO @CleanupWorkers (WorkerId, LeaseId)
-SELECT WorkerId, LeaseId
+INSERT INTO @FailedWorkers (WorkerId, LeaseId, FailedAt, MessagesJson)
+SELECT WorkerId, LeaseId, FailedAt, MessagesJson
 FROM OPENJSON(@WorkersJson)
 WITH
 (
     WorkerId uniqueidentifier '$.workerId',
-    LeaseId nvarchar(64) '$.leaseId'
+    LeaseId nvarchar(64) '$.leaseId',
+    FailedAt datetimeoffset '$.failedAt',
+    MessagesJson nvarchar(max) '$.messagesJson'
 );
 
 DECLARE @RetainedWorkers TABLE
@@ -862,15 +988,43 @@ DECLARE @RetainedWorkers TABLE
     LeaseId nvarchar(64) NULL
 );
 
-	DELETE queue
-	OUTPUT deleted.WorkerId, deleted.LeaseId INTO @RetainedWorkers
-	FROM {this.queueTable} queue
-	INNER JOIN @CleanupWorkers workers
-	    ON workers.WorkerId = queue.WorkerId
-	   AND (workers.LeaseId IS NULL OR workers.LeaseId = queue.LeaseId);
+	BEGIN TRY
+	    BEGIN TRANSACTION;
+
+	    UPDATE queue
+	    SET Disposition = N'Failed',
+	        ConcurrencyBucket = NULL
+	    OUTPUT inserted.WorkerId, inserted.LeaseId INTO @RetainedWorkers
+	    FROM {this.queueTable} queue
+	    INNER JOIN @FailedWorkers workers
+	        ON workers.WorkerId = queue.WorkerId
+	       AND (workers.LeaseId IS NULL OR workers.LeaseId = queue.LeaseId);
+
+	    UPDATE entries
+	    SET FailedAt = workers.FailedAt,
+	        FailureMessagesJson = workers.MessagesJson
+	    FROM {this.entriesTable} entries
+	    INNER JOIN @FailedWorkers workers
+	        ON workers.WorkerId = entries.WorkerId
+	    LEFT JOIN @RetainedWorkers retained
+	        ON retained.WorkerId = workers.WorkerId
+	       AND (workers.LeaseId IS NULL OR retained.LeaseId = workers.LeaseId)
+	    WHERE workers.LeaseId IS NULL
+	       OR retained.WorkerId IS NOT NULL;
+
+	    COMMIT TRANSACTION;
+	END TRY
+	BEGIN CATCH
+	    IF @@TRANCOUNT > 0
+	    BEGIN
+	        ROLLBACK TRANSACTION;
+	    END;
+
+	    THROW;
+	END CATCH;
 
 SELECT submitted.WorkerId, submitted.LeaseId
-FROM @CleanupWorkers submitted
+FROM @FailedWorkers submitted
 LEFT JOIN @RetainedWorkers retained
     ON retained.WorkerId = submitted.WorkerId
    AND (submitted.LeaseId IS NULL OR retained.LeaseId = submitted.LeaseId)
@@ -878,7 +1032,29 @@ WHERE submitted.LeaseId IS NOT NULL
   AND retained.WorkerId IS NULL;
 """, async command =>
         {
-            await ExecuteCleanup(command, workers, cancellationToken);
+            var leasesByKey = workers
+                .Where(static worker => worker.Lease is not null)
+                .ToDictionary(
+                    worker => (worker.WorkerId, worker.Lease!.LeaseId),
+                    worker => worker.Lease!);
+            Add(command, "@WorkersJson", SerializeFailureRequests(workers));
+
+            var lostLeases = new List<WorkQueueDurabilityLease>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var workerId = new WorkerId(reader.GetGuid(0));
+                var leaseId = reader.GetString(1);
+                if (leasesByKey.TryGetValue((workerId, leaseId), out var lease))
+                {
+                    lostLeases.Add(lease!);
+                }
+            }
+
+            if (lostLeases.Count > 0)
+            {
+                throw new WorkQueueDurabilityLeaseLostException(lostLeases);
+            }
         }, cancellationToken);
     }
 
@@ -1060,8 +1236,7 @@ USING
         @PendingControlRequestContextJson AS PendingControlRequestContextJson,
         @CreatedAt AS CreatedAt,
         @StartedAt AS StartedAt,
-        @CompletedAt AS CompletedAt,
-        @UpdatedAt AS UpdatedAt
+        @CompletedAt AS CompletedAt
 ) AS source
 ON target.RunId = source.RunId
 WHEN MATCHED THEN
@@ -1082,8 +1257,7 @@ WHEN MATCHED THEN
         PendingControlRequestContextJson = source.PendingControlRequestContextJson,
         CreatedAt = source.CreatedAt,
         StartedAt = source.StartedAt,
-        CompletedAt = source.CompletedAt,
-        UpdatedAt = source.UpdatedAt
+        CompletedAt = source.CompletedAt
 WHEN NOT MATCHED THEN
     INSERT
     (
@@ -1104,8 +1278,7 @@ WHEN NOT MATCHED THEN
         PendingControlRequestContextJson,
         CreatedAt,
         StartedAt,
-        CompletedAt,
-        UpdatedAt
+        CompletedAt
     )
     VALUES
     (
@@ -1126,8 +1299,7 @@ WHEN NOT MATCHED THEN
         source.PendingControlRequestContextJson,
         source.CreatedAt,
         source.StartedAt,
-        source.CompletedAt,
-        source.UpdatedAt
+        source.CompletedAt
     );
 """;
         Add(command, "@RunId", run.RunId.Value);
@@ -1148,7 +1320,6 @@ WHEN NOT MATCHED THEN
         Add(command, "@CreatedAt", run.CreatedAt);
         Add(command, "@StartedAt", run.StartedAt);
         Add(command, "@CompletedAt", run.CompletedAt);
-        Add(command, "@UpdatedAt", DateTimeOffset.UtcNow);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1199,17 +1370,14 @@ WHERE RunId = @RunId;
     WorkerId,
     WorkSystemName,
     DefinitionName,
-    IsDurableQueued,
     HasIdempotencyReservation,
-    HasPersistentConcurrency,
     SubjectType,
     SubjectValue,
-    ConcurrencyType,
-    ConcurrencyValue,
     InputJson,
     OptionsJson,
     ConfigurationJson,
 	    OriginJson,
+	    WorkflowProvenanceJson,
 	    CreatedAt
 	)
 	VALUES
@@ -1217,17 +1385,14 @@ WHERE RunId = @RunId;
     @WorkerId,
     @WorkSystemName,
     @DefinitionName,
-    @IsDurableQueued,
     @HasIdempotencyReservation,
-    @HasPersistentConcurrency,
     @SubjectType,
     @SubjectValue,
-    @ConcurrencyType,
-    @ConcurrencyValue,
     @InputJson,
     @OptionsJson,
     @ConfigurationJson,
 	    @OriginJson,
+	    @WorkflowProvenanceJson,
 	    @CreatedAt
 	);
 
@@ -1264,7 +1429,6 @@ WHERE RunId = @RunId;
         Add(command, "@WorkerId", request.WorkerId.Value);
         Add(command, "@WorkSystemName", NormalizeWorkSystemName(request.WorkSystemName));
         Add(command, "@DefinitionName", request.Definition.Name);
-        Add(command, "@IsDurableQueued", false);
         Add(command, "@HasIdempotencyReservation", request.Idempotency is not null);
         Add(command, "@HasPersistentConcurrency", hasPersistentConcurrency);
         Add(command, "@ConcurrencyScope", GetPersistentConcurrencyScope(request, hasPersistentConcurrency));
@@ -1278,6 +1442,7 @@ WHERE RunId = @RunId;
         Add(command, "@OptionsJson", SerializeWorkerOptions(request.Options with { QueueDurabilityTransaction = null }));
         Add(command, "@ConfigurationJson", Serialize(request.Configuration));
         Add(command, "@OriginJson", Serialize(request.RequestContext));
+        Add(command, "@WorkflowProvenanceJson", Serialize(request.WorkflowProvenance));
         Add(command, "@CreatedAt", request.CreatedAt);
 
         try
@@ -1318,6 +1483,7 @@ WHERE RunId = @RunId;
 	    OptionsJson nvarchar(max) NULL,
 	    ConfigurationJson nvarchar(max) NULL,
 	    OriginJson nvarchar(max) NOT NULL,
+	    WorkflowProvenanceJson nvarchar(max) NULL,
 	    CreatedAt datetimeoffset NOT NULL
 	);
 
@@ -1338,6 +1504,7 @@ WHERE RunId = @RunId;
 	    OptionsJson,
 	    ConfigurationJson,
 	    OriginJson,
+	    WorkflowProvenanceJson,
 	    CreatedAt
 	)
 	SELECT
@@ -1356,6 +1523,7 @@ WHERE RunId = @RunId;
 	    OptionsJson,
 	    ConfigurationJson,
 	    OriginJson,
+	    WorkflowProvenanceJson,
 	    CreatedAt
 	FROM OPENJSON(@EntriesJson)
 	WITH
@@ -1375,6 +1543,7 @@ WHERE RunId = @RunId;
 	    OptionsJson nvarchar(max) '$.optionsJson',
 	    ConfigurationJson nvarchar(max) '$.configurationJson',
 	    OriginJson nvarchar(max) '$.originJson',
+	    WorkflowProvenanceJson nvarchar(max) '$.workflowProvenanceJson',
 	    CreatedAt datetimeoffset '$.createdAt'
 	);
 
@@ -1383,34 +1552,28 @@ WHERE RunId = @RunId;
 	    WorkerId,
     WorkSystemName,
     DefinitionName,
-    IsDurableQueued,
     HasIdempotencyReservation,
-    HasPersistentConcurrency,
     SubjectType,
     SubjectValue,
-    ConcurrencyType,
-    ConcurrencyValue,
     InputJson,
     OptionsJson,
     ConfigurationJson,
     OriginJson,
+    WorkflowProvenanceJson,
     CreatedAt
 )
 	SELECT
 	    WorkerId,
 	    WorkSystemName,
 	    DefinitionName,
-	    CAST(0 AS bit),
 	    HasIdempotencyReservation,
-	    HasPersistentConcurrency,
 	    SubjectType,
     SubjectValue,
-    ConcurrencyType,
-    ConcurrencyValue,
     InputJson,
     OptionsJson,
     ConfigurationJson,
 	    OriginJson,
+	    WorkflowProvenanceJson,
 	    CreatedAt
 	FROM @Entries;
 
@@ -1469,7 +1632,6 @@ INSERT INTO {this.entriesTable}
     WorkerId,
     WorkSystemName,
     DefinitionName,
-    IsDurableQueued,
     HasIdempotencyReservation,
     SubjectType,
     SubjectValue,
@@ -1481,7 +1643,6 @@ VALUES
     @WorkerId,
     @WorkSystemName,
     @DefinitionName,
-    @IsDurableQueued,
     @HasIdempotencyReservation,
     @SubjectType,
     @SubjectValue,
@@ -1492,7 +1653,6 @@ VALUES
         Add(command, "@WorkerId", request.WorkerId.Value);
         Add(command, "@WorkSystemName", NormalizeWorkSystemName(request.WorkSystemName));
         Add(command, "@DefinitionName", request.Definition.Name);
-        Add(command, "@IsDurableQueued", false);
         Add(command, "@HasIdempotencyReservation", true);
         Add(command, "@SubjectType", request.SubjectId.Type);
         Add(command, "@SubjectValue", request.SubjectId.Value);
@@ -1682,6 +1842,7 @@ VALUES
             SerializeWorkerOptions(request.Options with { QueueDurabilityTransaction = null }),
             Serialize(request.Configuration),
             Serialize(request.RequestContext) ?? throw new InvalidOperationException("Durable enqueue origin payload cannot be null."),
+            Serialize(request.WorkflowProvenance),
             request.CreatedAt);
     }
 
@@ -1711,6 +1872,15 @@ VALUES
             workers.Select(worker => new CleanupWorkerPayload(
                 worker.WorkerId.Value,
                 worker.Lease?.LeaseId)),
+            JsonOptions);
+
+    private static string SerializeFailureRequests(IReadOnlyList<WorkQueueDurabilityFailureRequest> workers)
+        => JsonSerializer.Serialize(
+            workers.Select(worker => new FailureWorkerPayload(
+                worker.WorkerId.Value,
+                worker.Lease?.LeaseId,
+                worker.FailedAt,
+                Serialize(worker.Messages))),
             JsonOptions);
 
     private static async Task ExecuteCleanup(
@@ -1794,6 +1964,12 @@ VALUES
 
     private sealed record CleanupWorkerPayload(Guid WorkerId, string? LeaseId);
 
+    private sealed record FailureWorkerPayload(
+        Guid WorkerId,
+        string? LeaseId,
+        DateTimeOffset FailedAt,
+        string? MessagesJson);
+
     private sealed record EnqueuePayload(
         Guid WorkerId,
         string WorkSystemName,
@@ -1810,6 +1986,7 @@ VALUES
         string? OptionsJson,
         string? ConfigurationJson,
         string OriginJson,
+        string? WorkflowProvenanceJson,
         DateTimeOffset CreatedAt);
 
     private sealed class PendingEnqueue(WorkQueueDurabilityEnqueueRequest request)

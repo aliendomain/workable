@@ -296,6 +296,24 @@ builder.AddWorkflow(
 
 Starting a workflow checks workflow operate permission.
 
+The workflow graph is also its child-execution declaration. `DispatchWork(...)`,
+`DispatchWorkFromWorkflowInput(...)`, and `DispatchEach(...)` may queue the work definitions named by
+those steps using the workflow's accepted execution authority. Workflow registrations therefore do not
+also call `AllowChildExecution(...)`, and the caller does not need direct queue permission on each child.
+
+That delegation exists only while Workable executes the registered workflow graph:
+
+- queueing the child directly still requires the child's queue permission
+- reading a child worker still requires the child's read permission
+- direct child-worker actions still require the child's worker-action permission
+- workflow pause, resume, and cancel may propagate to that run's own outstanding children without
+  granting the caller direct control of those workers
+- child input and configuration validation, capacity, concurrency, idempotency, and durability still apply
+
+The initiating actor, origin, and authentication state remain attached to each dispatched child for audit.
+For durable workflows, recovery retains that accepted graph-execution authority; it does not create a
+general permission to queue or control the child outside the workflow.
+
 ## Starting From In-Process Code
 
 In-process services can start workflows through `IWorkflowCommandDispatcher`.
@@ -325,11 +343,17 @@ ASP.NET Core endpoints can use `IHttpContextWorkflowCommandDispatcher` to build 
 
 ## Child Work Provenance
 
-Workflow-started child work stores the caller's actor, origin, and authentication state in `WorkRequestContext` and adds workflow correlation identifiers to the queued `WorkInput`:
+Workflow-started child work stores the caller's actor, origin, and authentication state in `WorkRequestContext` and adds a workflow correlation identifier to the queued `WorkInput`:
 
 - `workflow-run`
-- `workflow-definition`
-- `workflow-step`
+
+This system-reserved value is searchable correlation metadata, not authorization evidence. Ordinary queue requests
+cannot supply it. Workable separately assigns and durably retains system-owned workflow provenance for lifecycle
+handling, worker-to-workflow navigation, and delegated workflow control.
+
+Authorized worker readers receive only the trusted workflow run id needed for correlation and navigation. Workflow
+definition and step provenance remains internal to Workable's containment checks and trusted persistence boundary;
+reading those workflow details still requires workflow read permission.
 
 Stored authorization snapshots are not retained.
 
@@ -390,7 +414,9 @@ The workflow run detail view includes:
 - nested parallel child step nodes
 - child-worker summaries and compact child-worker samples per node
 
-Parallel child step nodes are reconstructed from the workflow definition and the child workers' `workflow-step` identifiers. That keeps the detail view aligned with the authored workflow shape while still using the authoritative child worker state at read time.
+Parallel child step nodes are reconstructed from the workflow definition and the child workers' system-assigned
+workflow provenance. That keeps the detail view aligned with the authored workflow shape while still using the
+authoritative child worker state at read time.
 
 When a completed child worker has already been purged, the workflow views continue to show its resolved state from the retained child completion receipt.
 
@@ -483,10 +509,8 @@ Workflow runs publish raw events through the normal Workable event stream:
 - `workflow.failed`
 - `workflow.canceled`
 
-The event envelope uses the workflow definition name as `WorkDefinitionName` and includes these identifiers when they apply:
+The event envelope uses the workflow definition name as `WorkDefinitionName`, sets `DefinitionKind` to `Workflow`, carries the stable `WorkflowDefinitionId`, and includes this identifier:
 
 - `workflow-run`
-- `workflow-definition`
-- `workflow-step`
 
 `workflow.step.updated` is useful for graph refresh triggers, and the final events are useful for list refresh, notifications, or audit-style monitoring.

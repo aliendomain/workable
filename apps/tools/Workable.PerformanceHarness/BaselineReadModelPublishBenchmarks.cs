@@ -45,6 +45,7 @@ public class BaselineReadModelPublishBenchmarks
         await this.fixture.Session.Queue.Enqueue(
             this.fixture.Definitions[0].Name,
             WorkableBenchmarkSystem.CreateInput(this.nextWorkerIndex++));
+        await this.fixture.WaitForReadModelToSettle();
         return await this.fixture.Session.Query.Workers(this.flushCriteria);
     }
 

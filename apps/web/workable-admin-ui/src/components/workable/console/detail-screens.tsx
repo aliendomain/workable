@@ -1076,8 +1076,8 @@ export function WorkerConsoleView({
     [landing]
   );
   const workflowRunId = useMemo(
-    () => findWorkflowRunIdentifier(landing?.worker.identifiers),
-    [landing?.worker.identifiers]
+    () => landing?.worker.workflowRunId?.value ?? null,
+    [landing?.worker.workflowRunId?.value]
   );
   const latestIteration = useMemo(
     () => landing?.latestIteration
@@ -7104,12 +7104,6 @@ function MetadataItem({ label, value }: { label: string; value: ReactNode }) {
       <div className="mt-1 break-words font-mono text-sm">{value}</div>
     </div>
   );
-}
-
-export function findWorkflowRunIdentifier(identifiers?: WorkTypedValue[] | null) {
-  return identifiers?.find((identifier) =>
-    identifier.type.localeCompare("workflow-run", undefined, { sensitivity: "accent" }) === 0
-  )?.value ?? null;
 }
 
 export function createWorkerOverviewPath(

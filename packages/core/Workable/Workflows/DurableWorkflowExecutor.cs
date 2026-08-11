@@ -10,7 +10,9 @@ internal sealed class DurableWorkflowExecutor(
     WorkflowPersistenceCoordinator persistence,
     WorkflowEventPublisher? workflowEvents = null,
     Func<WorkerId, CancellationToken, Task<WorkerSnapshot?>>? getAuthoritativeWorker = null,
-    ILogger? logger = null)
+    ILogger? logger = null,
+    WorkQueueService? delegatedQueue = null,
+    WorkerOperations? delegatedWorkers = null)
 {
     internal DurableWorkflowExecutor(
         string workSystemKey,
@@ -61,7 +63,12 @@ internal sealed class DurableWorkflowExecutor(
             session = await this.CreateSession(run, initialAuthorization, cancellationToken);
             if (wasPaused)
             {
-                await WorkflowExecutionSupport.ResumeOutstandingChildren(run, session, getAuthoritativeWorker, cancellationToken);
+                await WorkflowExecutionSupport.ResumeOutstandingChildren(
+                    run,
+                    session,
+                    getAuthoritativeWorker,
+                    cancellationToken,
+                    delegatedWorkers);
             }
 
             foreach (var step in workflow.Steps)
@@ -115,7 +122,12 @@ internal sealed class DurableWorkflowExecutor(
 
             if (session is not null)
             {
-                await WorkflowExecutionSupport.PauseOutstandingChildren(run, session, getAuthoritativeWorker, CancellationToken.None);
+                await WorkflowExecutionSupport.PauseOutstandingChildren(
+                    run,
+                    session,
+                    getAuthoritativeWorker,
+                    CancellationToken.None,
+                    delegatedWorkers);
             }
 
             var paused = run.Pause();
@@ -473,14 +485,22 @@ internal sealed class DurableWorkflowExecutor(
                     run.Id,
                     async (transaction, transactionOptions, transactionCancellationToken) =>
                     {
-                        var handle = await session.Queue.Enqueue(
+                        var childInput = WorkflowExecutionSupport.AddWorkflowRunIdentifier(
+                            WorkflowExecutionSupport.ResolveDispatchInput(step, run),
+                            run.Id);
+                        var childOptions = CreateDurableChildOptions(registeredWork, transactionOptions);
+                        var handle = delegatedQueue is null
+                            ? await session.Queue.Enqueue(
                                 workDefinitionName,
-                                WorkflowExecutionSupport.AddWorkflowIdentifiers(
-                                    WorkflowExecutionSupport.ResolveDispatchInput(step, run),
-                                    run.Id,
-                                    run.DefinitionName,
-                                    step.Name),
-                                CreateDurableChildOptions(registeredWork, transactionOptions),
+                                childInput,
+                                childOptions,
+                                transactionCancellationToken)
+                            : await delegatedQueue.EnqueueWorkflowChild(
+                                workDefinitionName,
+                                childInput,
+                                childOptions,
+                                run.RequestContext,
+                                new WorkflowProvenance(run.Id, run.DefinitionName, step.Name),
                                 transactionCancellationToken);
                         if (!handle.QueueOutcome.IsAccepted || handle.WorkerId is not { } workerId)
                         {
@@ -496,7 +516,7 @@ internal sealed class DurableWorkflowExecutor(
                     },
                     cancellationToken),
                 cancellationToken);
-            session.Queue.NotifyDurableWorkAvailable();
+            (delegatedQueue ?? session.Queue).NotifyDurableWorkAvailable();
 
             publisher.StepUpdated(run.ToSnapshot(), step.Name);
             return [];
@@ -563,15 +583,23 @@ internal sealed class DurableWorkflowExecutor(
                         var workerIds = new List<WorkerId>();
                         foreach (var itemInput in expansion.Inputs)
                         {
-                            var handle = await session.Queue.Enqueue(
-                                workDefinitionName,
-                                WorkflowExecutionSupport.AddWorkflowIdentifiers(
-                                    itemInput,
-                                    run.Id,
-                                    run.DefinitionName,
-                                    step.Name),
-                                CreateDurableChildOptions(registeredWork, transactionOptions),
-                                transactionCancellationToken);
+                            var childInput = WorkflowExecutionSupport.AddWorkflowRunIdentifier(
+                                itemInput,
+                                run.Id);
+                            var childOptions = CreateDurableChildOptions(registeredWork, transactionOptions);
+                            var handle = delegatedQueue is null
+                                ? await session.Queue.Enqueue(
+                                    workDefinitionName,
+                                    childInput,
+                                    childOptions,
+                                    transactionCancellationToken)
+                                : await delegatedQueue.EnqueueWorkflowChild(
+                                    workDefinitionName,
+                                    childInput,
+                                    childOptions,
+                                    run.RequestContext,
+                                    new WorkflowProvenance(run.Id, run.DefinitionName, step.Name),
+                                    transactionCancellationToken);
                             if (!handle.QueueOutcome.IsAccepted || handle.WorkerId is not { } childWorkerId)
                             {
                                 throw new WorkflowDispatchRejectedException(handle.QueueOutcome.Messages);
@@ -591,7 +619,7 @@ internal sealed class DurableWorkflowExecutor(
                 cancellationToken);
             if (expansion.Inputs.Count > 0)
             {
-                session.Queue.NotifyDurableWorkAvailable();
+                (delegatedQueue ?? session.Queue).NotifyDurableWorkAvailable();
             }
 
             publisher.StepUpdated(run.ToSnapshot(), step.Name);

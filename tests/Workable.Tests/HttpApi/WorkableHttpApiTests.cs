@@ -1764,7 +1764,10 @@ public sealed class WorkableHttpApiTests
         Assert.NotNull(captured.Identifiers);
         Assert.Contains(
             captured.Identifiers,
-            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+            identifier => identifier.Type == "workflow-run");
+        Assert.DoesNotContain(
+            captured.Identifiers,
+            identifier => identifier.Type is "workflow-definition" or "workflow-step");
     }
 
     [Theory]
@@ -3278,7 +3281,10 @@ public sealed class WorkableHttpApiTests
         Assert.Contains(new WorkIdentifier("external", "route-42"), captured.Identifiers!);
         Assert.Contains(
             captured.Identifiers!,
-            identifier => identifier.Type == "workflow-step" && identifier.Value == "dispatch");
+            identifier => identifier.Type == "workflow-run");
+        Assert.DoesNotContain(
+            captured.Identifiers!,
+            identifier => identifier.Type is "workflow-definition" or "workflow-step");
     }
 
     [Fact]

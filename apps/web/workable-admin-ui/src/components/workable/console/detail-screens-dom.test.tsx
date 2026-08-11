@@ -276,7 +276,7 @@ test("queue dialog tolerates boolean property schemas from the API", async () =>
   }
 });
 
-test("worker console exposes a view workflow action when the overview carries a workflow run identifier", async () => {
+test("worker console exposes a view workflow action when the overview carries a trusted workflow run id", async () => {
   const openedWorkflowRuns: string[] = [];
   const fetchMock = installQueueFetch((call) => {
     if (call.input.includes("/workers/worker-1/overview")) {
@@ -287,7 +287,7 @@ test("worker console exposes a view workflow action when the overview carries a 
           createdOrigin: { channel: "HttpApi" },
           definitionCategory: "Ops",
           definitionName: "ImportOrders",
-          identifiers: [{ type: "workflow-run", value: "run-123" }],
+          identifiers: [{ type: "workflow-run", value: "forged-run" }],
           isFinal: false,
           nextRunAt: null,
           retryAttempt: null,
@@ -297,6 +297,7 @@ test("worker console exposes a view workflow action when the overview carries a 
           stateSequence: 4,
           updatedAt: "2026-06-27T12:01:00.000Z",
           workerId: { value: "worker-1" },
+          workflowRunId: { value: "run-123" },
         },
       }));
     }
