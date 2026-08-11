@@ -462,6 +462,7 @@ export function DefinitionsView({
           canControlSystem={canControlSystem}
           canViewDiagnostics={canViewDiagnostics}
           connection={connection}
+          refreshToken={refreshToken}
         />
         {isCatalogPanelVisible ? (
           <PanelShell
@@ -743,6 +744,7 @@ export function DefinitionView({
             canViewDiagnostics={canViewDiagnostics}
             connection={connection}
             definitionName={definition.name}
+            refreshToken={refreshToken}
           />
           <Card>
             <CardHeader className="gap-3 md:flex-row md:items-center md:justify-between">

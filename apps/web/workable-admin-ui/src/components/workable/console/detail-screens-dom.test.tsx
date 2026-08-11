@@ -21,7 +21,7 @@ const connection: WorkableConnection = {
   systemName: "Ops",
 };
 
-test("catalog renders persistent execution diagnostics before definitions", async () => {
+test("catalog renders persistent execution diagnostics before definitions and refreshes both", async () => {
   const fetchMock = installQueueFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/definitions") {
       return Response.json([definition()]);
@@ -60,6 +60,34 @@ test("catalog renders persistent execution diagnostics before definitions", asyn
       true
     );
     await result.waitFor(() => result.getByText("ImportOrders"));
+
+    await result.rerender(
+      <DefinitionsView
+        canControlSystem
+        canViewDiagnostics
+        catalogScope={null}
+        connection={connection}
+        onCatalogScopeChange={() => undefined}
+        onOpenDefinition={() => undefined}
+        onOpenWorker={() => undefined}
+        onReady={() => undefined}
+        refreshToken={1}
+      />
+    );
+    await result.waitFor(() => {
+      assert.equal(
+        fetchMock.calls.filter((call) =>
+          call.input === "/api/workable/systems/Ops/execution-diagnostics/capture-rules"
+        ).length,
+        2
+      );
+      assert.equal(
+        fetchMock.calls.filter((call) =>
+          call.input === "/api/workable/systems/Ops/definitions"
+        ).length,
+        2
+      );
+    });
   } finally {
     fetchMock.restore();
     await result.restore();

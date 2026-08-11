@@ -23,11 +23,13 @@ export function ExecutionDiagnosticsCaptureCard({
   canViewDiagnostics,
   connection,
   definitionName,
+  refreshToken = 0,
 }: {
   canControlSystem: boolean;
   canViewDiagnostics: boolean;
   connection: WorkableConnection;
   definitionName?: string | null;
+  refreshToken?: number;
 }) {
   const unavailable = connection.executionDiagnosticsPersistenceAvailable === false;
   const [state, setState] = useState<WorkableExecutionDiagnosticCaptureState | null>(
@@ -68,7 +70,7 @@ export function ExecutionDiagnosticsCaptureCard({
     if (!canViewDiagnostics) return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
-  }, [canViewDiagnostics, load]);
+  }, [canViewDiagnostics, load, refreshToken]);
 
   if (!canViewDiagnostics) return null;
 
