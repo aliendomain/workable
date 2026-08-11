@@ -106,6 +106,39 @@ test("overview view surfaces request errors and reports connection failure", asy
   }
 });
 
+test("overview refresh does not request persistent diagnostic capture rules", async () => {
+  const callbacks = createOverviewCallbacks();
+  const fetchMock = installOverviewFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/views/overview") {
+      return Response.json(overviewResult());
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(overviewElement(callbacks, { refreshToken: 0 }));
+
+  try {
+    await result.waitFor(() => {
+      assert.equal(fetchMock.calls.length, 1);
+    });
+    await result.rerender(overviewElement(callbacks, { refreshToken: 1 }));
+    await result.waitFor(() => {
+      assert.equal(fetchMock.calls.length, 2);
+    });
+
+    assert.deepEqual(
+      fetchMock.calls.map((call) => call.input),
+      [
+        "/api/workable/systems/Ops/views/overview",
+        "/api/workable/systems/Ops/views/overview",
+      ]
+    );
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 test("overview failed-worker actions refresh the failed-worker slice when realtime is not connected", async () => {
   const callbacks = createOverviewCallbacks();
   const fetchMock = installOverviewFetch((call) => {
@@ -376,6 +409,7 @@ function overviewElement(
   options?: {
     access?: WorkSystemAccessSummary;
     hiddenPanelIds?: OverviewPanelId[];
+    refreshToken?: number;
   }
 ) {
   return (
@@ -418,7 +452,7 @@ function overviewElement(
           realtimePayloadCaptureEnabled={false}
           realtimePayloadMaxMessages={10}
           realtimePayloadOpen={false}
-          refreshToken={0}
+          refreshToken={options?.refreshToken ?? 0}
           renderControls={({ loading, refreshing }) => (
             <div>
               {loading ? "Overview loading" : refreshing ? "Overview refreshing" : "Overview ready"}
