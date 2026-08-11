@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ConsoleHeaderCapabilitiesProvider } from "@/components/features/console/header-capabilities";
 import {
+  DefinitionsView,
   QueueDialog,
   WorkerConsoleView,
   resolveIterationHttpClientProfilingAvailable,
@@ -19,6 +20,51 @@ const connection: WorkableConnection = {
   apiUrl: "https://console.example.com/workable",
   systemName: "Ops",
 };
+
+test("catalog renders persistent execution diagnostics before definitions", async () => {
+  const fetchMock = installQueueFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/definitions") {
+      return Response.json([definition()]);
+    }
+
+    if (call.input === "/api/workable/systems/Ops/execution-diagnostics/capture-rules") {
+      return Response.json({ persistenceAvailable: true, rules: [] });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <DefinitionsView
+      canControlSystem
+      canViewDiagnostics
+      catalogScope={null}
+      connection={connection}
+      onCatalogScopeChange={() => undefined}
+      onOpenDefinition={() => undefined}
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("Persistent execution diagnostics"));
+    await result.waitFor(() => result.getByText("Catalog"));
+    const diagnosticsHeading = result.getByText("Persistent execution diagnostics");
+    const catalogHeading = result.getByText("Catalog");
+    assert.equal(
+      Boolean(
+        diagnosticsHeading.compareDocumentPosition(catalogHeading) &
+        result.dom.window.Node.DOCUMENT_POSITION_FOLLOWING
+      ),
+      true
+    );
+    await result.waitFor(() => result.getByText("ImportOrders"));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
 
 test("iteration profile SQL availability prefers the live overview capability over stored navigation state", () => {
   assert.equal(

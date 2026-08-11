@@ -362,6 +362,8 @@ const workerOverviewRealtimeResyncCooldownMs = 5000;
 
 export function DefinitionsView({
   autoOpenScopedDefinition = true,
+  canControlSystem,
+  canViewDiagnostics,
   catalogScope,
   connection,
   onCatalogScopeChange,
@@ -371,6 +373,8 @@ export function DefinitionsView({
   refreshToken,
 }: {
   autoOpenScopedDefinition?: boolean;
+  canControlSystem: boolean;
+  canViewDiagnostics: boolean;
   catalogScope: OverviewScope | null;
   connection: WorkableConnection;
   onCatalogScopeChange: (scope: OverviewScope | null) => void;
@@ -454,6 +458,11 @@ export function DefinitionsView({
         settingsDescription="Checked panels are shown on the catalog page."
         settingsTitle="Catalog panels"
       >
+        <ExecutionDiagnosticsCaptureCard
+          canControlSystem={canControlSystem}
+          canViewDiagnostics={canViewDiagnostics}
+          connection={connection}
+        />
         {isCatalogPanelVisible ? (
           <PanelShell
             onClose={() => setCatalogPanelVisible("catalog", false)}

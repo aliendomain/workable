@@ -53,6 +53,10 @@ test("overview view shows loading, component errors, and panel controls", async 
 
     await result.waitFor(() => result.getByText("Active workers"));
     await result.waitFor(() => result.getByText("Iterations unavailable"));
+    assert.equal(
+      result.container.textContent?.includes("Persistent execution diagnostics"),
+      false
+    );
     assert.ok(
       result.getByRole("button", { name: "Open workers filtered by Queued" })
         .closest(".workable-grid-scrollbar")
