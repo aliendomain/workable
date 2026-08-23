@@ -6,10 +6,12 @@ using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 internal sealed class InMemoryWorkSystem :
     IWorkSystem,
+    IWorkOperationAccessSource,
     IWorkSystemBuiltInHttpSurfaceAccess,
     IWorkSystemReadModelClock,
     IWorkSystemWorkflowClock,
@@ -19,7 +21,7 @@ internal sealed class InMemoryWorkSystem :
     IWorkExecutionDiagnosticsSystem
 {
     private readonly IServiceProvider rootServices;
-    private readonly ILogger<InMemoryWorkSystem>? logger;
+    private readonly ILogger<InMemoryWorkSystem> logger;
     private readonly IWorkAuthorizationGroupResolver groupResolver;
     private readonly WorkSystemAuthorizationConfiguration authorization;
     private readonly IReadOnlyList<Func<IServiceProvider, IWorkDefinitionSource>> workDefinitionSourceFactories;
@@ -72,7 +74,8 @@ internal sealed class InMemoryWorkSystem :
         this.RequiresAuthorization = registration.RequiresAuthorization;
         this.authorization = registration.Authorization;
         this.rootServices = rootServices;
-        this.logger = rootServices.GetService<ILogger<InMemoryWorkSystem>>();
+        this.logger = rootServices.GetService<ILogger<InMemoryWorkSystem>>()
+            ?? NullLogger<InMemoryWorkSystem>.Instance;
         this.workDefinitionSourceFactories = workDefinitionSourceFactories;
         this.startupWorkSourceFactories = startupWorkSourceFactories;
         this.ShutdownGracePeriod = shutdownGracePeriod;
@@ -345,6 +348,7 @@ internal sealed class InMemoryWorkSystem :
         ArgumentNullException.ThrowIfNull(requestContext);
 
         var totalDefinitionCount = this.catalog.Definitions.Count;
+        var totalWorkflowDefinitionCount = this.workflows.Definitions.Count;
         if (!this.RequiresAuthorization)
         {
             return new WorkSystemAccessSummary(
@@ -356,25 +360,118 @@ internal sealed class InMemoryWorkSystem :
                 CanOperateAllWork: true,
                 TotalDefinitionCount: totalDefinitionCount,
                 ReadableDefinitionCount: totalDefinitionCount,
-                OperableDefinitionCount: totalDefinitionCount);
+                OperableDefinitionCount: totalDefinitionCount)
+            {
+                CanDiscoverAllWork = true,
+                DiscoverableDefinitionCount = totalDefinitionCount,
+                ReadableWorkflowDefinitionCount = totalWorkflowDefinitionCount,
+                OperableWorkflowDefinitionCount = totalWorkflowDefinitionCount,
+            };
         }
 
         var groups = await this.groupResolver.GetGroups(requestContext, this.Name, cancellationToken);
         var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.authorization, groups);
-        var authorization = new WorkAuthorizationEvaluator(this.catalog, groups, false, systemAuthorization);
-        var readableDefinitionCount = this.catalog.Definitions.Count(authorization.CanRead);
-        var operableDefinitionCount = this.catalog.Definitions.Count(authorization.CanOperate);
+        var isKnownAuthenticatedActor = requestContext.IsAuthenticated && requestContext.Actor.IsKnown;
+        var canReadAllWork = systemAuthorization.HasReadAllWorkAccess();
+        var canOperateAllWork = systemAuthorization.HasOperateAllWorkAccess();
+        var discoverableDefinitionCount = 0;
+        var readableDefinitionCount = 0;
+        var operableDefinitionCount = 0;
+        foreach (var definition in this.catalog.Definitions)
+        {
+            var canRead = canReadAllWork ||
+                definition.Authorization.CanRead(groups, isKnownAuthenticatedActor);
+            var canOperate = canOperateAllWork ||
+                definition.Authorization.CanOperate(groups, isKnownAuthenticatedActor);
+            var canDiscover = canRead || canOperate ||
+                definition.Authorization.Discover.IsSatisfiedBy(groups, isKnownAuthenticatedActor);
+            discoverableDefinitionCount += canDiscover ? 1 : 0;
+            readableDefinitionCount += canRead ? 1 : 0;
+            operableDefinitionCount += canOperate ? 1 : 0;
+        }
+
+        var readableWorkflowDefinitionCount = 0;
+        var operableWorkflowDefinitionCount = 0;
+        foreach (var definition in this.workflows.Definitions)
+        {
+            var canRead = canReadAllWork ||
+                definition.Authorization.CanRead(groups, isKnownAuthenticatedActor);
+            var canOperate = canOperateAllWork ||
+                definition.Authorization.CanOperate(groups, isKnownAuthenticatedActor);
+            readableWorkflowDefinitionCount += canRead ? 1 : 0;
+            operableWorkflowDefinitionCount += canOperate ? 1 : 0;
+        }
 
         return new WorkSystemAccessSummary(
             systemAuthorization.IsSystemAdministrator(),
             systemAuthorization.IsWorkAdministrator(),
             systemAuthorization.CanViewDiagnostics(),
             systemAuthorization.CanControlSystem(),
-            systemAuthorization.HasReadAllWorkAccess(),
-            systemAuthorization.HasOperateAllWorkAccess(),
+            canReadAllWork,
+            canOperateAllWork,
             totalDefinitionCount,
             readableDefinitionCount,
-            operableDefinitionCount);
+            operableDefinitionCount)
+        {
+            CanDiscoverAllWork = canReadAllWork || canOperateAllWork ||
+                (totalDefinitionCount > 0 && discoverableDefinitionCount == totalDefinitionCount),
+            DiscoverableDefinitionCount = discoverableDefinitionCount,
+            ReadableWorkflowDefinitionCount = readableWorkflowDefinitionCount,
+            OperableWorkflowDefinitionCount = operableWorkflowDefinitionCount,
+        };
+    }
+
+    public async ValueTask<WorkOperationAccessSummary> DescribeOperationAccess(
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        var hasWork = this.catalog.Definitions.Count > 0;
+        var hasWorkflows = this.workflows.Definitions.Count > 0;
+        if (!this.RequiresAuthorization)
+        {
+            return new(
+                hasWork,
+                hasWork,
+                hasWork,
+                hasWork,
+                hasWork,
+                hasWork,
+                hasWorkflows,
+                hasWorkflows,
+                hasWorkflows,
+                hasWorkflows);
+        }
+
+        var groups = await this.groupResolver.GetGroups(requestContext, this.Name, cancellationToken);
+        var systemAuthorization = new WorkSystemAuthorizationEvaluator(this.authorization, groups);
+        var isKnownAuthenticatedActor = requestContext.IsAuthenticated && requestContext.Actor.IsKnown;
+        var authorization = new WorkAuthorizationEvaluator(
+            this.catalog,
+            groups,
+            isKnownAuthenticatedActor,
+            systemAuthorization);
+        var canOperateAll = systemAuthorization.HasOperateAllWorkAccess();
+
+        bool CanOperateWorkflow(WorkOperationPermissions permission)
+            => canOperateAll
+                ? hasWorkflows
+                : this.workflows.RegisteredWorkflows.Any(workflow =>
+                    workflow.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedActor) &&
+                    workflow.OperateAuthorization.CanAttempt(groups, isKnownAuthenticatedActor, permission));
+
+        return new(
+            authorization.HasOperationAccess(WorkOperationPermissions.Start),
+            authorization.HasOperationAccess(WorkOperationPermissions.Pause),
+            authorization.HasOperationAccess(WorkOperationPermissions.Cancel),
+            authorization.HasOperationAccess(WorkOperationPermissions.Push),
+            authorization.HasOperationAccess(WorkOperationPermissions.Purge),
+            authorization.HasOperationAccess(WorkOperationPermissions.ReconfigureDefinition),
+            CanOperateWorkflow(WorkOperationPermissions.Queue),
+            CanOperateWorkflow(WorkOperationPermissions.Start),
+            CanOperateWorkflow(WorkOperationPermissions.Pause),
+            CanOperateWorkflow(WorkOperationPermissions.Cancel));
     }
 
     public ValueTask<IWorkSystemSession> CreateSession(
@@ -537,15 +634,35 @@ internal sealed class InMemoryWorkSystem :
             return await this.StopCore(requestContext, cancellationToken);
         }
 
-        var resolvedAuthorization = await this.ResolveAuthorization(requestContext, cancellationToken);
+        var groups = await this.groupResolver.GetGroups(requestContext, this.Name, cancellationToken);
+        var resolvedAuthorization = new WorkSystemAuthorizationEvaluator(this.authorization, groups);
         if (!resolvedAuthorization.CanControlSystem())
         {
             throw new WorkSystemAccessDeniedException(WorkSystemPermission.ControlSystem, this.Id, this.Name);
         }
 
-        return WorkProfileAccessFilter.Apply(
-            await this.StopCore(requestContext, cancellationToken),
-            resolvedAuthorization.CanViewDiagnostics());
+        var workAuthorization = new WorkAuthorizationEvaluator(
+            this.catalog,
+            groups,
+            requestContext.IsAuthenticated && requestContext.Actor.IsKnown,
+            resolvedAuthorization);
+        var result = await this.StopCore(requestContext, cancellationToken);
+        result = result with
+        {
+            ForceInterruptedWorkers = [.. result.ForceInterruptedWorkers.Where(CanReadWorker)],
+            CancellationRequestedWorkers = [.. result.CancellationRequestedWorkers.Where(CanReadWorker)],
+            ForceInterruptedWorkerSummaries = [.. result.ForceInterruptedWorkerSummaries.Where(CanReadSummary)],
+            CancellationRequestedWorkerSummaries = [.. result.CancellationRequestedWorkerSummaries.Where(CanReadSummary)],
+        };
+        return WorkProfileAccessFilter.Apply(result, resolvedAuthorization.CanViewDiagnostics());
+
+        bool CanReadWorker(WorkerSnapshot worker)
+            => this.catalog.TryGet(worker.DefinitionName, out var definition) &&
+                workAuthorization.CanRead(definition);
+
+        bool CanReadSummary(WorkSystemShutdownWorker worker)
+            => this.catalog.TryGet(worker.DefinitionName, out var definition) &&
+                workAuthorization.CanRead(definition);
     }
 
     private async Task<WorkSystemStopResult> StopCore(
@@ -809,7 +926,7 @@ internal sealed class InMemoryWorkSystem :
             }
             catch (Exception exception) when (IsNonCriticalException(exception))
             {
-                this.logger?.LogWarning(
+                this.logger.LogWarning(
                     exception,
                     "Lifecycle observer {ObserverType} threw during SystemStopped for work system {WorkSystem}.",
                     observer.GetType().FullName ?? observer.GetType().Name,

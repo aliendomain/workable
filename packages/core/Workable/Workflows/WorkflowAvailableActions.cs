@@ -8,6 +8,8 @@ public sealed record WorkflowAvailableActions(
     bool Pause,
     bool Cancel)
 {
+    internal static WorkflowAvailableActions None { get; } = new(false, false, false);
+
     internal static WorkflowAvailableActions For(WorkflowRunStatus status)
         => status switch
         {
@@ -19,9 +21,6 @@ public sealed record WorkflowAvailableActions(
                 Start: true,
                 Pause: false,
                 Cancel: true),
-            _ => new WorkflowAvailableActions(
-                Start: false,
-                Pause: false,
-                Cancel: false),
+            _ => None,
         };
 }

@@ -75,6 +75,41 @@ test("workableQueryFetch coalesces identical in-flight query requests", async ()
   }
 });
 
+test("workableFetch can bypass an identical in-flight GET for fresh reconciliation", async () => {
+  let fetchCount = 0;
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const restoreFetch = mockFetch(async () => {
+    fetchCount += 1;
+    if (fetchCount === 1) {
+      await firstGate;
+      return jsonResponse({ version: "stale" });
+    }
+    return jsonResponse({ version: "fresh" });
+  });
+
+  try {
+    const first = workableFetch<{ version: string }>(connection, "capture-rules");
+    await Promise.resolve();
+    const fresh = workableFetch<{ version: string }>(
+      connection,
+      "capture-rules",
+      undefined,
+      { coalesce: false }
+    );
+
+    assert.deepEqual(await fresh, { version: "fresh" });
+    assert.equal(fetchCount, 2);
+    releaseFirst();
+    assert.deepEqual(await first, { version: "stale" });
+  } finally {
+    releaseFirst();
+    restoreFetch();
+  }
+});
+
 test("workableFetch surfaces API problem details and redirects auth-required responses to login", async () => {
   const replacements: string[] = [];
   const restoreWindow = mockWindowLocation("/workers", "?state=Running", replacements);

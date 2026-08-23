@@ -89,11 +89,10 @@ ASP.NET Core applications reference `Workable.AspNetCore` when their own control
 
 `packages/core/Workable.Entra` contains Microsoft Entra ID target-app integration:
 
-- JWT bearer setup for Microsoft Entra ID
+- integration with the host's existing Entra authentication principal and scheme
 - Entra `scp`, `roles`, and `groups` claim mapping into Workable authorization groups
-- SignalR browser token handling for the Workable realtime hub
 
-ASP.NET Core applications reference `Workable.Entra` when Workable adapter requests should validate Entra bearer tokens and map target-token claims into Workable authorization groups.
+ASP.NET Core applications reference `Workable.Entra` when the host already validates Entra identities and Workable should interpret their claims. The package does not register or configure JWT bearer authentication.
 
 `packages/core/Workable.Mcp` contains the MCP adapter surface:
 
@@ -115,6 +114,8 @@ Applications reference `Workable.Mcp` when they want to expose Workable systems 
 - worker-overview change handling and coalesced worker-overview broadcasting
 - coalesced named-view broadcasting using shared view subscriptions
 - HTTP realtime capability provider registration
+- optional endpoint-scoped query-token promotion that leaves authentication and token validation with the host
+- host-replaceable Workable payload serialization without rewriting the host's SignalR protocol options
 
 Applications reference `Workable.SignalR` when they want ASP.NET Core clients to receive realtime Workable updates.
 

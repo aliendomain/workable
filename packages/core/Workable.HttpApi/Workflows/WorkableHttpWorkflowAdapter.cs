@@ -41,10 +41,16 @@ internal sealed class WorkableHttpWorkflowAdapter(
                 result.Messages);
         }
 
+        var availableActions = await Views.AvailableActions(
+            system,
+            requestContext,
+            result.RunId.Value,
+            cancellationToken);
+
         return new WorkableHttpWorkflowStartResult(
             WorkableHttpWorkflowStartStatus.Accepted,
             result.RunId.Value.Value,
-            WorkableHttpWorkflowRun.From(result.Run),
+            WorkableHttpWorkflowRun.From(result.Run, availableActions),
             result.Messages);
     }
 
@@ -101,11 +107,16 @@ internal sealed class WorkableHttpWorkflowAdapter(
             ToRunAction(action),
             requestContext,
             cancellationToken);
+        var availableActions = await Views.AvailableActions(
+            system,
+            requestContext,
+            result.RunId ?? runId,
+            cancellationToken);
         return new WorkableHttpWorkflowActionResult(
             MapActionStatus(result.Status),
             MapActionKind(action),
             (result.RunId ?? runId).Value,
-            WorkableHttpWorkflowRun.From(result.Run),
+            WorkableHttpWorkflowRun.From(result.Run, availableActions),
             result.Messages);
     }
 
@@ -145,6 +156,28 @@ internal sealed class WorkableHttpWorkflowAdapter(
         CancellationToken cancellationToken = default)
         => Views.Runs(system, requestContext, includeFinal, definitionName, childSampleSize, cancellationToken);
 
+    /// <summary>
+    /// Reads one bounded page of visible workflow runs using the HTTP query contract.
+    /// </summary>
+    public Task<WorkflowRunListView> RunsPage(
+        IWorkSystem system,
+        WorkRequestContext requestContext,
+        bool includeFinal = false,
+        string? definitionName = null,
+        int childSampleSize = 3,
+        int skip = 0,
+        int take = 50,
+        CancellationToken cancellationToken = default)
+        => Views.RunsPage(
+            system,
+            requestContext,
+            includeFinal,
+            definitionName,
+            childSampleSize,
+            skip,
+            take,
+            cancellationToken);
+
     private static WorkableHttpWorkflowStartStatus MapStartStatus(WorkflowCommandStatus status)
         => status switch
         {
@@ -174,7 +207,8 @@ internal sealed class WorkableHttpWorkflowAdapter(
         {
             WorkflowAction.Start => WorkableHttpWorkflowActionKind.Start,
             WorkflowAction.Pause => WorkableHttpWorkflowActionKind.Pause,
-            _ => WorkableHttpWorkflowActionKind.Cancel,
+            WorkflowAction.Cancel => WorkableHttpWorkflowActionKind.Cancel,
+            _ => throw new InvalidOperationException($"Unsupported workflow action '{action}'."),
         };
 
     private static WorkflowRunAction ToRunAction(WorkflowAction action)
@@ -182,6 +216,7 @@ internal sealed class WorkableHttpWorkflowAdapter(
         {
             WorkflowAction.Start => WorkflowRunAction.Start,
             WorkflowAction.Pause => WorkflowRunAction.Pause,
-            _ => WorkflowRunAction.Cancel,
+            WorkflowAction.Cancel => WorkflowRunAction.Cancel,
+            _ => throw new InvalidOperationException($"Unsupported workflow action '{action}'."),
         };
 }

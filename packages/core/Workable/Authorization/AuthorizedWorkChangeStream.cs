@@ -56,17 +56,28 @@ internal sealed class AuthorizedWorkChangeStream(
         }
 
         private bool CanRead(WorkChangeKey key)
-            => key.Kind switch
+        {
+            if (key.Kind is WorkChangeKind.Diagnostics)
             {
-                WorkChangeKind.Diagnostics => canViewDiagnostics,
+                return canViewDiagnostics;
+            }
+
+            if (!string.IsNullOrWhiteSpace(key.DefinitionName))
+            {
+                return readableDefinitionNames.Contains(key.DefinitionName);
+            }
+
+            return key.Kind switch
+            {
                 WorkChangeKind.Definition => readableDefinitionNames.Contains(key.Value),
                 WorkChangeKind.System => readableDefinitionNames.Count > 0 || canViewDiagnostics,
                 WorkChangeKind.Worker or
                 WorkChangeKind.Subject or
                 WorkChangeKind.ConcurrencyKey or
-                WorkChangeKind.Identifier => readableDefinitionNames.Count > 0,
+                WorkChangeKind.Identifier or
                 WorkChangeKind.Actor => hasReadAllWorkAccess,
                 _ => false,
             };
+        }
     }
 }

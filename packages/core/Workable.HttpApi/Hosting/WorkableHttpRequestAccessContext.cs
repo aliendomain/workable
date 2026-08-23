@@ -7,15 +7,13 @@ internal sealed class WorkableHttpRequestAccessContext(
     IWorkRequestContextFactory requestContexts,
     IWorkAuthorizationGroupResolver groupResolver)
 {
-    private const string DefaultSystemCacheKey = "<default>";
-
     // This scoped cache is per HTTP request. Regular Dictionary is intentional here because the built-in
     // adapter uses it from the normal request pipeline, not from parallel authorization work inside one request.
     // If built-in route authorization ever starts doing parallel per-request evaluation, add synchronization.
-    private readonly Dictionary<string, IReadOnlySet<string>> groupsBySystem = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, WorkAuthorizationSnapshot> authorizationBySystem = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, WorkSystemAccessSummary> accessBySystem = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, bool> builtInSurfaceAccessBySystem = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<SystemCacheKey, IReadOnlySet<string>> groupsBySystem = new(SystemCacheKeyComparer.Instance);
+    private readonly Dictionary<SystemCacheKey, WorkAuthorizationSnapshot> authorizationBySystem = new(SystemCacheKeyComparer.Instance);
+    private readonly Dictionary<SystemCacheKey, WorkSystemAccessSummary> accessBySystem = new(SystemCacheKeyComparer.Instance);
+    private readonly Dictionary<SystemCacheKey, bool> builtInSurfaceAccessBySystem = new(SystemCacheKeyComparer.Instance);
     private WorkRequestContext? baseContext;
 
     internal async ValueTask<WorkRequestContext> Create(
@@ -160,6 +158,21 @@ internal sealed class WorkableHttpRequestAccessContext(
         return groups;
     }
 
-    private static string GetCacheKey(string? systemName)
-        => string.IsNullOrWhiteSpace(systemName) ? DefaultSystemCacheKey : systemName;
+    private static SystemCacheKey GetCacheKey(string? systemName)
+        => new(systemName);
+
+    private readonly record struct SystemCacheKey(string? Name);
+
+    private sealed class SystemCacheKeyComparer : IEqualityComparer<SystemCacheKey>
+    {
+        public static SystemCacheKeyComparer Instance { get; } = new();
+
+        public bool Equals(SystemCacheKey left, SystemCacheKey right)
+            => left.Name is null
+                ? right.Name is null
+                : right.Name is not null && StringComparer.OrdinalIgnoreCase.Equals(left.Name, right.Name);
+
+        public int GetHashCode(SystemCacheKey key)
+            => key.Name is null ? 0 : StringComparer.OrdinalIgnoreCase.GetHashCode(key.Name);
+    }
 }

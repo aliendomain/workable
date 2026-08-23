@@ -8,7 +8,8 @@ namespace Workable;
 public sealed class WorkableAspNetCoreAuthorizationOptions
 {
     /// <summary>
-    /// Gets or sets the explicit authentication scheme Workable should use for transport-level authentication.
+    /// Gets or sets the existing host authentication scheme Workable should authenticate explicitly for its
+    /// transport-level principal. Workable does not register or configure the selected scheme.
     /// </summary>
     public string? TransportAuthenticationScheme { get; set; }
 
@@ -41,4 +42,10 @@ public sealed class WorkableAspNetCoreAuthorizationOptions
     /// </summary>
     public IReadOnlyList<char> GroupClaimValueSeparators { get; set; } =
         [','];
+
+    /// <summary>
+    /// Gets claim-type-specific separators that override <see cref="GroupClaimValueSeparators"/>.
+    /// </summary>
+    public IDictionary<string, IReadOnlyList<char>> GroupClaimValueSeparatorsByClaimType { get; } =
+        new Dictionary<string, IReadOnlyList<char>>(StringComparer.OrdinalIgnoreCase);
 }

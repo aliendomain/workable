@@ -6,12 +6,44 @@ namespace Workable;
 public sealed class WorkflowRunViewAdapter
 {
     private const int DefaultChildSampleSize = 3;
+    private const int DefaultRunPageSize = 50;
+    internal const int MaximumWorkerReadsPerView = 256;
+    /// <summary>
+    /// Gets the largest child-worker sample accepted by workflow operator views.
+    /// </summary>
+    public const int MaximumChildSampleSize = 25;
+    /// <summary>Gets the largest workflow-run page accepted by operator views.</summary>
+    public const int MaximumRunPageSize = 100;
+    /// <summary>Gets the largest workflow-run offset accepted by operator views.</summary>
+    public const int MaximumRunPageSkip = 10_000;
+    /// <summary>Gets the largest child-worker page accepted by operator views.</summary>
+    public const int MaximumChildPageSize = 100;
+    /// <summary>Gets the largest child-worker offset accepted by operator views.</summary>
+    public const int MaximumChildPageSkip = 100_000;
     private static readonly WorkflowChildWorkerSummary EmptyChildSummary =
         new(0, 0, 0, 0, new Dictionary<WorkerState, int>());
 
     /// <summary>
+    /// Resolves the lifecycle-valid workflow actions the supplied caller is authorized to execute for one run.
+    /// </summary>
+    public ValueTask<WorkflowAvailableActions> AvailableActions(
+        IWorkSystem system,
+        WorkRequestContext requestContext,
+        WorkflowRunId runId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(requestContext);
+        return ResolveSystem(system).WorkflowRuntime.GetAvailableActions(
+            runId,
+            requestContext,
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Lists visible workflow runs for operator summary screens.
     /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="childSampleSize"/> is outside the inclusive range 0 through 25.</exception>
     public async Task<WorkflowRunListView> Runs(
         IWorkSystem system,
         WorkRequestContext requestContext,
@@ -19,35 +51,76 @@ public sealed class WorkflowRunViewAdapter
         string? definitionName = null,
         int childSampleSize = DefaultChildSampleSize,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(system);
-        ArgumentNullException.ThrowIfNull(requestContext);
-
-        var inMemory = ResolveSystem(system);
-        var runs = await inMemory.WorkflowRuntime.ListVisibleStates(
+        => await this.RunsPage(
+            system,
             requestContext,
             includeFinal,
             definitionName,
+            childSampleSize,
+            skip: 0,
+            take: DefaultRunPageSize,
+            cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// Lists one bounded page of visible workflow runs for operator summary screens.
+    /// </summary>
+    public async Task<WorkflowRunListView> RunsPage(
+        IWorkSystem system,
+        WorkRequestContext requestContext,
+        bool includeFinal = false,
+        string? definitionName = null,
+        int childSampleSize = DefaultChildSampleSize,
+        int skip = 0,
+        int take = DefaultRunPageSize,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(requestContext);
+        ValidateChildSampleSize(childSampleSize);
+        var normalizedSkip = Math.Clamp(skip, 0, MaximumRunPageSkip);
+        var normalizedTake = Math.Clamp(take, 1, MaximumRunPageSize);
+
+        var inMemory = ResolveSystem(system);
+        var pageResult = await inMemory.WorkflowRuntime.ListVisibleStatesPage(
+            requestContext,
+            includeFinal,
+            definitionName,
+            normalizedSkip,
+            normalizedTake,
             cancellationToken);
-        if (runs.Count == 0)
+        var pageRuns = pageResult.Runs;
+        if (pageRuns.Count == 0)
         {
-            return new WorkflowRunListView(DateTimeOffset.UtcNow, []);
+            return new WorkflowRunListView(DateTimeOffset.UtcNow, [])
+            {
+                TotalCount = pageResult.TotalCount,
+                Skip = normalizedSkip,
+                Take = normalizedTake,
+            };
         }
 
+        var session = await inMemory.CreateSession(requestContext, cancellationToken);
         var workerLookup = await LoadWorkers(
             inMemory,
-            runs.SelectMany(run => GetOutstandingWorkerIds(run.ToSnapshot())),
+            session.Catalog,
+            pageRuns.SelectMany(run => GetReadableOutstandingWorkerIds(inMemory, session.Catalog, run)),
             cancellationToken);
-        var items = runs
-            .Select(run => CreateListItem(inMemory, run, workerLookup, childSampleSize))
+        var items = pageRuns
+            .Select(run => CreateListItem(inMemory, session.Catalog, run, workerLookup, childSampleSize))
             .ToArray();
 
-        return new WorkflowRunListView(DateTimeOffset.UtcNow, items);
+        return new WorkflowRunListView(DateTimeOffset.UtcNow, items)
+        {
+            TotalCount = pageResult.TotalCount,
+            Skip = normalizedSkip,
+            Take = normalizedTake,
+        };
     }
 
     /// <summary>
     /// Builds one visible workflow-run detail payload.
     /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="childSampleSize"/> is outside the inclusive range 0 through 25.</exception>
     public async Task<WorkflowRunDetailView?> Run(
         IWorkSystem system,
         WorkRequestContext requestContext,
@@ -57,6 +130,7 @@ public sealed class WorkflowRunViewAdapter
     {
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(requestContext);
+        ValidateChildSampleSize(childSampleSize);
 
         var inMemory = ResolveSystem(system);
         var run = await inMemory.WorkflowRuntime.GetVisibleState(runId, requestContext, cancellationToken);
@@ -65,17 +139,29 @@ public sealed class WorkflowRunViewAdapter
             return null;
         }
 
-        var snapshot = run.ToSnapshot();
+        var snapshot = run.ToOperatorSnapshot(MaximumWorkerReadsPerView);
         if (!inMemory.Workflows.TryGet(snapshot.DefinitionName, out var workflow))
         {
             return null;
         }
 
+        var session = await inMemory.CreateSession(requestContext, cancellationToken);
+        var readableWorkerIds = GetReadableWorkerIds(
+            workflow.Steps,
+            snapshot,
+            snapshot.Steps.SelectMany(step => step.WorkerIds),
+            session.Catalog);
         var workerLookup = await LoadWorkers(
             inMemory,
-            snapshot.Steps.SelectMany(step => step.WorkerIds),
+            session.Catalog,
+            readableWorkerIds,
             cancellationToken);
-        return CreateDetail(run, workflow, workerLookup, childSampleSize);
+        var availableActions = await inMemory.WorkflowRuntime.GetAvailableActions(
+            runId,
+            snapshot.Status,
+            requestContext,
+            cancellationToken);
+        return CreateDetail(run, snapshot, workflow, session.Catalog, workerLookup, childSampleSize, availableActions);
     }
 
     /// <summary>
@@ -101,26 +187,31 @@ public sealed class WorkflowRunViewAdapter
             return null;
         }
 
-        var snapshot = run.ToSnapshot();
-        if (!inMemory.Workflows.TryGet(snapshot.DefinitionName, out var workflow))
+        if (!inMemory.Workflows.TryGet(run.DefinitionName, out var workflow))
         {
             return null;
         }
 
-        if (!TryGetStepWorkerIds(workflow.Steps, snapshot, stepName, out var workerIds))
+        if (!TryGetWorkflowStep(workflow.Steps, stepName, out var selectedStep))
         {
             return null;
         }
 
-        var normalizedSkip = Math.Max(0, skip);
-        var normalizedTake = Math.Clamp(take, 1, 100);
-        var pageIds = workerIds
-            .Skip(normalizedSkip)
-            .Take(normalizedTake)
-            .ToArray();
-        var pageWorkers = await LoadWorkers(inMemory, pageIds, cancellationToken);
-        var receiptLookup = snapshot.ChildReceipts.ToDictionary(receipt => receipt.WorkerId);
-        var pageStates = BuildChildStates(pageIds, pageWorkers, receiptLookup);
+        var session = await inMemory.CreateSession(requestContext, cancellationToken);
+        var normalizedSkip = Math.Clamp(skip, 0, MaximumChildPageSkip);
+        var normalizedTake = Math.Clamp(take, 1, MaximumChildPageSize);
+        var readableDispatchStepNames = GetReadableDispatchStepNames(
+            selectedStep is JoinWorkflowStepDefinition ? workflow.Steps : [selectedStep],
+            session.Catalog);
+        var workerPage = run.GetStepWorkerIdsPage(
+            stepName,
+            readableDispatchStepNames,
+            normalizedSkip,
+            normalizedTake);
+        var pageIds = workerPage.WorkerIds;
+        var receiptLookup = CreateReadableReceiptLookup(run, pageIds, session.Catalog);
+        var workers = await LoadWorkers(inMemory, session.Catalog, pageIds, cancellationToken);
+        var pageStates = BuildChildStates(pageIds, workers, receiptLookup);
         var page = pageStates
             .Select(worker => new WorkflowChildWorkerView(
                 worker.WorkerId.Value,
@@ -132,46 +223,64 @@ public sealed class WorkflowRunViewAdapter
 
         return new WorkflowStepChildWorkerQueryResult(
             page,
-            workerIds.Count,
+            workerPage.TotalCount,
             normalizedSkip,
             normalizedTake);
     }
 
     private static async Task<IReadOnlyDictionary<WorkerId, WorkerSnapshot?>> LoadWorkers(
         InMemoryWorkSystem system,
+        IWorkCatalog readableCatalog,
         IEnumerable<WorkerId> workerIds,
         CancellationToken cancellationToken)
     {
         var ids = workerIds
             .Distinct()
+            .Take(MaximumWorkerReadsPerView)
             .ToArray();
         if (ids.Length == 0)
         {
             return new Dictionary<WorkerId, WorkerSnapshot?>();
         }
 
-        var reads = ids.Select(async workerId => new KeyValuePair<WorkerId, WorkerSnapshot?>(
-            workerId,
-            await system.WorkerOperations.GetAuthoritative(workerId, cancellationToken)));
-        var loaded = await Task.WhenAll(reads);
-        return loaded.ToDictionary(pair => pair.Key, pair => pair.Value);
+        var loaded = new List<KeyValuePair<WorkerId, WorkerSnapshot?>>(ids.Length);
+        foreach (var workerId in ids)
+        {
+            loaded.Add(new KeyValuePair<WorkerId, WorkerSnapshot?>(
+                workerId,
+                await system.WorkerOperations.GetAuthoritative(workerId, cancellationToken)));
+        }
+
+        return loaded.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value is { } worker && readableCatalog.TryGet(worker.DefinitionName, out _)
+                ? worker
+                : null);
     }
 
     private static WorkflowRunListItemView CreateListItem(
         InMemoryWorkSystem system,
+        IWorkCatalog readableCatalog,
         WorkflowRunState run,
         IReadOnlyDictionary<WorkerId, WorkerSnapshot?> workers,
         int childSampleSize)
     {
-        var snapshot = run.ToSnapshot();
-        var receiptLookup = snapshot.ChildReceipts.ToDictionary(receipt => receipt.WorkerId);
+        var snapshot = run.ToOperatorSnapshot(MaximumWorkerReadsPerView);
+        var receiptLookup = CreateReadableReceiptLookup(snapshot, readableCatalog);
         var outstanding = GetOutstandingWorkerIds(snapshot);
         var outstandingWorkers = BuildChildStates(outstanding, workers, receiptLookup);
-        var outstandingSummary = CreateChildSummary(outstanding, outstandingWorkers);
+        var outstandingSummary = CreateChildSummary(GetWorkerIds(outstandingWorkers), outstandingWorkers);
         WorkflowStepOperatorView? current = null;
         if (system.Workflows.TryGet(snapshot.DefinitionName, out var workflow))
         {
-            var detail = CreateDetail(run, workflow, workers, childSampleSize);
+            var detail = CreateDetail(
+                run,
+                snapshot,
+                workflow,
+                readableCatalog,
+                workers,
+                childSampleSize,
+                WorkflowAvailableActions.None);
             current = detail.Steps.FirstOrDefault(IsCurrentStepStatus);
         }
 
@@ -187,17 +296,19 @@ public sealed class WorkflowRunViewAdapter
             current?.Kind,
             current?.Status,
             outstandingSummary,
-            snapshot.Messages);
+            CreateSafeWorkflowMessages(snapshot.Messages));
     }
 
     private static WorkflowRunDetailView CreateDetail(
         WorkflowRunState run,
+        WorkflowRunSnapshot snapshot,
         RegisteredWorkflow workflow,
+        IWorkCatalog readableCatalog,
         IReadOnlyDictionary<WorkerId, WorkerSnapshot?> workers,
-        int childSampleSize)
+        int childSampleSize,
+        WorkflowAvailableActions availableActions)
     {
-        var snapshot = run.ToSnapshot();
-        var receiptLookup = snapshot.ChildReceipts.ToDictionary(receipt => receipt.WorkerId);
+        var receiptLookup = CreateReadableReceiptLookup(snapshot, readableCatalog);
         var snapshotsByName = snapshot.Steps.ToDictionary(step => step.Name, StringComparer.Ordinal);
         var workersByStepName = workers.Values
             .Where(worker => worker is not null)
@@ -222,7 +333,7 @@ public sealed class WorkflowRunViewAdapter
             snapshot.Id.Value,
             snapshot.DefinitionName,
             snapshot.Status,
-            WorkflowAvailableActions.For(snapshot.Status),
+            availableActions,
             run.RequestContext.Origin,
             snapshot.CreatedAt,
             snapshot.StartedAt,
@@ -230,9 +341,9 @@ public sealed class WorkflowRunViewAdapter
             current?.Name,
             current?.Kind,
             current?.Status,
-            CreateChildSummary(outstandingIds, outstandingWorkers),
+            CreateChildSummary(GetWorkerIds(outstandingWorkers), outstandingWorkers),
             steps,
-            snapshot.Messages);
+            CreateSafeWorkflowMessages(snapshot.Messages));
     }
 
     private static WorkflowStepOperatorView CreateStepView(
@@ -432,10 +543,11 @@ public sealed class WorkflowRunViewAdapter
         IReadOnlyList<WorkMessage> messages,
         int childSampleSize)
     {
-        var summary = CreateChildSummary(workerIds, workers);
+        var visibleWorkerIds = GetWorkerIds(workers);
+        var summary = CreateChildSummary(visibleWorkerIds, workers);
         var sample = workers
             .OrderByDescending(worker => worker.UpdatedAt)
-            .Take(Math.Max(0, childSampleSize))
+            .Take(childSampleSize)
             .Select(worker => new WorkflowChildWorkerView(
                 worker.WorkerId.Value,
                 worker.DefinitionName,
@@ -450,12 +562,15 @@ public sealed class WorkflowRunViewAdapter
             startedAt,
             completedAt,
             summary,
-            workerIds.Select(workerId => workerId.Value).ToArray(),
+            visibleWorkerIds.Select(workerId => workerId.Value).ToArray(),
             sample,
             Math.Max(0, summary.Total - sample.Length),
             steps,
-            messages);
+            CreateSafeWorkflowMessages(messages));
     }
+
+    private static IReadOnlyList<WorkMessage> CreateSafeWorkflowMessages(IReadOnlyList<WorkMessage> messages)
+        => WorkMessageAccessFilter.Apply(messages, canReadRetainedDetails: false);
 
     private static WorkflowChildWorkerSummary CreateChildSummary(
         IReadOnlyList<WorkerId> workerIds,
@@ -490,6 +605,146 @@ public sealed class WorkflowRunViewAdapter
             final,
             Math.Max(0, workerIds.Count - active - final),
             counts);
+    }
+
+    private static IReadOnlyList<WorkerId> GetWorkerIds(IReadOnlyList<WorkflowChildState> workers)
+        => [.. workers.Select(worker => worker.WorkerId).Distinct()];
+
+    private static IReadOnlyDictionary<WorkerId, WorkflowChildReceipt> CreateReadableReceiptLookup(
+        WorkflowRunSnapshot snapshot,
+        IWorkCatalog readableCatalog)
+        => snapshot.ChildReceipts
+            .Where(receipt => readableCatalog.TryGet(receipt.DefinitionName, out _))
+            .ToDictionary(receipt => receipt.WorkerId);
+
+    private static IReadOnlyDictionary<WorkerId, WorkflowChildReceipt> CreateReadableReceiptLookup(
+        WorkflowRunState run,
+        IReadOnlyList<WorkerId> workerIds,
+        IWorkCatalog readableCatalog)
+    {
+        var receipts = new Dictionary<WorkerId, WorkflowChildReceipt>();
+        foreach (var workerId in workerIds)
+        {
+            if (run.TryGetChildReceipt(workerId, out var receipt) &&
+                readableCatalog.TryGet(receipt.DefinitionName, out _))
+            {
+                receipts[workerId] = receipt;
+            }
+        }
+        return receipts;
+    }
+
+    private static IReadOnlySet<string> GetReadableDispatchStepNames(
+        IReadOnlyList<WorkflowStepDefinition> steps,
+        IWorkCatalog readableCatalog)
+        => EnumerateSteps(steps)
+            .Where(step => step switch
+            {
+                DispatchWorkflowStepDefinition dispatch =>
+                    readableCatalog.TryGet(dispatch.WorkDefinition.Name, out _),
+                DispatchEachWorkflowStepDefinition dispatchEach =>
+                    readableCatalog.TryGet(dispatchEach.WorkDefinition.Name, out _),
+                _ => false,
+            })
+            .Select(static step => step.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+    private static bool TryGetWorkflowStep(
+        IReadOnlyList<WorkflowStepDefinition> steps,
+        string stepName,
+        out WorkflowStepDefinition selected)
+    {
+        selected = EnumerateSteps(steps).FirstOrDefault(
+            step => string.Equals(step.Name, stepName, StringComparison.Ordinal))!;
+        return selected is not null;
+    }
+
+    private static IReadOnlyDictionary<WorkerId, string> CreateWorkerDefinitionLookup(
+        IReadOnlyList<WorkflowStepDefinition> steps,
+        WorkflowRunSnapshot snapshot)
+    {
+        var lookup = snapshot.ChildReceipts.ToDictionary(
+            receipt => receipt.WorkerId,
+            receipt => receipt.DefinitionName);
+        var snapshotsByName = snapshot.Steps.ToDictionary(step => step.Name, StringComparer.Ordinal);
+        foreach (var step in EnumerateSteps(steps))
+        {
+            var definitionName = step switch
+            {
+                DispatchWorkflowStepDefinition dispatch => dispatch.WorkDefinition.Name,
+                DispatchEachWorkflowStepDefinition dispatchEach => dispatchEach.WorkDefinition.Name,
+                _ => null,
+            };
+            if (definitionName is null || !snapshotsByName.TryGetValue(step.Name, out var stepSnapshot))
+            {
+                continue;
+            }
+
+            foreach (var workerId in stepSnapshot.WorkerIds)
+            {
+                lookup.TryAdd(workerId, definitionName);
+            }
+        }
+
+        return lookup;
+    }
+
+    private static WorkerId[] GetReadableWorkerIds(
+        IReadOnlyList<WorkflowStepDefinition> steps,
+        WorkflowRunSnapshot snapshot,
+        IEnumerable<WorkerId> workerIds,
+        IWorkCatalog readableCatalog)
+    {
+        var definitionLookup = CreateWorkerDefinitionLookup(steps, snapshot);
+        return [.. workerIds
+            .Distinct()
+            .Where(workerId => definitionLookup.TryGetValue(workerId, out var definitionName) &&
+                readableCatalog.TryGet(definitionName, out _))];
+    }
+
+    private static IReadOnlyList<WorkerId> GetReadableOutstandingWorkerIds(
+        InMemoryWorkSystem system,
+        IWorkCatalog readableCatalog,
+        WorkflowRunState run)
+    {
+        var snapshot = run.ToOperatorSnapshot(MaximumWorkerReadsPerView);
+        return system.Workflows.TryGet(snapshot.DefinitionName, out var workflow)
+            ? GetReadableWorkerIds(
+                workflow.Steps,
+                snapshot,
+                GetOutstandingWorkerIds(snapshot),
+                readableCatalog)
+            : [];
+    }
+
+    private static IEnumerable<WorkflowStepDefinition> EnumerateSteps(
+        IReadOnlyList<WorkflowStepDefinition> steps)
+    {
+        foreach (var step in steps)
+        {
+            yield return step;
+            var children = step switch
+            {
+                ParallelWorkflowStepDefinition parallel => parallel.Steps,
+                BranchWorkflowStepDefinition branch => branch.Steps,
+                _ => [],
+            };
+            foreach (var child in EnumerateSteps(children))
+            {
+                yield return child;
+            }
+        }
+    }
+
+    private static void ValidateChildSampleSize(int childSampleSize)
+    {
+        if (childSampleSize is < 0 or > MaximumChildSampleSize)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(childSampleSize),
+                childSampleSize,
+                $"Child sample size must be between 0 and {MaximumChildSampleSize}.");
+        }
     }
 
     private static WorkflowOperatorNodeStatus ResolveDispatchStatus(
@@ -667,6 +922,7 @@ public sealed class WorkflowRunViewAdapter
 
     private static IReadOnlyList<WorkerId> GetOutstandingWorkerIds(WorkflowRunSnapshot snapshot)
     {
+        var receiptLookup = snapshot.ChildReceipts.ToDictionary(receipt => receipt.WorkerId);
         var outstanding = new List<WorkerId>();
         foreach (var step in snapshot.Steps)
         {
@@ -678,7 +934,7 @@ public sealed class WorkflowRunViewAdapter
                 case WorkflowStepKind.Branch:
                     if (step.Status == WorkflowStepRunStatus.Completed)
                     {
-                        outstanding.AddRange(step.WorkerIds.Where(workerId => !IsResolvedChild(workerId, snapshot.ChildReceipts)));
+                        outstanding.AddRange(step.WorkerIds.Where(workerId => !IsResolvedChild(workerId, receiptLookup)));
                     }
 
                     break;
@@ -697,6 +953,7 @@ public sealed class WorkflowRunViewAdapter
 
     private static IReadOnlyList<WorkerId> GetOutstandingWorkerIdsBeforeJoin(WorkflowRunSnapshot run, string joinStepName)
     {
+        var receiptLookup = run.ChildReceipts.ToDictionary(receipt => receipt.WorkerId);
         var outstanding = new List<WorkerId>();
         foreach (var step in run.Steps)
         {
@@ -718,7 +975,7 @@ public sealed class WorkflowRunViewAdapter
                 case WorkflowStepKind.Branch:
                     if (step.Status == WorkflowStepRunStatus.Completed)
                     {
-                        outstanding.AddRange(step.WorkerIds.Where(workerId => !IsResolvedChild(workerId, run.ChildReceipts)));
+                        outstanding.AddRange(step.WorkerIds.Where(workerId => !IsResolvedChild(workerId, receiptLookup)));
                     }
 
                     break;
@@ -886,8 +1143,11 @@ public sealed class WorkflowRunViewAdapter
         => workers.TryGetValue(workerId, out var worker) && worker?.State == WorkerState.Completed ||
             receiptLookup.TryGetValue(workerId, out var receipt) && receipt.CompletionStatus == WorkCompletionStatus.Completed;
 
-    private static bool IsResolvedChild(WorkerId workerId, IReadOnlyList<WorkflowChildReceipt> receipts)
-        => receipts.Any(receipt => receipt.WorkerId == workerId && receipt.CompletionStatus == WorkCompletionStatus.Completed);
+    private static bool IsResolvedChild(
+        WorkerId workerId,
+        IReadOnlyDictionary<WorkerId, WorkflowChildReceipt> receipts)
+        => receipts.TryGetValue(workerId, out var receipt) &&
+            receipt.CompletionStatus == WorkCompletionStatus.Completed;
 
     private sealed record WorkflowChildState(
         WorkerId WorkerId,

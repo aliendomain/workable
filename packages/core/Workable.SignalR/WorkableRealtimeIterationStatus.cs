@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Workable;
 
@@ -77,15 +78,19 @@ public sealed record WorkableRealtimeIterationStatusGap(
 public sealed record WorkableRealtimeIterationCompleted(
     WorkerId WorkerId,
     long WorkerRevision,
+    [property: JsonConverter(typeof(JsonStringEnumConverter))]
     WorkerState WorkerState,
     long IterationSequence,
     DateTimeOffset StartedAt,
     DateTimeOffset CompletedAt,
     TimeSpan ExecutionDuration,
+    [property: JsonConverter(typeof(JsonStringEnumConverter))]
     WorkCompletionStatus Status,
     int AttemptCount,
     WorkOutput? Output,
+    [property: JsonConverter(typeof(WorkableSignalRValueJsonConverter<IReadOnlyList<WorkMessage>>))]
     IReadOnlyList<WorkMessage> Messages,
+    [property: JsonConverter(typeof(WorkableSignalRValueJsonConverter<WorkOrigin>))]
     WorkOrigin? CancellationOrigin)
 {
     internal static WorkableRealtimeIterationCompleted From(WorkIterationStatusCompletion completion)

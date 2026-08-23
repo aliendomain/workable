@@ -2,7 +2,6 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
-using System.Reflection;
 using System.Text;
 using Microsoft.Data.SqlClient.Diagnostics;
 
@@ -35,7 +34,6 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
     {
         this.profilingContextAccessor = profilingContextAccessor;
         this.allListenersSubscription = DiagnosticListener.AllListeners.Subscribe(this);
-        this.SubscribeToExistingListeners();
     }
 
     internal WorkableSqlServerCommandProfilingObserver(
@@ -136,81 +134,6 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
             {
                 active.FinalizeIncomplete();
             }
-        }
-    }
-
-    private void SubscribeToExistingListeners()
-    {
-        try
-        {
-            var method = typeof(DiagnosticListener).GetMethod(
-                "GetAllListeners",
-                BindingFlags.Static | BindingFlags.NonPublic);
-            if (method?.Invoke(null, null) is IEnumerable<DiagnosticListener> listeners)
-            {
-                foreach (var listener in listeners)
-                {
-                    this.OnNext(listener);
-                }
-
-                return;
-            }
-        }
-        catch (Exception exception) when (IsReflectionAccessException(exception))
-        {
-            // Best effort only. The live AllListeners subscription still captures future listeners.
-        }
-
-        try
-        {
-            var listenersField = typeof(DiagnosticListener).GetField(
-                "s_allListeners",
-                BindingFlags.Static | BindingFlags.NonPublic);
-            var listenersLockField = typeof(DiagnosticListener).GetField(
-                "s_allListenersLock",
-                BindingFlags.Static | BindingFlags.NonPublic);
-            var listenersLock = listenersLockField?.GetValue(null);
-            if (listenersLock is null)
-            {
-                SubscribeToExistingListeners(ReadListeners(listenersField?.GetValue(null)));
-                return;
-            }
-
-            lock (listenersLock)
-            {
-                SubscribeToExistingListeners(ReadListeners(listenersField?.GetValue(null)));
-            }
-        }
-        catch (Exception exception) when (IsReflectionAccessException(exception))
-        {
-            // Best effort only. The live AllListeners subscription still captures future listeners.
-        }
-    }
-
-    private static IReadOnlyList<DiagnosticListener> ReadListeners(object? source)
-        => source switch
-        {
-            null => [],
-            IEnumerable<DiagnosticListener> typed => [.. typed],
-            IEnumerable untyped => [.. untyped.OfType<DiagnosticListener>()],
-            _ => [],
-        };
-
-    private static bool IsReflectionAccessException(Exception exception)
-        => exception is AmbiguousMatchException or
-            TargetException or
-            TargetInvocationException or
-            TargetParameterCountException or
-            MemberAccessException or
-            NotSupportedException or
-            TypeLoadException or
-            InvalidOperationException;
-
-    private void SubscribeToExistingListeners(IEnumerable<DiagnosticListener> listeners)
-    {
-        foreach (var listener in listeners)
-        {
-            this.OnNext(listener);
         }
     }
 
@@ -532,14 +455,15 @@ internal sealed class WorkableSqlServerCommandProfilingObserver :
                 ? new CapturedParameterValue("<binary omitted>", false)
                 : CaptureParameterValue(parameter.Value, Math.Min(MaximumParameterTextLength, maximumContextLength));
 
+        // SqlParameter enforces a 128-character name limit, below Workable's metadata cap.
         return new SqlCommandParameterContext(
-            Name: Truncate(originalName, MaximumMetadataLength, out var nameTruncated),
+            Name: originalName,
             Value: value.Value,
             Type: parameter.SqlDbType.ToString(),
             Direction: parameter.Direction.ToString(),
             IsRedacted: isRedacted,
             IsBinaryOmitted: isBinaryOmitted,
-            IsTruncated: nameTruncated || value.IsTruncated);
+            IsTruncated: value.IsTruncated);
     }
 
     private static int EstimateParameterContextLength(SqlCommandParameterContext parameter)

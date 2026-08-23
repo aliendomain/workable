@@ -52,7 +52,7 @@ public interface IWorkSystemBuilder
     /// <param name="definition">The definition metadata and baseline configuration for the work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional system configuration can be chained.</returns>
     IWorkSystemBuilder AddWork(
         WorkDefinition definition,
@@ -91,7 +91,7 @@ public interface IWorkSystemBuilder
     /// <param name="definition">The definition metadata and baseline configuration for the work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional system configuration can be chained.</returns>
     IWorkSystemBuilder AddWork<TInput>(
         WorkDefinition definition,
@@ -133,7 +133,7 @@ public interface IWorkSystemBuilder
     /// <param name="definition">The definition metadata and baseline configuration for the work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional system configuration can be chained.</returns>
     IWorkSystemBuilder AddWork<TInput, TOutput>(
         WorkDefinition definition,
@@ -176,7 +176,7 @@ public interface IWorkSystemBuilder
     /// <typeparam name="TExecutor">The executor type Workable resolves for each worker execution.</typeparam>
     /// <param name="definition">The definition metadata and baseline configuration for the work.</param>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional system configuration can be chained.</returns>
     IWorkSystemBuilder AddWork<TExecutor>(
         WorkDefinition definition,
@@ -199,7 +199,7 @@ public interface IWorkSystemBuilder
     /// </summary>
     /// <typeparam name="TExecutor">The executor type Workable resolves for each worker execution.</typeparam>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional system configuration can be chained.</returns>
     IWorkSystemBuilder AddWork<TExecutor>(
         Action<IWorkConfigurationBuilder>? configure,
@@ -221,7 +221,11 @@ public interface IWorkSystemBuilder
     /// </summary>
     /// <param name="definition">The definition metadata and baseline authorization for the workflow.</param>
     /// <param name="build">Builds the workflow step graph.</param>
-    /// <param name="authorize">The callback that defines workflow-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">
+    /// The callback that defines workflow-level discover, read, and operation authorization for this registration.
+    /// Queue permission starts new runs; start, pause, and cancel permissions control existing runs, and matching
+    /// queue or worker-action requirement callbacks evaluate the workflow input.
+    /// </param>
     /// <returns>The same builder so additional system configuration can be chained.</returns>
     IWorkSystemBuilder AddWorkflow(
         WorkflowDefinition definition,

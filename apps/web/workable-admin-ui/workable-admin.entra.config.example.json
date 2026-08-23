@@ -20,5 +20,6 @@
     ]
   },
   "sessionSecret": "replace-with-a-long-random-session-signing-secret",
-  "sessionMaxAgeSeconds": 28800
+  "sessionMaxAgeSeconds": 28800,
+  "sessionAbsoluteMaxAgeSeconds": 86400
 }

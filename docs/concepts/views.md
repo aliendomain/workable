@@ -40,7 +40,7 @@ The package exposes a small set of reusable request and result types:
 - `WorkComponentResult`: a per-component `ok` or `error` envelope with the normalized shape that was served
 - `WorkComponentShapes`: `compact`, `standard`, and `detailed`
 
-`WorkComponentRequest.Id` is chosen by the caller and is echoed back as the key in the result map. It is the client-side stable handle for replacing one panel's data. `Type` is the canonical component name understood by the server.
+`WorkComponentRequest.Id` is chosen by the caller and is echoed back as the key in the result map. It is the client-side stable handle for replacing one panel's data. `Type` is the canonical component name understood by the server. One component or named-view request accepts at most 32 components, and component ids must be non-empty and unique without regard to case. Invalid lists are rejected before any component query runs or realtime subscription is retained.
 
 ## Entry Point
 
@@ -182,7 +182,9 @@ These view names are built in:
 - `workflow-runs`: defaults to one `workflowRuns` component
 - `workflow-run`: defaults to one `workflowRun` component
 
-Unknown view names do not throw. They return an error component in the result map instead.
+The one-shot `View(...)` query returns an error component for an unknown name. Criteria normalization
+and SignalR `WatchView` reject an unknown name so it cannot be retained as a live subscription.
+Expected option-validation failures remain per-component errors with actionable messages. Unexpected query or projection failures are logged by the host and returned as a stable generic component error so internal exception details are not exposed over HTTP or SignalR.
 
 ## Component Names
 
@@ -264,8 +266,12 @@ Most components need only `id`, `type`, and `shape`. A few also accept JSON opti
 - `workerGrid`: `states`, `configuration`, `skip`, `take`, optional `keyKind`, `keyType`, and `keyValue`, and optional `actorId` for workers originated by one actor. The actor id is a query filter, not an authorization boundary; user-facing SignalR clients should use `WatchMyWorkers` so the server supplies it from the authenticated request context.
 - `iterationGrid`: `statuses`, `skip`, `take`, and optional `keyKind`, `keyType`, and `keyValue`
 - `workerDetail` and `workerCurrentIteration`: `workerId`
-- `workflowRuns`: `includeFinal`, `definitionName`, and `childSampleSize`
+- `workflowRuns`: `includeFinal`, `definitionName`, `childSampleSize`, `skip`, and `take`
 - `workflowRun`: `runId` and `childSampleSize`
+
+Workflow `childSampleSize` values must be between `0` and `25`, inclusive. Workflow child projections
+also apply the caller's child-definition Read authorization to ids, samples, summaries, and page totals.
+Workflow-run pages default to `skip=0` and `take=50`, with maximums of `10000` for `skip` and `100` for `take`.
 - `readModelDiagnostics`: `warningThreshold`
 - `retentionDiagnostics`: `warningSeconds`
 - `concurrencyDiagnostics`: `warningSeconds`

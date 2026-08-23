@@ -97,6 +97,13 @@ public sealed class WorkableHttpRouteResultsShould
         Assert.Throws<ArgumentNullException>(() => WorkableHttpRouteResults.AuthorizationDenied(null!));
     }
 
+    [Fact]
+    public void DescribeSystemSurfaceDenialsForDefaultAndNamedSystems()
+    {
+        AssertStatus(StatusCodes.Status403Forbidden, WorkableHttpRouteResults.SystemSurfaceAccessDenied(null));
+        AssertStatus(StatusCodes.Status403Forbidden, WorkableHttpRouteResults.SystemSurfaceAccessDenied("orders"));
+    }
+
     private static WorkableHttpWorkResult QueueResult(
         WorkableHttpWorkStatus status,
         WorkQueueStatus queueStatus)

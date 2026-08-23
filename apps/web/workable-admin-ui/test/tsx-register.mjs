@@ -216,6 +216,8 @@ registerHooks({
     const output = ts.transpileModule(source, {
       compilerOptions: {
         esModuleInterop: true,
+        inlineSourceMap: true,
+        inlineSources: true,
         jsx: ts.JsxEmit.ReactJSX,
         module: ts.ModuleKind.ESNext,
         moduleResolution: ts.ModuleResolutionKind.Bundler,

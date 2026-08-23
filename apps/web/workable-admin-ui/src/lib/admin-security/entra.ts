@@ -18,35 +18,47 @@ import {
   base64UrlDecode,
   constantTimeEquals,
   randomBase64Url,
+  sign,
   sha256Base64Url,
 } from "./crypto.ts";
 import {
-  parseCookieHeader,
+  readUniqueCookie,
   serializeCookie,
   serializeExpiredCookie,
   shouldSecureCookie,
 } from "./cookies.ts";
 import {
   createSignedAdminSessionCookie,
+  readAdminLogoutGeneration,
   sessionSecret,
 } from "./session.ts";
+import { normalizeAdminReturnPath } from "./return-path.ts";
 import {
   createEntraTargetTokenCookieHeaders,
-  createExpiredEntraTargetTokenCookies,
   createInteractiveEntraScopes,
 } from "./entra-downstream.ts";
+import {
+  fetchCachedEntraJson,
+  fetchEntraJson,
+  validateEntraBackchannelUrl,
+  type EntraFetchLike,
+} from "./entra-backchannel.ts";
 
 const STATE_COOKIE_NAME = "workable_admin_entra_state";
 const NONCE_COOKIE_NAME = "workable_admin_entra_nonce";
 const VERIFIER_COOKIE_NAME = "workable_admin_entra_verifier";
 const NEXT_COOKIE_NAME = "workable_admin_entra_next";
+const HOST_STATE_COOKIE_NAME = "__Host-workable_admin_entra_state";
+const HOST_NONCE_COOKIE_NAME = "__Host-workable_admin_entra_nonce";
+const HOST_VERIFIER_COOKIE_NAME = "__Host-workable_admin_entra_verifier";
+const HOST_NEXT_COOKIE_NAME = "__Host-workable_admin_entra_next";
 const OAUTH_COOKIE_MAX_AGE_SECONDS = 10 * 60;
 const noStoreHeaders = {
   "cache-control": "no-store",
   "x-content-type-options": "nosniff",
 };
 
-type FetchLike = typeof fetch;
+type FetchLike = EntraFetchLike;
 
 type EntraTokenResponse = {
   access_token?: string;
@@ -122,22 +134,36 @@ export function createEntraAuthorizationResponse(
   });
   const response = createRedirectResponse(authorizationUrl);
   const secure = shouldSecureCookie(request, settings.isProduction);
-  const nextPath = normalizeNextPath(new URL(request.url).searchParams.get("next"));
+  const cookieNames = getOAuthCookieNames(secure);
+  const nextPath = normalizeAdminReturnPath(
+    new URL(request.url).searchParams.get("next")
+  );
+  const logoutGeneration = readAdminLogoutGeneration(request.headers, settings);
+  if (logoutGeneration === null) {
+    return Response.json(
+      { error: "Workable admin UI logout state is invalid. Sign in again." },
+      { status: 401, headers: noStoreHeaders }
+    );
+  }
 
   for (const cookie of [
-    serializeCookie(STATE_COOKIE_NAME, state, {
+    serializeCookie(cookieNames.state, createSignedStateCookieValue(
+      state,
+      logoutGeneration,
+      settings
+    ), {
       maxAgeSeconds: OAUTH_COOKIE_MAX_AGE_SECONDS,
       secure,
     }),
-    serializeCookie(NONCE_COOKIE_NAME, nonce, {
+    serializeCookie(cookieNames.nonce, nonce, {
       maxAgeSeconds: OAUTH_COOKIE_MAX_AGE_SECONDS,
       secure,
     }),
-    serializeCookie(VERIFIER_COOKIE_NAME, verifier, {
+    serializeCookie(cookieNames.verifier, verifier, {
       maxAgeSeconds: OAUTH_COOKIE_MAX_AGE_SECONDS,
       secure,
     }),
-    serializeCookie(NEXT_COOKIE_NAME, nextPath, {
+    serializeCookie(cookieNames.next, nextPath, {
       maxAgeSeconds: OAUTH_COOKIE_MAX_AGE_SECONDS,
       secure,
     }),
@@ -156,84 +182,119 @@ export async function completeEntraLogin(
   const settings = getAdminSecuritySettings(env);
   const validation = validateEntraSettings(settings, request);
   if (!validation.ok) {
-    return createFailedEntraCallbackResponse(request, validation.error, settings);
+    return createFailedEntraCallbackResponse(request, validation.error);
   }
 
   const requestUrl = new URL(request.url);
   if (requestUrl.searchParams.has("error")) {
     return createFailedEntraCallbackResponse(
       request,
-      "Microsoft Entra ID sign-in was not completed.",
-      settings
+      "Microsoft Entra ID sign-in was not completed."
     );
   }
 
-  const cookies = parseCookieHeader(request.headers.get("cookie"));
+  const cookieNames = getOAuthCookieNames(
+    shouldSecureCookie(request, settings.isProduction)
+  );
+  const cookieHeader = request.headers.get("cookie");
+  const expectedStateCookie = readUniqueCookie(cookieHeader, cookieNames.state);
+  const verifierCookie = readUniqueCookie(cookieHeader, cookieNames.verifier);
+  const nonceCookie = readUniqueCookie(cookieHeader, cookieNames.nonce);
+  const nextCookie = readUniqueCookie(cookieHeader, cookieNames.next);
   const state = requestUrl.searchParams.get("state") ?? "";
-  const expectedState = cookies.get(STATE_COOKIE_NAME) ?? "";
+  const expectedState = expectedStateCookie.ok ? expectedStateCookie.value : "";
   const code = requestUrl.searchParams.get("code") ?? "";
-  const verifier = cookies.get(VERIFIER_COOKIE_NAME) ?? "";
-  const nonce = cookies.get(NONCE_COOKIE_NAME) ?? "";
+  const verifier = verifierCookie.ok ? verifierCookie.value : "";
+  const nonce = nonceCookie.ok ? nonceCookie.value : "";
 
-  if (!state || !expectedState || !constantTimeEquals(state, expectedState)) {
+  const transaction = state
+    ? readSignedStateCookie(state, expectedState, settings)
+    : null;
+  if (transaction === null) {
     return createFailedEntraCallbackResponse(
       request,
-      "Microsoft Entra ID sign-in state is not valid.",
-      settings
+      "Microsoft Entra ID sign-in state is not valid."
+    );
+  }
+
+  const currentLogoutGeneration = readAdminLogoutGeneration(request.headers, settings);
+  if (currentLogoutGeneration === null || !constantTimeEquals(
+    transaction.logoutGeneration,
+    currentLogoutGeneration
+  )) {
+    return createFailedEntraCallbackResponse(
+      request,
+      "Microsoft Entra ID sign-in was invalidated by logout."
     );
   }
 
   if (!code || !verifier || !nonce) {
     return createFailedEntraCallbackResponse(
       request,
-      "Microsoft Entra ID sign-in response is incomplete.",
-      settings
+      "Microsoft Entra ID sign-in response is incomplete."
     );
   }
 
   try {
-    const openIdConfiguration = await fetchOpenIdConfiguration(settings, fetcher);
+    const openIdConfiguration = await fetchOpenIdConfiguration(
+      settings,
+      fetcher,
+      request.signal
+    );
     const tokens = await exchangeAuthorizationCode(
       settings,
       request,
       code,
       verifier,
       openIdConfiguration,
-      fetcher
+      fetcher,
+      request.signal
     );
     const claims = await validateEntraIdToken(
       tokens.id_token ?? "",
       nonce,
       settings,
       openIdConfiguration,
-      fetcher
+      fetcher,
+      request.signal
     );
     const identity = createEntraIdentity(claims, settings);
     if (!identity.ok) {
-      return createFailedEntraCallbackResponse(request, identity.error, settings);
+      return createFailedEntraCallbackResponse(request, identity.error);
     }
 
+    const sessionIdentity = {
+      name: identity.identity.name,
+      provider: "entra" as const,
+      email: identity.identity.email,
+      entraSubject: identity.identity.entraSubject,
+      sessionStartedAt: transaction.startedAt,
+      logoutGeneration: transaction.logoutGeneration,
+    };
     const sessionCookie = createSignedAdminSessionCookie(
-      {
-        name: identity.identity.name,
-        provider: "entra",
-        email: identity.identity.email,
-      },
+      sessionIdentity,
       request,
       settings
     );
     if (!sessionCookie.ok) {
       return createFailedEntraCallbackResponse(
         request,
-        sessionCookie.error,
-        settings
+        sessionCookie.error
       );
     }
 
-    const nextPath = normalizeNextPath(cookies.get(NEXT_COOKIE_NAME));
+    const nextPath = normalizeAdminReturnPath(nextCookie.ok ? nextCookie.value : undefined);
     const response = createRedirectResponse(new URL(nextPath, request.url), 303);
     response.headers.append("set-cookie", sessionCookie.header);
-    for (const cookie of createEntraTargetTokenCookieHeaders(tokens, request, settings)) {
+    if (sessionCookie.logoutHeader) {
+      response.headers.append("set-cookie", sessionCookie.logoutHeader);
+    }
+    for (const cookie of createEntraTargetTokenCookieHeaders(
+      tokens,
+      request,
+      settings,
+      sessionCookie.identity
+    )) {
       response.headers.append("set-cookie", cookie);
     }
     appendExpiredEntraCookies(response);
@@ -242,10 +303,54 @@ export async function completeEntraLogin(
     logEntraCallbackFailure(error);
     return createFailedEntraCallbackResponse(
       request,
-      formatEntraCallbackError(error, settings),
-      settings
+      formatEntraCallbackError(error, settings)
     );
   }
+}
+
+function createSignedStateCookieValue(
+  state: string,
+  logoutGeneration: string,
+  settings: AdminSecuritySettings
+) {
+  const secret = sessionSecret(settings);
+  if (!secret) {
+    throw new Error("Microsoft Entra ID authentication requires session signing.");
+  }
+  const startedAt = Date.now();
+  const value = `${state}.${startedAt}.${logoutGeneration}`;
+  return `${value}.${sign(value, secret)}`;
+}
+
+function readSignedStateCookie(
+  state: string,
+  cookieValue: string,
+  settings: AdminSecuritySettings
+) {
+  const secret = sessionSecret(settings);
+  const separator = cookieValue.lastIndexOf(".");
+  if (!secret || separator < 1) {
+    return null;
+  }
+
+  const value = cookieValue.slice(0, separator);
+  const signature = cookieValue.slice(separator + 1);
+  const logoutGenerationSeparator = value.lastIndexOf(".");
+  const startedAtSeparator = value.lastIndexOf(".", logoutGenerationSeparator - 1);
+  if (!signature || startedAtSeparator < 1 || logoutGenerationSeparator < 1 ||
+    !constantTimeEquals(signature, sign(value, secret))) return null;
+  const cookieState = value.slice(0, startedAtSeparator);
+  const startedAt = Number(value.slice(startedAtSeparator + 1, logoutGenerationSeparator));
+  const logoutGeneration = value.slice(logoutGenerationSeparator + 1);
+  const now = Date.now();
+  return constantTimeEquals(state, cookieState) &&
+      Number.isSafeInteger(startedAt) &&
+      (logoutGeneration === "initial" ||
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(logoutGeneration)) &&
+      startedAt <= now + 5 * 60 * 1000 &&
+      startedAt > now - OAUTH_COOKIE_MAX_AGE_SECONDS * 1000
+    ? { startedAt, logoutGeneration }
+    : null;
 }
 
 function validateEntraSettings(
@@ -312,20 +417,24 @@ function createAuthorizationUrl(
 
 async function fetchOpenIdConfiguration(
   settings: AdminSecuritySettings,
-  fetcher: FetchLike
+  fetcher: FetchLike,
+  signal?: AbortSignal
 ): Promise<EntraOpenIdConfiguration> {
-  const metadataUrl = createAuthorityUrl(
-    settings,
-    "v2.0/.well-known/openid-configuration"
+  const metadataUrl = validateEntraBackchannelUrl(
+    createAuthorityUrl(
+      settings,
+      "v2.0/.well-known/openid-configuration"
+    ).toString(),
+    settings.entraId.authorityHost,
+    "metadata endpoint"
   );
-  const response = await fetcher(metadataUrl, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(
-      `Unable to load Microsoft Entra ID metadata (${response.status}).`
-    );
-  }
-
-  return await response.json() as EntraOpenIdConfiguration;
+  return await fetchCachedEntraJson(
+    fetcher,
+    `metadata:${metadataUrl}`,
+    metadataUrl,
+    isOpenIdConfiguration,
+    signal
+  );
 }
 
 async function exchangeAuthorizationCode(
@@ -334,10 +443,15 @@ async function exchangeAuthorizationCode(
   code: string,
   verifier: string,
   openIdConfiguration: EntraOpenIdConfiguration,
-  fetcher: FetchLike
+  fetcher: FetchLike,
+  signal?: AbortSignal
 ): Promise<EntraTokenResponse> {
-  const tokenEndpoint = openIdConfiguration.token_endpoint ??
-    createAuthorityUrl(settings, "oauth2/v2.0/token").toString();
+  const tokenEndpoint = validateEntraBackchannelUrl(
+    openIdConfiguration.token_endpoint ??
+      createAuthorityUrl(settings, "oauth2/v2.0/token").toString(),
+    settings.entraId.authorityHost,
+    "token endpoint"
+  );
   const body = new URLSearchParams({
     client_id: settings.entraId.clientId ?? "",
     code,
@@ -351,15 +465,18 @@ async function exchangeAuthorizationCode(
     body.set("client_secret", settings.entraId.clientSecret);
   }
 
-  const response = await fetcher(tokenEndpoint, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
+  const { response, value: tokens } = await fetchEntraJson<EntraTokenResponse>(
+    fetcher,
+    tokenEndpoint,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body,
     },
-    body,
-    cache: "no-store",
-  });
-  const tokens = await response.json() as EntraTokenResponse;
+    signal
+  );
   if (!response.ok || tokens.error || !tokens.id_token) {
     const tokenError = tokens.error_description || tokens.error;
     throw new Error(
@@ -377,7 +494,8 @@ async function validateEntraIdToken(
   expectedNonce: string,
   settings: AdminSecuritySettings,
   openIdConfiguration: EntraOpenIdConfiguration,
-  fetcher: FetchLike
+  fetcher: FetchLike,
+  signal?: AbortSignal
 ) {
   const parsed = parseJwt(idToken);
   if (parsed.header.alg !== "RS256" || !parsed.header.kid) {
@@ -388,15 +506,19 @@ async function validateEntraIdToken(
   if (!jwksUri) {
     throw new Error("Microsoft Entra ID metadata did not include signing keys.");
   }
+  const validatedJwksUri = validateEntraBackchannelUrl(
+    jwksUri,
+    settings.entraId.authorityHost,
+    "signing-key endpoint"
+  );
 
-  const jwksResponse = await fetcher(jwksUri, { cache: "no-store" });
-  if (!jwksResponse.ok) {
-    throw new Error(
-      `Unable to load Microsoft Entra ID signing keys (${jwksResponse.status}).`
-    );
-  }
-
-  const jwks = await jwksResponse.json() as JsonWebKeySet;
+  const jwks = await fetchCachedEntraJson(
+    fetcher,
+    `jwks:${validatedJwksUri}`,
+    validatedJwksUri,
+    isJsonWebKeySet,
+    signal
+  );
   const jwk = jwks.keys?.find((key) => key.kid === parsed.header.kid);
   if (!jwk) {
     throw new Error("Microsoft Entra ID signing key was not found.");
@@ -416,6 +538,24 @@ async function validateEntraIdToken(
   const claims = parsed.payload as EntraIdTokenClaims;
   validateIdTokenClaims(claims, expectedNonce, settings, openIdConfiguration);
   return claims;
+}
+
+function isOpenIdConfiguration(value: unknown): value is EntraOpenIdConfiguration {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as EntraOpenIdConfiguration;
+  return typeof candidate.issuer === "string" &&
+    typeof candidate.jwks_uri === "string" &&
+    typeof candidate.token_endpoint === "string";
+}
+
+function isJsonWebKeySet(value: unknown): value is JsonWebKeySet {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Array.isArray((value as JsonWebKeySet).keys)
+  );
 }
 
 function validateIdTokenClaims(
@@ -476,6 +616,14 @@ function createEntraIdentity(
     );
   }
 
+  const entraSubject = createStableEntraSubject(claims);
+  if (!entraSubject) {
+    return securityFailure(
+      401,
+      "Microsoft Entra ID token did not include a stable subject."
+    );
+  }
+
   if (!isAllowedEntraUser(email, settings)) {
     return securityFailure(
       403,
@@ -483,10 +631,31 @@ function createEntraIdentity(
     );
   }
 
-  return authenticatedIdentity(name, "entra", "entra", email || undefined);
+  return authenticatedIdentity(
+    name,
+    "entra",
+    "entra",
+    email || undefined,
+    undefined,
+    entraSubject
+  );
 }
 
-function isAllowedEntraUser(email: string, settings: AdminSecuritySettings) {
+function createStableEntraSubject(claims: EntraIdTokenClaims) {
+  const tenantId = claims.tid?.trim().toLowerCase();
+  const objectId = claims.oid?.trim().toLowerCase();
+  if (tenantId && objectId) {
+    return JSON.stringify(["workable.entra.subject.v1", "oid", tenantId, objectId]);
+  }
+
+  const issuer = claims.iss?.trim();
+  const subject = claims.sub?.trim();
+  return issuer && subject
+    ? JSON.stringify(["workable.entra.subject.v1", "sub", issuer, subject])
+    : null;
+}
+
+export function isAllowedEntraUser(email: string, settings: AdminSecuritySettings) {
   const allowedEmails = new Set(
     settings.entraId.allowedEmails.map((value) => value.toLowerCase())
   );
@@ -538,29 +707,48 @@ function getRedirectUri(settings: AdminSecuritySettings, request: Request) {
 
 function createFailedEntraCallbackResponse(
   request: Request,
-  error: string,
-  settings: AdminSecuritySettings
+  error: string
 ) {
   const loginUrl = new URL("/login", request.url);
   loginUrl.searchParams.set("error", error);
   const response = createRedirectResponse(loginUrl, 303);
   appendExpiredEntraCookies(response);
-  response.headers.append("set-cookie", serializeExpiredCookie(settings.sessionCookieName));
-  for (const cookie of createExpiredEntraTargetTokenCookies()) {
-    response.headers.append("set-cookie", cookie);
-  }
   return response;
 }
 
 function appendExpiredEntraCookies(response: Response) {
-  for (const name of [
+  for (const cookie of createExpiredEntraTransactionCookies()) {
+    response.headers.append("set-cookie", cookie);
+  }
+}
+
+export function createExpiredEntraTransactionCookies() {
+  return [
     STATE_COOKIE_NAME,
     NONCE_COOKIE_NAME,
     VERIFIER_COOKIE_NAME,
     NEXT_COOKIE_NAME,
-  ]) {
-    response.headers.append("set-cookie", serializeExpiredCookie(name));
-  }
+    HOST_STATE_COOKIE_NAME,
+    HOST_NONCE_COOKIE_NAME,
+    HOST_VERIFIER_COOKIE_NAME,
+    HOST_NEXT_COOKIE_NAME,
+  ].map((name) => serializeExpiredCookie(name));
+}
+
+function getOAuthCookieNames(secure: boolean) {
+  return secure
+    ? {
+        state: HOST_STATE_COOKIE_NAME,
+        nonce: HOST_NONCE_COOKIE_NAME,
+        verifier: HOST_VERIFIER_COOKIE_NAME,
+        next: HOST_NEXT_COOKIE_NAME,
+      }
+    : {
+        state: STATE_COOKIE_NAME,
+        nonce: NONCE_COOKIE_NAME,
+        verifier: VERIFIER_COOKIE_NAME,
+        next: NEXT_COOKIE_NAME,
+      };
 }
 
 function createRedirectResponse(location: URL, status = 302) {
@@ -571,14 +759,6 @@ function createRedirectResponse(location: URL, status = 302) {
       location: location.toString(),
     },
   });
-}
-
-function normalizeNextPath(value: string | null | undefined) {
-  if (!value?.startsWith("/") || value.startsWith("//")) {
-    return "/";
-  }
-
-  return value;
 }
 
 function formatEntraCallbackError(

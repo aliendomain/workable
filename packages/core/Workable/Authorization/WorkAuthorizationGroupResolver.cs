@@ -4,7 +4,8 @@ internal sealed class WorkAuthorizationGroupResolver(
     IEnumerable<IWorkAuthorizationGroupContextProvider> contextProviders,
     IWorkAuthorizationGroupProvider actorProvider) : IWorkAuthorizationGroupResolver
 {
-    private readonly IReadOnlyList<IWorkAuthorizationGroupContextProvider> contextProviders = [.. contextProviders];
+    private readonly IReadOnlyList<IWorkAuthorizationGroupContextProvider> contextProviders =
+        [.. contextProviders.OrderBy(provider => provider.Order)];
 
     public async ValueTask<IReadOnlySet<string>> GetGroups(
         WorkRequestContext requestContext,

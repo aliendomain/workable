@@ -13,6 +13,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Workable.Abstractions" />
     <InternalsVisibleTo Include="Workable" />
     <InternalsVisibleTo Include="Workable.Tests" />
   </ItemGroup>

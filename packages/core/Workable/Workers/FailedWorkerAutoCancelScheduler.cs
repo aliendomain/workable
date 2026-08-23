@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 
@@ -16,6 +17,7 @@ internal sealed class FailedWorkerAutoCancelScheduler(
     private readonly Dictionary<WorkerId, FailedWorkerAutoCancelSchedule> scheduledAutoCancelsByWorkerId = [];
     private readonly SemaphoreSlim signal = new(0);
     private readonly Lock sync = new();
+    private readonly ILogger logger = logger ?? NullLogger.Instance;
     private CancellationTokenSource? cancellation;
     private Task? schedulerTask;
     private bool signalPending;
@@ -216,7 +218,7 @@ internal sealed class FailedWorkerAutoCancelScheduler(
         }
         catch (Exception exception)
         {
-            logger?.LogError(exception, "Failed worker auto-cancel scheduler run failed.");
+            this.logger.LogError(exception, "Failed worker auto-cancel scheduler run failed.");
         }
     }
 

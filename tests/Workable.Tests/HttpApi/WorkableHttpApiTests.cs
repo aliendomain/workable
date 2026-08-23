@@ -10,6 +10,7 @@ using System.Reflection;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -90,6 +91,36 @@ public sealed class WorkableHttpApiTests
         Assert.Empty((await client.GetFromJsonAsync<WorkableHttpExecutionDiagnosticCaptureState>(
             "/workable/execution-diagnostics/capture-rules",
             jsonOptions))!.Rules);
+    }
+
+    [Fact]
+    public async Task MappedHttpCaptureRuleRedactsRepositoryFailures()
+    {
+        const string SensitiveMessage = "server=internal;password=repository-secret";
+        var repository = new TestExecutionDiagnosticsRepository
+        {
+            UpsertCaptureRuleException = new InvalidOperationException(SensitiveMessage),
+        };
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("http.execution-diagnostics.failure"),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups,
+            configureServices: services => services.AddSingleton<IWorkExecutionDiagnosticsRepository>(repository));
+
+        var response = await host.GetTestClient().PostAsJsonAsync(
+            "/workable/execution-diagnostics/capture-rules",
+            new
+            {
+                minimumLogLevel = "Information",
+                activeForMinutes = 15,
+                artifactRetentionMinutes = 60,
+            });
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Contains("workable.execution_diagnostics.repository_failed", responseBody, StringComparison.Ordinal);
+        Assert.DoesNotContain(SensitiveMessage, responseBody, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -381,6 +412,37 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpRouteCreatesGlobalFullProfileCaptureRuleWithoutSelectors()
+    {
+        const string definitionName = "http.profile-capture-global";
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create(definitionName),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.SystemAdministratorGroups
+                .Concat(TransportAuthorizationTestSupport.OperateGroups));
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        var response = await client.PostAsJsonAsync(
+            "/workable/profiling/capture-rules",
+            new
+            {
+                maximumMatches = 1,
+                expiresAfterMinutes = 15,
+            });
+
+        response.EnsureSuccessStatusCode();
+        var created = await response.Content.ReadFromJsonAsync<WorkableHttpProfilingCaptureRule>()
+            ?? throw new InvalidOperationException("Expected a profile capture rule.");
+        Assert.Null(created.DefinitionName);
+        Assert.Null(created.ActorId);
+
+        var completed = await (await (await Direct(system)).Queue.Enqueue(definitionName)).WaitForCompletion();
+        Assert.Equal(WorkProfileCaptureMode.Full, completed.Worker?.Options.ProfilingCaptureMode);
+    }
+
+    [Fact]
     public async Task MappedHttpRouteRejectsInvalidProfileCaptureRule()
     {
         using var host = await CreateHttpHost(
@@ -462,33 +524,47 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpProfileCaptureRulesRequireDiagnosticsAccessInsteadOfSystemControl()
+    public async Task MappedHttpProfileCaptureRulesSeparateDiagnosticsReadsFromSystemControlMutations()
     {
-        using var deniedHost = await CreateHttpHost(
-            groups: TransportAuthorizationTestSupport.WorkAdministratorGroups);
-        var deniedClient = deniedHost.GetTestClient();
-
-        var deniedList = await deniedClient.GetAsync("/workable/profiling/capture-rules");
-        var deniedCreate = await deniedClient.PostAsJsonAsync(
-            "/workable/profiling/capture-rules",
-            new { definitionName = "http.route.case" });
-
-        Assert.Equal(HttpStatusCode.Forbidden, deniedList.StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, deniedCreate.StatusCode);
-
-        using var allowedHost = await CreateHttpHost(
+        using var diagnosticsHost = await CreateHttpHost(
             groups: TransportAuthorizationTestSupport.WorkAdministratorGroups
                 .Concat(TransportAuthorizationTestSupport.DiagnosticsGroups));
-        var allowedClient = allowedHost.GetTestClient();
+        var diagnosticsClient = diagnosticsHost.GetTestClient();
+        var rules = Assert.IsAssignableFrom<IWorkProfileCaptureRuleSystem>(
+            diagnosticsHost.Services.GetRequiredService<IWorkSystemRegistry>().Default);
+        var existing = rules.CreateProfileCaptureRule(
+            "http.route.case",
+            actorId: null,
+            maximumMatches: 1,
+            expiresAfter: TimeSpan.FromMinutes(5),
+            createdBy: TransportAuthorizationTestSupport.CreateActor());
 
-        var createdResponse = await allowedClient.PostAsJsonAsync(
+        var allowedList = await diagnosticsClient.GetAsync("/workable/profiling/capture-rules");
+        var deniedCreate = await diagnosticsClient.PostAsJsonAsync(
+            "/workable/profiling/capture-rules",
+            new { definitionName = "http.route.case" });
+        var deniedDelete = await diagnosticsClient.DeleteAsync(
+            $"/workable/profiling/capture-rules/{existing.Id}");
+
+        allowedList.EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Forbidden, deniedCreate.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, deniedDelete.StatusCode);
+
+        using var controlHost = await CreateHttpHost(
+            groups: TransportAuthorizationTestSupport.WorkAdministratorGroups
+                .Concat(TransportAuthorizationTestSupport.ControlSystemGroups));
+        var controlClient = controlHost.GetTestClient();
+
+        var deniedList = await controlClient.GetAsync("/workable/profiling/capture-rules");
+        var createdResponse = await controlClient.PostAsJsonAsync(
             "/workable/profiling/capture-rules",
             new { definitionName = "http.route.case" });
         createdResponse.EnsureSuccessStatusCode();
         var created = await createdResponse.Content.ReadFromJsonAsync<WorkableHttpProfilingCaptureRule>()
             ?? throw new InvalidOperationException("Expected a profile capture rule.");
-        var delete = await allowedClient.DeleteAsync($"/workable/profiling/capture-rules/{created.Id}");
+        var delete = await controlClient.DeleteAsync($"/workable/profiling/capture-rules/{created.Id}");
 
+        Assert.Equal(HttpStatusCode.Forbidden, deniedList.StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
     }
 
@@ -1016,6 +1092,39 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("standard", defaultComponents["failedWorkers"]?["shape"]?.GetValue<string>());
         Assert.DoesNotContain("catalog", defaultComponents.Select(component => component.Key));
         Assert.DoesNotContain("throughput", defaultComponents.Select(component => component.Key));
+    }
+
+    [Fact]
+    public async Task MappedHttpRouteRejectsOversizedAndDuplicateComponentLists()
+    {
+        using var host = await CreateOverviewHttpHost();
+        var client = host.GetTestClient();
+        var oversized = Enumerable.Range(0, WorkableViewQueryAdapter.MaximumComponentsPerRequest + 1)
+            .Select(index => new { id = $"component-{index}", type = "system" })
+            .ToArray();
+
+        var oversizedResponse = await client.PostAsJsonAsync(
+            "/workable/components/query",
+            new { components = oversized });
+        var duplicateResponse = await client.PostAsJsonAsync(
+            "/workable/views/overview",
+            new
+            {
+                components = new[]
+                {
+                    new { id = "workers", type = "workers" },
+                    new { id = "WORKERS", type = "throughput" },
+                },
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, oversizedResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, duplicateResponse.StatusCode);
+        Assert.Contains(
+            "workable.http.components.invalid_request",
+            await oversizedResponse.Content.ReadAsStringAsync());
+        Assert.Contains(
+            "workable.http.components.invalid_request",
+            await duplicateResponse.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -1811,6 +1920,61 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public void HttpWorkflowAdapterBuildsMetadataOnlyInputsAndRejectsUnknownActions()
+    {
+        var createInput = typeof(WorkableHttpWorkflowAdapter).GetMethod(
+            "CreateInput",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var subject = new WorkSubjectId("account", "123");
+        var concurrency = new WorkConcurrencyKey("tenant", "west");
+        var identifier = new WorkIdentifier("invoice", "456");
+
+        var subjectInput = Assert.IsType<WorkInput>(createInput.Invoke(null,
+            [new WorkableHttpWorkflowStartRequest(SubjectId: subject)]));
+        var concurrencyInput = Assert.IsType<WorkInput>(createInput.Invoke(null,
+            [new WorkableHttpWorkflowStartRequest(ConcurrencyKey: concurrency)]));
+        var identifierInput = Assert.IsType<WorkInput>(createInput.Invoke(null,
+            [new WorkableHttpWorkflowStartRequest(Identifiers: [identifier])]));
+
+        Assert.Equal(subject, subjectInput.SubjectId);
+        Assert.Equal(concurrency, concurrencyInput.ConcurrencyKey);
+        Assert.Contains(identifier, Assert.IsAssignableFrom<IReadOnlySet<WorkIdentifier>>(
+            identifierInput.Identifiers));
+
+        foreach (var methodName in new[] { "MapActionKind", "ToRunAction" })
+        {
+            var method = typeof(WorkableHttpWorkflowAdapter).GetMethod(
+                methodName,
+                BindingFlags.NonPublic | BindingFlags.Static)!;
+            var exception = Assert.Throws<TargetInvocationException>(() =>
+                method.Invoke(null, [(WorkflowAction)int.MaxValue]));
+            Assert.IsType<InvalidOperationException>(exception.InnerException);
+        }
+    }
+
+    [Fact]
+    public void HttpQueryRouteCsvParsingIgnoresInvalidAndDuplicateValues()
+    {
+        static T? Invoke<T>(string methodName, string? value)
+            => (T?)typeof(WorkableHttpQueryRoutes)
+                .GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static)!
+                .Invoke(null, [value]);
+
+        Assert.Null(Invoke<IReadOnlyList<LogLevel>>("ParseLogLevels", " "));
+        Assert.Equal(
+            [LogLevel.Warning, LogLevel.Error],
+            Invoke<IReadOnlyList<LogLevel>>(
+                "ParseLogLevels",
+                "Warning,warning,invalid,Error"));
+        Assert.Null(Invoke<IReadOnlyList<WorkMessageSeverity>>(
+            "ParseMessageSeverities",
+            null));
+        Assert.Null(Invoke<IReadOnlyList<WorkWorkerOverviewTimelineCategory>>(
+            "ParseTimelineCategories",
+            "unknown"));
+    }
+
+    [Fact]
     public async Task HttpWorkflowAdapterUsesCommandRunForWaitStartResponse()
     {
         var runId = new WorkflowRunId(Guid.NewGuid());
@@ -1850,6 +2014,42 @@ public sealed class WorkableHttpApiTests
         Assert.NotNull(result.Run);
         Assert.Equal("http.workflow.command.snapshot", result.Run.DefinitionName);
         Assert.Equal(WorkflowRunStatus.Completed, result.Run.Status);
+    }
+
+    [Fact]
+    public void HttpWorkflowRunProjectionUsesSuppliedAuthorizedActionsForRuntimeSnapshots()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var workerId = WorkerId.New();
+        var snapshot = new WorkflowRunSnapshot(
+            WorkflowRunId.New(),
+            "http.workflow.runtime.snapshot",
+            WorkflowRunStatus.Running,
+            WorkInput.FromJson("{\"secret\":true}"),
+            [new WorkflowStepRunSnapshot(
+                "dispatch",
+                WorkflowStepKind.DispatchWork,
+                WorkflowStepRunStatus.Running,
+                [workerId],
+                now,
+                null,
+                [])],
+            now,
+            now,
+            null,
+            [],
+            []);
+        var availableActions = new WorkflowAvailableActions(Start: false, Pause: true, Cancel: false);
+
+        var projected = WorkableHttpWorkflowRun.From(snapshot, availableActions);
+        var missing = WorkableHttpWorkflowRun.From((WorkflowRunSnapshot?)null, availableActions);
+
+        Assert.NotNull(projected);
+        Assert.Same(availableActions, projected!.AvailableActions);
+        var step = Assert.Single(projected.Steps);
+        Assert.Equal("dispatch", step.Name);
+        Assert.Equal([workerId.Value], step.WorkerIds);
+        Assert.Null(missing);
     }
 
     [Fact]
@@ -2113,6 +2313,207 @@ public sealed class WorkableHttpApiTests
         Assert.True(updated.DefaultOptions.ProfilingEnabled);
     }
 
+    [Fact]
+    public async Task MappedHttpRouteCanReconfigureDiscoverableDefinitionWithoutReadPermission()
+    {
+        const string definitionName = "http.definition.operate-only";
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.ConfigureAuthorization(authorization => authorization
+                    .AllowBuiltInHttpApiToGroups(
+                        TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups.ToArray()));
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        definitionName,
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowOperateToGroups(
+                        TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+            },
+            groups: TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups
+                .Concat(TransportAuthorizationTestSupport.OperateGroups));
+        var client = host.GetTestClient();
+
+        var hiddenRead = await client.GetAsync($"/workable/definitions/{definitionName}");
+        var response = await client.PostAsJsonAsync(
+            $"/workable/definitions/{definitionName}/reconfigure",
+            new WorkableHttpDefinitionReconfigurationRequest(
+                Revision: 0,
+                new WorkDefinitionReconfiguration(
+                    DefaultOptions: new WorkerOptions(ProfilingEnabled: true))));
+
+        Assert.Equal(HttpStatusCode.NotFound, hiddenRead.StatusCode);
+        response.EnsureSuccessStatusCode();
+        var responseJson = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        Assert.Equal("Accepted", responseJson["status"]?.GetValue<string>());
+        Assert.Null(responseJson["definition"]);
+        Assert.Equal(1, responseJson["revision"]?.GetValue<long>());
+        var stale = await client.PostAsJsonAsync(
+            $"/workable/definitions/{definitionName}/reconfigure",
+            new WorkableHttpDefinitionReconfigurationRequest(
+                Revision: 0,
+                new WorkDefinitionReconfiguration(
+                    DefaultOptions: new WorkerOptions(ProfilingEnabled: false))));
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("{\"changes\":{\"description\":\"missing revision\"}}")]
+    [InlineData("{\"revision\":\"invalid\",\"changes\":{\"description\":\"invalid revision\"}}")]
+    [InlineData("{\"revision\":1.5,\"changes\":{\"description\":\"fractional revision\"}}")]
+    [InlineData("{\"revision\":0}")]
+    [InlineData("{\"revision\":0,\"changes\":{}}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"defaultOptions\":{}},\"unsupported\":true}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"defaultOptions\":{\"profilngEnabled\":true}}}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"defaultOptions\":{\"profilingEnabled\":true,\"ProfilingEnabled\":false}}}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"configuration\":{\"coordination\":{\"mode\":\"Local\",\"Mode\":\"Persistent\"}}}}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"configuration\":{}}}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"defaultOptions\":{\"unsupportedArray\":[{\"value\":true}]}}}")]
+    [InlineData("[]")]
+    public async Task MappedHttpDefinitionReconfigurationRejectsMalformedShapes(string json)
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var definition = (await Direct(system)).Catalog.Definitions.Single(
+            candidate => candidate.Name == "http.route.case");
+        using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync(
+            $"/workable/definitions/{definition.Name}/reconfigure",
+            content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.True((await Direct(system)).Catalog.TryGet(definition.Name, out var current));
+        Assert.Equal(definition.Revision, current.Revision);
+    }
+
+    [Theory]
+    [InlineData("{\"changes\":{\"description\":\"missing revision\"}}")]
+    [InlineData("{\"revision\":\"invalid\",\"changes\":{\"description\":\"invalid revision\"}}")]
+    [InlineData("{\"revision\":1.5,\"changes\":{\"description\":\"fractional revision\"}}")]
+    [InlineData("{\"revision\":0}")]
+    [InlineData("{\"revision\":0,\"changes\":{}}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"profilingEnabled\":true},\"unsupported\":true}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"profilngEnabled\":true}}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"profilingEnabled\":true,\"ProfilingEnabled\":false}}")]
+    [InlineData("{\"revision\":0,\"changes\":{\"profilingEnabled\":true},\"description\":42}")]
+    public async Task MappedHttpWorkerReconfigurationRejectsMalformedShapes(string json)
+    {
+        const string definitionName = "http.worker.strict";
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create(
+                    definitionName,
+                    configuration: WorkConfiguration.Default with
+                    {
+                        Start = WorkStartConfiguration.DoNotStart,
+                    }),
+                SuccessfulWork));
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = await Direct(system);
+        var queued = await session.Queue.Enqueue(definitionName);
+        var worker = await session.Query.Worker(queued.WorkerId
+            ?? throw new InvalidOperationException("Expected worker id."))
+            ?? throw new InvalidOperationException("Expected worker.");
+        using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync(
+            $"/workable/workers/{worker.Id.Value:D}/reconfigure",
+            content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var current = await session.Query.Worker(worker.Id)
+            ?? throw new InvalidOperationException("Expected worker.");
+        Assert.Equal(worker.Revision, current.Revision);
+    }
+
+    [Fact]
+    public async Task MappedHttpDefinitionReconfigurationRedactsHostConverterExceptions()
+    {
+        const string SensitiveMessage = "host converter secret must not cross the HTTP boundary";
+        using var host = await CreateHttpHost(
+            configureServices: services => services.ConfigureHttpJsonOptions(options =>
+                options.SerializerOptions.Converters.Insert(
+                    0,
+                    new ThrowingJsonConverter<WorkDefinitionReconfiguration>(SensitiveMessage))));
+        using var content = new StringContent(
+            """{"revision":0,"changes":{"defaultOptions":{}}}""",
+            System.Text.Encoding.UTF8,
+            "application/json");
+
+        var response = await host.GetTestClient().PostAsync(
+            "/workable/definitions/http.route.case/reconfigure",
+            content);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(
+            "The definition reconfiguration request contains invalid JSON values.",
+            responseBody,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(SensitiveMessage, responseBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkerReconfigurationRedactsHostConverterExceptions()
+    {
+        const string DefinitionName = "http.worker.converter-error";
+        const string SensitiveMessage = "worker converter secret must not cross the HTTP boundary";
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create(
+                    DefinitionName,
+                    configuration: WorkConfiguration.Default with
+                    {
+                        Start = WorkStartConfiguration.DoNotStart,
+                    }),
+                SuccessfulWork),
+            configureServices: services => services.ConfigureHttpJsonOptions(options =>
+                options.SerializerOptions.Converters.Insert(
+                    0,
+                    new ThrowingJsonConverter<WorkerReconfiguration>(SensitiveMessage))));
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = await Direct(system);
+        var queued = await session.Queue.Enqueue(DefinitionName);
+        var workerId = queued.WorkerId
+            ?? throw new InvalidOperationException("Expected worker id.");
+        using var content = new StringContent(
+            """{"revision":0,"changes":{"profilingEnabled":true}}""",
+            System.Text.Encoding.UTF8,
+            "application/json");
+
+        var response = await host.GetTestClient().PostAsync(
+            $"/workable/workers/{workerId.Value:D}/reconfigure",
+            content);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(
+            "The worker reconfiguration request contains invalid JSON values.",
+            responseBody,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(SensitiveMessage, responseBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HttpReconfigurationParserRequiresHostJsonOptions()
+    {
+        using var document = JsonDocument.Parse("{}");
+
+        Assert.Throws<ArgumentNullException>(() =>
+            WorkableHttpReconfigurationJson.ParseDefinition(document.RootElement, null!));
+        Assert.Throws<ArgumentNullException>(() =>
+            WorkableHttpReconfigurationJson.ParseWorker(document.RootElement, null!));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -2148,6 +2549,166 @@ public sealed class WorkableHttpApiTests
             current.DefaultOptions.ProfilingCaptureMode);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MappedHttpFullProfileCaptureWorkerReconfigurationRequiresDiagnosticsAccess(
+        bool canViewDiagnostics)
+    {
+        const string definitionName = "http.worker-full-profile";
+        var groups = canViewDiagnostics
+            ? TransportAuthorizationTestSupport.WorkAdministratorGroups
+                .Concat(TransportAuthorizationTestSupport.DiagnosticsGroups)
+            : TransportAuthorizationTestSupport.WorkAdministratorGroups;
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create(
+                    definitionName,
+                    configuration: WorkConfiguration.Default with
+                    {
+                        Start = WorkStartConfiguration.DoNotStart,
+                    }),
+                SuccessfulWork),
+            groups: groups);
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = await Direct(system);
+        var queued = await session.Queue.Enqueue(definitionName);
+        var worker = await session.Query.Worker(queued.WorkerId
+            ?? throw new InvalidOperationException("Expected worker id."))
+            ?? throw new InvalidOperationException("Expected worker.");
+        var overviewJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        overviewJsonOptions.Converters.Add(new JsonStringEnumConverter());
+        var overview = await client.GetFromJsonAsync<WorkWorkerOverviewComponent>(
+            $"/workable/workers/{worker.Id.Value:D}/overview",
+            overviewJsonOptions)
+            ?? throw new InvalidOperationException("Expected worker overview.");
+
+        Assert.Equal(canViewDiagnostics, overview.Worker.CanToggleFullProfileCapture);
+
+        var response = await client.PostAsJsonAsync(
+            $"/workable/workers/{worker.Id.Value:D}/reconfigure",
+            new WorkableHttpWorkerReconfigurationRequest(
+                worker.Revision,
+                new WorkerReconfiguration(ProfilingEnabled: true)
+                {
+                    ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+                }));
+
+        Assert.Equal(
+            canViewDiagnostics ? HttpStatusCode.OK : HttpStatusCode.Forbidden,
+            response.StatusCode);
+        var current = await session.Query.Worker(worker.Id)
+            ?? throw new InvalidOperationException("Expected worker.");
+        Assert.Equal(
+            canViewDiagnostics ? WorkProfileCaptureMode.Full : WorkProfileCaptureMode.Bounded,
+            current.Options.ProfilingCaptureMode);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkerReconfigurationRejectsUndefinedProfilingCaptureMode()
+    {
+        const string definitionName = "http.worker-invalid-profile-mode";
+        using var host = await CreateHttpHost(
+            builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create(
+                    definitionName,
+                    configuration: WorkConfiguration.Default with
+                    {
+                        Start = WorkStartConfiguration.DoNotStart,
+                    }),
+                SuccessfulWork),
+            groups: TransportAuthorizationTestSupport.WorkAdministratorGroups);
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = await Direct(system);
+        var queued = await session.Queue.Enqueue(definitionName);
+        var worker = await session.Query.Worker(queued.WorkerId
+            ?? throw new InvalidOperationException("Expected worker id."))
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        var response = await client.PostAsJsonAsync(
+            $"/workable/workers/{worker.Id.Value:D}/reconfigure",
+            new
+            {
+                revision = worker.Revision,
+                changes = new
+                {
+                    profilingCaptureMode = 999,
+                },
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(
+            "workable.worker.profiling_capture_mode.invalid",
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+        var current = await session.Query.Worker(worker.Id)
+            ?? throw new InvalidOperationException("Expected worker.");
+        Assert.Equal(worker.Revision, current.Revision);
+        Assert.Equal(WorkProfileCaptureMode.Bounded, current.Options.ProfilingCaptureMode);
+    }
+
+    [Fact]
+    public async Task MappedHttpQueueRejectsUndefinedProfilingCaptureMode()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/workable/work/http.route.case",
+            new
+            {
+                completion = "returnAfterAccepted",
+                options = new
+                {
+                    profilingCaptureMode = 999,
+                },
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync();
+        Assert.Contains("workable.options.profiling_capture_mode.invalid", json, StringComparison.Ordinal);
+        Assert.Null(JsonNode.Parse(json)?["workerId"]);
+    }
+
+    [Fact]
+    public async Task MappedHttpWorkerReconfigurationRejectsUndefinedCoordinationStorage()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var session = await Direct(system);
+        var queued = await session.Queue.Enqueue("http.route.case");
+        var worker = await session.Query.Worker(queued.WorkerId
+            ?? throw new InvalidOperationException("Expected worker id."))
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        var response = await client.PostAsJsonAsync(
+            $"/workable/workers/{worker.Id.Value:D}/reconfigure",
+            new
+            {
+                revision = worker.Revision,
+                changes = new
+                {
+                    coordination = new
+                    {
+                        storage = 999,
+                    },
+                },
+            });
+        var current = await session.Query.Worker(worker.Id)
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(
+            "workable.configuration.coordination.storage.invalid",
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+        Assert.Equal(worker.Revision, current.Revision);
+        Assert.Equal(WorkCoordinationStorage.Local, current.Configuration.Coordination.Storage);
+    }
+
     [Fact]
     public async Task MappedHttpRouteReturnsConflictForStaleDefinitionRevision()
     {
@@ -2179,6 +2740,16 @@ public sealed class WorkableHttpApiTests
     {
         Assert.True(WorkableHttpRouteBinding.TryParseAction(action, out var parsed));
         Assert.Equal(WorkAction.Cancel, parsed);
+    }
+
+    [Theory]
+    [InlineData("999")]
+    [InlineData("-1")]
+    [InlineData("not-an-action")]
+    public void HttpActionRouteBindingRejectsUndefinedActions(string action)
+    {
+        Assert.False(WorkableHttpRouteBinding.TryParseAction(action, out _));
+        Assert.False(WorkableHttpRouteBinding.TryParseWorkflowAction(action, out _));
     }
 
     [Fact]
@@ -2566,18 +3137,6 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MalformedConfiguredUrlsDoNotEnableDebugRoutes()
-    {
-        using var host = await CreateHttpHost(
-            authenticated: false,
-            configuredUrls: "not-an-absolute-url");
-
-        using var response = await host.GetTestClient().GetAsync("/workable/debug/realtime");
-
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-    }
-
-    [Fact]
     public async Task MappedHttpCanUseExplicitWorkableAuthenticationSchemeWithoutChangingHostDefaultScheme()
     {
         using var host = await CreateExplicitSchemeHttpHost();
@@ -2585,6 +3144,9 @@ public sealed class WorkableHttpApiTests
 
         using var unauthorized = await client.GetAsync("/workable/host");
         Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+        Assert.Equal(
+            WorkableSchemeAuthenticationTestSupport.WorkableBearerScheme,
+            Assert.Single(unauthorized.Headers.GetValues(WorkableSchemeChallengeProbe.HeaderName)));
 
         client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
         using var authorized = await client.GetAsync("/workable/host");
@@ -2593,71 +3155,84 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
-    public async Task MappedHttpUsesWorkableTransportSchemeWhenHostFallbackPolicyTargetsAnotherScheme()
+    public async Task MappedHttpPreservesAHostRedirectChallenge()
+    {
+        using var host = await CreateExplicitSchemeHttpHost();
+        var challenge = host.Services.GetRequiredService<WorkableSchemeChallengeProbe>();
+        challenge.StatusCode = StatusCodes.Status302Found;
+        challenge.Location = "/host-login";
+
+        using var response = await host.GetTestClient().GetAsync("/workable/host");
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal("/host-login", response.Headers.Location?.OriginalString);
+        Assert.Equal(
+            WorkableSchemeAuthenticationTestSupport.WorkableBearerScheme,
+            Assert.Single(response.Headers.GetValues(WorkableSchemeChallengeProbe.HeaderName)));
+        Assert.Empty(await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task MappedHttpPreservesHostFallbackPolicyWhenAWorkableTransportSchemeIsSelected()
     {
         using var host = await CreateExplicitSchemeHttpHostWithFallbackPolicy();
         var client = host.GetTestClient();
         client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
 
         using var response = await client.GetAsync("/workable/host");
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task MappedHttpAppliesTheHostDefaultAuthorizationPolicy()
+    {
+        using var host = await CreateExplicitSchemeHttpHostWithFallbackPolicy(
+            useDefaultPolicy: true,
+            useHostFallbackPolicy: false);
+        var client = host.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
+
+        using var response = await client.GetAsync("/workable/host");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task MappedHttpCanUseAHostNamedAuthorizationPolicy()
+    {
+        const string PolicyName = "HostWorkableHttp";
+        using var host = await CreateExplicitSchemeHttpHostWithFallbackPolicy(
+            useDefaultPolicy: true,
+            authorizationPolicy: PolicyName,
+            useHostFallbackPolicy: false);
+        var client = host.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
+
+        using var response = await client.GetAsync("/workable/host");
+
         response.EnsureSuccessStatusCode();
-
-        var body = JsonNode.Parse(await response.Content.ReadAsStringAsync())
-            ?? throw new InvalidOperationException("Expected host JSON response.");
-        var systems = body["systems"]?.AsArray()
-            ?? throw new InvalidOperationException("Expected systems array.");
-        var system = Assert.Single(systems);
-        Assert.NotNull(system?["access"]);
     }
 
     [Fact]
-    public async Task DebugRealtimeEndpointIsAvailableWithoutAuthenticationForLocalRequests()
+    public async Task MappedHttpRejectsSelectingNamedAndFallbackPoliciesTogether()
     {
-        using var host = await CreateHttpHost(authenticated: false, development: true);
-        var client = host.GetTestClient();
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            CreateExplicitSchemeHttpHostWithFallbackPolicy(
+                authorizationPolicy: "HostWorkableHttp",
+                useHostFallbackPolicy: true));
 
-        var body = await GetJson(client, "/workable/debug/realtime");
-
-        Assert.NotNull(body["eventSubscriptions"]);
-        Assert.NotNull(body["viewSubscriptions"]);
-        Assert.NotNull(body["workerOverviewSubscriptions"]);
+        Assert.Equal("useHostFallbackPolicy", exception.ParamName);
     }
 
     [Fact]
-    public async Task DebugRealtimeEndpointCanFilterByConnectionId()
+    public async Task MappedHttpRejectsABlankNamedAuthorizationPolicy()
     {
-        using var host = await CreateHttpHost(authenticated: false, development: true);
-        var client = host.GetTestClient();
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            CreateExplicitSchemeHttpHostWithFallbackPolicy(
+                authorizationPolicy: " ",
+                useHostFallbackPolicy: false));
 
-        var body = await GetJson(client, "/workable/debug/realtime?connectionId=missing-connection");
-
-        Assert.Empty(body["eventSubscriptions"]?.AsArray() ?? []);
-        Assert.Empty(body["viewSubscriptions"]?.AsArray() ?? []);
-        Assert.Empty(body["workerOverviewSubscriptions"]?.AsArray() ?? []);
-    }
-
-    [Fact]
-    public async Task DebugRealtimeEndpointIsNotRegisteredOutsideDevelopmentOrLoopbackUrls()
-    {
-        using var host = await CreateHttpHost(authenticated: false);
-        var client = host.GetTestClient();
-
-        using var response = await client.GetAsync("/workable/debug/realtime");
-
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-    }
-
-    [Fact]
-    public async Task DebugRealtimeEndpointIsNotRegisteredWhenConfiguredUrlsMixLoopbackAndNonLoopbackHosts()
-    {
-        using var host = await CreateHttpHost(
-            authenticated: false,
-            configuredUrls: "http://localhost:5050;http://0.0.0.0:5051");
-        var client = host.GetTestClient();
-
-        using var response = await client.GetAsync("/workable/debug/realtime");
-
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("authorizationPolicy", exception.ParamName);
     }
 
     [Fact]
@@ -2778,6 +3353,37 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task SurfaceAccessOuterGateHonorsTheHostSelectedIdentity()
+    {
+        var groups = TransportAuthorizationTestSupport.SystemAdministratorGroups
+            .Concat(["workable.surface"])
+            .ToArray();
+        using var host = await CreateHttpHost(
+            groups: groups,
+            surfaceAccessGroups: ["workable.surface"],
+            configureServices: services =>
+                services.AddScoped<IWorkClaimsIdentitySelector, WorkableIdentitySelector>(),
+            principalFactory: () =>
+            {
+                var principal = new ClaimsPrincipal(new ClaimsIdentity());
+                principal.AddIdentity(new ClaimsIdentity(
+                    TransportAuthorizationTestSupport.CreateTransportPrincipal(
+                            id: "selected-user",
+                            name: "Selected User",
+                            email: "selected@example.test",
+                            groups: groups)
+                        .Claims,
+                    "Workable"));
+                return principal;
+            });
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/host");
+
+        response.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
     public async Task MappedHttpRouteAllowsConfiguredBuiltInSurfaceGroupWithoutAdministratorRoles()
     {
         var groups = TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups
@@ -2852,8 +3458,9 @@ public sealed class WorkableHttpApiTests
         var response = await client.GetAsync("/workable/systems/background/definitions");
         var json = await response.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        Assert.Contains("workable.http.system.access_denied", json);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Contains("workable.http.system.not_found", json);
+        Assert.DoesNotContain("access_denied", json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2907,6 +3514,44 @@ public sealed class WorkableHttpApiTests
             !persistentCoordinationAvailable.GetValue<bool>() &&
             candidate["capabilities"]?["sqlProfilingAvailable"] is JsonValue sqlProfilingAvailable &&
             !sqlProfilingAvailable.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task MappedHttpHostRedactsTheCountOfDefinitionsTheCallerCannotDiscover()
+    {
+        const string visibleDiscoveryGroup = "http.visible.discover";
+        var groups = TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups
+            .Concat([visibleDiscoveryGroup]);
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.ConfigureAuthorization(authorization => authorization
+                    .AllowBuiltInHttpApiToGroups(TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups.ToArray()));
+                builder.AddWork(
+                    WorkDefinition.Create("http.visible.definition"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization.AllowDiscoverToGroups(visibleDiscoveryGroup));
+                builder.AddWork(
+                    WorkDefinition.Create("http.hidden.definition"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization.AllowDiscoverToGroups("http.hidden.discover"));
+            },
+            groups: groups);
+
+        var response = await host.GetTestClient().GetAsync("/workable/host");
+
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var system = Assert.Single(json["systems"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected systems array."));
+        var access = system?["access"]
+            ?? throw new InvalidOperationException("Expected access summary.");
+        Assert.False(access["canDiscoverAllWork"]?.GetValue<bool>() ?? true);
+        Assert.Equal(1, access["discoverableDefinitionCount"]?.GetValue<int>());
+        Assert.Equal(1, access["totalDefinitionCount"]?.GetValue<int>());
     }
 
     [Fact]
@@ -2970,6 +3615,29 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpHostKeepsDefaultAccessSeparateFromANameMatchingTheFormerCacheSentinel()
+    {
+        using var host = await CreateMultiSystemHttpHost(
+            groups: TransportAuthorizationTestSupport.ReadGroups
+                .Concat(TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups),
+            namedSystemName: "<default>",
+            configureDefaultSystem: builder => builder.ConfigureAuthorization(authorization => authorization
+                .AllowBuiltInHttpApiToGroups(
+                    TransportAuthorizationTestSupport.BuiltInHttpApiSurfaceGroups.ToArray())));
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/host");
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var system = Assert.Single(json["systems"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected systems array."));
+
+        Assert.True(system?["isDefault"]?.GetValue<bool>());
+        Assert.Null(system?["name"]);
+    }
+
+    [Fact]
     public async Task MappedHttpNamedSystemRoutesRequireBuiltInSurfaceAccess()
     {
         using var host = await CreateMultiSystemHttpHost(Array.Empty<string>());
@@ -2985,10 +3653,12 @@ public sealed class WorkableHttpApiTests
             });
         var queueJson = await queueResponse.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.Forbidden, definitionsResponse.StatusCode);
-        Assert.Contains("workable.http.surface.system_access_denied", definitionsJson);
-        Assert.Equal(HttpStatusCode.Forbidden, queueResponse.StatusCode);
-        Assert.Contains("workable.http.surface.system_access_denied", queueJson);
+        Assert.Equal(HttpStatusCode.NotFound, definitionsResponse.StatusCode);
+        Assert.Contains("workable.http.system.not_found", definitionsJson);
+        Assert.DoesNotContain("access_denied", definitionsJson, StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.NotFound, queueResponse.StatusCode);
+        Assert.Contains("workable.http.system.not_found", queueJson);
+        Assert.DoesNotContain("access_denied", queueJson, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -3438,6 +4108,18 @@ public sealed class WorkableHttpApiTests
         var includeFinalJson = JsonNode.Parse(await includeFinal.Content.ReadAsStringAsync())?.AsObject()
             ?? throw new InvalidOperationException("Expected workflow list response.");
         Assert.Equal(2, includeFinalJson["runs"]?.AsArray()?.Count);
+        Assert.Equal(2, includeFinalJson["totalCount"]?.GetValue<int>());
+        Assert.Equal(0, includeFinalJson["skip"]?.GetValue<int>());
+        Assert.Equal(50, includeFinalJson["take"]?.GetValue<int>());
+
+        var pagedRuns = await client.GetAsync("/workable/workflow-runs?includeFinal=true&skip=1&take=1");
+        pagedRuns.EnsureSuccessStatusCode();
+        var pagedRunsJson = JsonNode.Parse(await pagedRuns.Content.ReadAsStringAsync())?.AsObject()
+            ?? throw new InvalidOperationException("Expected paged workflow list response.");
+        Assert.Single(pagedRunsJson["runs"]?.AsArray() ?? throw new InvalidOperationException("Expected paged workflow runs."));
+        Assert.Equal(2, pagedRunsJson["totalCount"]?.GetValue<int>());
+        Assert.Equal(1, pagedRunsJson["skip"]?.GetValue<int>());
+        Assert.Equal(1, pagedRunsJson["take"]?.GetValue<int>());
 
         var detailResponse = await client.GetAsync($"/workable/workflow-runs/{runId:D}?childSampleSize=1");
         detailResponse.EnsureSuccessStatusCode();
@@ -3447,6 +4129,17 @@ public sealed class WorkableHttpApiTests
         childrenResponse.EnsureSuccessStatusCode();
         var childrenJson = JsonNode.Parse(await childrenResponse.Content.ReadAsStringAsync())?.AsObject()
             ?? throw new InvalidOperationException("Expected workflow child page response.");
+        var negativeSample = await client.GetAsync("/workable/workflow-runs?childSampleSize=-1");
+        var maximumSample = await client.GetAsync(
+            $"/workable/workflow-runs/{runId:D}?childSampleSize={WorkflowRunViewAdapter.MaximumChildSampleSize}");
+        var oversizedSample = await client.GetAsync(
+            $"/workable/workflow-runs/{runId:D}?childSampleSize={WorkflowRunViewAdapter.MaximumChildSampleSize + 1}");
+        var invalidRunPage = await client.GetAsync(
+            $"/workable/workflow-runs?take={WorkflowRunViewAdapter.MaximumRunPageSize + 1}");
+        var invalidRunSkip = await client.GetAsync(
+            $"/workable/workflow-runs?skip={WorkflowRunViewAdapter.MaximumRunPageSkip + 1}");
+        var invalidChildPage = await client.GetAsync(
+            $"/workable/workflow-runs/{runId:D}/steps/notify/children?take={WorkflowRunViewAdapter.MaximumChildPageSize + 1}");
 
         release.TrySetResult();
 
@@ -3460,6 +4153,12 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(1, childrenJson["take"]?.GetValue<int>());
         var childWorker = Assert.Single(childrenJson["workers"]?.AsArray() ?? throw new InvalidOperationException("Expected workers page."));
         Assert.Equal("http.workflow.filter.invoice", childWorker?["definitionName"]?.GetValue<string>());
+        Assert.Equal(HttpStatusCode.BadRequest, negativeSample.StatusCode);
+        maximumSample.EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.BadRequest, oversizedSample.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidRunPage.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidRunSkip.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidChildPage.StatusCode);
     }
 
     [Fact]
@@ -3795,14 +4494,17 @@ public sealed class WorkableHttpApiTests
         Assert.Contains("workable.workflow.run.not_found", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task MappedHttpWorkflowActionRouteRejectsUnsupportedActions()
+    [Theory]
+    [InlineData("not-a-real-action")]
+    [InlineData("999")]
+    [InlineData("-1")]
+    public async Task MappedHttpWorkflowActionRouteRejectsUnsupportedActions(string action)
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
 
         var response = await client.PostAsJsonAsync(
-            $"/workable/workflow-runs/{Guid.NewGuid():D}/actions/not-a-real-action",
+            $"/workable/workflow-runs/{Guid.NewGuid():D}/actions/{action}",
             new
             {
                 description = "Attempt unsupported workflow action from the HTTP API test.",
@@ -3812,17 +4514,20 @@ public sealed class WorkableHttpApiTests
         Assert.Contains("workable.http.workflow.action.invalid", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task MappedHttpWorkerActionRoutesRejectUnsupportedActionsWithTheStableContract()
+    [Theory]
+    [InlineData("not-a-real-action")]
+    [InlineData("999")]
+    [InlineData("-1")]
+    public async Task MappedHttpWorkerActionRoutesRejectUnsupportedActionsWithTheStableContract(string action)
     {
         using var host = await CreateHttpHost();
         var client = host.GetTestClient();
 
         var bulk = await client.PostAsJsonAsync(
-            "/workable/workers/actions/not-a-real-action",
+            $"/workable/workers/actions/{action}",
             new { description = "Attempt unsupported bulk worker action." });
         var single = await client.PostAsJsonAsync(
-            $"/workable/workers/{Guid.NewGuid():D}/actions/not-a-real-action",
+            $"/workable/workers/{Guid.NewGuid():D}/actions/{action}",
             new { revision = 1, description = "Attempt unsupported worker action." });
 
         Assert.Equal(HttpStatusCode.BadRequest, bulk.StatusCode);
@@ -3858,6 +4563,23 @@ public sealed class WorkableHttpApiTests
         Assert.Contains("http.route.case", await definitions.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         Assert.Contains("http.route.case", await definitionInfo.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         Assert.Contains("counts", await statusSummary.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("/workable/components/system")]
+    [InlineData("/workable/workers/status-summary")]
+    [InlineData("/workable/work-keys/types/query")]
+    [InlineData("/workable/work-iteration-keys/types/query")]
+    public async Task MappedHttpQueryRoutesAcceptAnOmittedOptionalBody(string route)
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, route);
+
+        var response = await client.SendAsync(request);
+
+        response.EnsureSuccessStatusCode();
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
     }
 
     [Fact]
@@ -4201,10 +4923,9 @@ public sealed class WorkableHttpApiTests
     private static Task<IHost> CreateHttpHost(
         bool authenticated = true,
         IEnumerable<string>? groups = null,
-        bool development = false,
-        string? configuredUrls = null,
         IEnumerable<string>? surfaceAccessGroups = null,
-        Action<IServiceCollection>? configureServices = null)
+        Action<IServiceCollection>? configureServices = null,
+        Func<ClaimsPrincipal>? principalFactory = null)
         => CreateHttpHost(
             builder =>
             {
@@ -4219,33 +4940,21 @@ public sealed class WorkableHttpApiTests
             },
             authenticated,
             groups,
-            development,
-            configuredUrls,
             surfaceAccessGroups,
-            configureServices);
+            configureServices,
+            principalFactory);
 
     private static async Task<IHost> CreateHttpHost(
         Action<IWorkSystemBuilder> configure,
         bool authenticated = true,
         IEnumerable<string>? groups = null,
-        bool development = false,
-        string? configuredUrls = null,
         IEnumerable<string>? surfaceAccessGroups = null,
-        Action<IServiceCollection>? configureServices = null)
+        Action<IServiceCollection>? configureServices = null,
+        Func<ClaimsPrincipal>? principalFactory = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
             {
-                if (development)
-                {
-                    web.UseEnvironment(Environments.Development);
-                }
-
-                if (!string.IsNullOrWhiteSpace(configuredUrls))
-                {
-                    web.UseSetting(WebHostDefaults.ServerUrlsKey, configuredUrls);
-                }
-
                 web.UseTestServer();
                 web.ConfigureServices(services =>
                 {
@@ -4274,23 +4983,42 @@ public sealed class WorkableHttpApiTests
                     {
                         app.Use(async (context, next) =>
                         {
-                            context.User = CreateTransportPrincipal(
-                                id: "user-123",
-                                name: "Greya",
-                                email: "greya@example.test",
-                                groups: groups);
+                            context.User = principalFactory?.Invoke() ??
+                                CreateTransportPrincipal(
+                                    id: "user-123",
+                                    name: "Greya",
+                                    email: "greya@example.test",
+                                    groups: groups);
                             await next();
                         });
                     }
 
                     app.UseAuthorization();
-                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi(
+                        "/workable",
+                        useHostFallbackPolicy: true));
                 });
             })
             .Build();
 
         await host.StartAsync();
         return host;
+    }
+
+    private sealed class ThrowingJsonConverter<T>(string message) : JsonConverter<T>
+        where T : class
+    {
+        public override T? Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options)
+            => throw new JsonException(message);
+
+        public override void Write(
+            Utf8JsonWriter writer,
+            T value,
+            JsonSerializerOptions options)
+            => throw new NotSupportedException();
     }
 
     private sealed class TestSqlProfilingCapabilityContributor : IWorkSystemCapabilityContributor
@@ -4302,11 +5030,21 @@ public sealed class WorkableHttpApiTests
         }
     }
 
+    private sealed class WorkableIdentitySelector : IWorkClaimsIdentitySelector
+    {
+        public ClaimsIdentity? SelectIdentity(ClaimsPrincipal principal)
+            => principal.Identities.FirstOrDefault(identity =>
+                identity.IsAuthenticated &&
+                string.Equals(identity.AuthenticationType, "Workable", StringComparison.Ordinal));
+    }
+
     private static async Task<IHost> CreateMultiSystemHttpHost(
         IEnumerable<string>? groups = null,
         Action<IServiceCollection>? configureServices = null,
         Action<IWorkSystemBuilder>? configureSystems = null,
-        IEnumerable<string>? surfaceAccessGroups = null)
+        IEnumerable<string>? surfaceAccessGroups = null,
+        string namedSystemName = "background",
+        Action<IWorkSystemBuilder>? configureDefaultSystem = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -4322,6 +5060,7 @@ public sealed class WorkableHttpApiTests
                         builder.RequireAuthorization();
                         builder.ConfigureTransportSystemAuthorization();
                         configureSystems?.Invoke(builder);
+                        configureDefaultSystem?.Invoke(builder);
                         builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
                                 "http.default",
@@ -4331,7 +5070,7 @@ public sealed class WorkableHttpApiTests
                                 }),
                             SuccessfulWork);
                     });
-                    services.AddWorkableSystem("background", builder =>
+                    services.AddWorkableSystem(namedSystemName, builder =>
                     {
                         builder.StartWithHost();
                         builder.RequireAuthorization();
@@ -4699,7 +5438,10 @@ public sealed class WorkableHttpApiTests
         return host;
     }
 
-    private static async Task<IHost> CreateExplicitSchemeHttpHostWithFallbackPolicy()
+    private static async Task<IHost> CreateExplicitSchemeHttpHostWithFallbackPolicy(
+        bool useDefaultPolicy = false,
+        string? authorizationPolicy = null,
+        bool useHostFallbackPolicy = true)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -4711,10 +5453,28 @@ public sealed class WorkableHttpApiTests
                     services.AddWorkableSchemeTestAuthentication();
                     services.AddAuthorization(options =>
                     {
-                        options.FallbackPolicy = new AuthorizationPolicyBuilder(
+                        var policy = new AuthorizationPolicyBuilder(
                             WorkableSchemeAuthenticationTestSupport.AmbientScheme)
                             .RequireClaim("host-app")
                             .Build();
+                        if (useDefaultPolicy)
+                        {
+                            options.DefaultPolicy = policy;
+                        }
+                        else
+                        {
+                            options.FallbackPolicy = policy;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(authorizationPolicy))
+                        {
+                            options.AddPolicy(
+                                authorizationPolicy,
+                                new AuthorizationPolicyBuilder(
+                                    WorkableSchemeAuthenticationTestSupport.WorkableBearerScheme)
+                                    .RequireAuthenticatedUser()
+                                    .Build());
+                        }
                     });
                     services.AddTransportTestAuthorization();
                     services.AddWorkableSystem(builder =>
@@ -4731,7 +5491,10 @@ public sealed class WorkableHttpApiTests
                     app.UseRouting();
                     app.UseAuthentication();
                     app.UseAuthorization();
-                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi("/workable"));
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableApi(
+                        "/workable",
+                        authorizationPolicy,
+                        useHostFallbackPolicy));
                 });
             })
             .Build();
@@ -4762,7 +5525,7 @@ public sealed class WorkableHttpApiTests
                                 configuration: WorkConfiguration.Default with
                                 {
                                     Start = WorkStartConfiguration.DoNotStart,
-                            }),
+                                }),
                             SuccessfulWork);
                         builder.AddAuthorizedTransportWork(
                             WorkDefinition.Create(
@@ -4939,7 +5702,6 @@ public sealed class WorkableHttpApiTests
 
     private sealed class CountingWorkAuthorizationGroupProvider(IEnumerable<string> groups) : IWorkAuthorizationGroupProvider
     {
-        private const string DefaultSystemCacheKey = "<default>";
         private readonly IReadOnlySet<string> groups = new HashSet<string>(groups, StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, int> callCounts = new(StringComparer.OrdinalIgnoreCase);
 
@@ -4958,6 +5720,6 @@ public sealed class WorkableHttpApiTests
             => this.callCounts.TryGetValue(GetCacheKey(systemName), out var count) ? count : 0;
 
         private static string GetCacheKey(string? systemName)
-            => string.IsNullOrWhiteSpace(systemName) ? DefaultSystemCacheKey : systemName;
+            => systemName is null ? "default:" : $"named:{systemName}";
     }
 }

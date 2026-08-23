@@ -34,7 +34,7 @@ Workable also gives applications a path to expose the same authored work through
 
 - `Workable.SqlServer`: SQL Server persistence integration for durable queueing and completion, durable workflows, persistence-backed idempotency and concurrency, and expiring execution diagnostics.
 - `Workable.AspNetCore`: ASP.NET Core request-context and authorization integration for custom endpoints and hosts.
-- `Workable.Entra`: Microsoft Entra ID bearer-token validation and Workable authorization claim mapping for ASP.NET Core target apps.
+- `Workable.Entra`: Workable actor and authorization-claim integration for ASP.NET Core hosts that already authenticate Microsoft Entra identities.
 - `Workable.Views`: shared component-view contracts and projections used by HTTP and SignalR adapters; most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
 - `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling workers and workflow runs.
 - `Workable.Mcp`: MCP server adapter for authored work, worker and workflow queries, and worker and workflow actions.
@@ -61,6 +61,7 @@ Recommended entry points:
 - [Configuration](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/README.md) if you are tuning start behavior, retry, recurrence, failed-worker handling, concurrency, durability, logging, retention, or invocation rules.
 - [Persistent Execution Diagnostics](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/execution-diagnostics-persistence.md) if a developer or agent needs expiring iteration logs, profiles, or SQL/HTTP operation counts from recently executed work.
 - [HTTP API](https://github.com/aliendomain/workable/blob/main/docs/adapters/http-api.md), [MCP](https://github.com/aliendomain/workable/blob/main/docs/adapters/mcp.md), and [Realtime](https://github.com/aliendomain/workable/blob/main/docs/adapters/realtime.md) if you are exposing Workable over transports.
+- [Microsoft Entra Authentication](https://github.com/aliendomain/workable/blob/main/docs/guides/entra-authentication.md) if the host already authenticates Entra identities and Workable should interpret their actor and group claims without taking ownership of JWT configuration.
 - [Abstractions Surface](https://github.com/aliendomain/workable/blob/main/docs/concepts/abstractions-surface.md) if you are consuming a hosted system from another library.
 - [Workable SQL Server Integration](https://github.com/aliendomain/workable/blob/main/packages/extensions/sqlserver/README.md) if you need durable queueing, durable workflows, persistence-backed coordination, or execution-diagnostics storage.
 - [Sample Host](https://github.com/aliendomain/workable/blob/main/apps/samples/Workable.SampleHost/README.md) if you want a runnable reference app.

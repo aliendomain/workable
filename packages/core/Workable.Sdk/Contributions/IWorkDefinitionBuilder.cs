@@ -52,7 +52,7 @@ public interface IWorkDefinitionBuilder
     /// <param name="definition">The definition metadata and baseline configuration for the work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional definition registrations can be chained.</returns>
     IWorkDefinitionBuilder AddWork(
         WorkDefinition definition,
@@ -91,7 +91,7 @@ public interface IWorkDefinitionBuilder
     /// <param name="definition">The definition metadata and baseline configuration for the work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional definition registrations can be chained.</returns>
     IWorkDefinitionBuilder AddWork<TInput>(
         WorkDefinition definition,
@@ -133,7 +133,7 @@ public interface IWorkDefinitionBuilder
     /// <param name="definition">The definition metadata and baseline configuration for the work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional definition registrations can be chained.</returns>
     IWorkDefinitionBuilder AddWork<TInput, TOutput>(
         WorkDefinition definition,
@@ -176,7 +176,7 @@ public interface IWorkDefinitionBuilder
     /// <typeparam name="TExecutor">The executor type Workable resolves for each worker execution.</typeparam>
     /// <param name="definition">The definition metadata and baseline configuration for the work.</param>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional definition registrations can be chained.</returns>
     IWorkDefinitionBuilder AddWork<TExecutor>(
         WorkDefinition definition,
@@ -199,7 +199,7 @@ public interface IWorkDefinitionBuilder
     /// </summary>
     /// <typeparam name="TExecutor">The executor type Workable resolves for each worker execution.</typeparam>
     /// <param name="configure">The callback that refines the work configuration for this registration.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this registration.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this registration.</param>
     /// <returns>The same builder so additional definition registrations can be chained.</returns>
     IWorkDefinitionBuilder AddWork<TExecutor>(
         Action<IWorkConfigurationBuilder>? configure,

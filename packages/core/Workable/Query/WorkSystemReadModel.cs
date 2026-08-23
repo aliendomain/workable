@@ -194,7 +194,7 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         {
             var lastPublishedAt = DateTimeOffset.MinValue;
             var updatesSinceLastPublish = 0L;
-            var changesSinceLastPublish = new HashSet<WorkChangeKey>();
+            var changesSinceLastPublish = new HashSet<WorkChangeKey>(WorkChangeKey.ScopeAwareComparer);
             await foreach (var _ in this.updates.Reader.ReadAllAsync())
             {
                 var batch = this.TakePendingUpdates();
@@ -392,8 +392,6 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
         WorkSystemReadModelState state,
         HashSet<WorkChangeKey> keys)
     {
-        keys.Add(WorkChangeKey.System());
-        keys.Add(WorkChangeKey.Worker(workerId));
         if (state.TryGetWorker(workerId, out var existing))
         {
             AddWorkerChangeKeys(existing, keys);
@@ -402,29 +400,35 @@ internal sealed class WorkSystemReadModel : IWorkSystemReadModelStore, IAsyncDis
 
     private static void AddWorkerChangeKeys(WorkerReadModelWorker worker, HashSet<WorkChangeKey> keys)
     {
-        keys.Add(WorkChangeKey.System());
-        keys.Add(WorkChangeKey.Worker(worker.Id));
-        keys.Add(WorkChangeKey.Definition(worker.DefinitionName));
+        AddDefinitionScopedKey(WorkChangeKey.System(), worker.DefinitionName, keys);
+        AddDefinitionScopedKey(WorkChangeKey.Worker(worker.Id), worker.DefinitionName, keys);
+        AddDefinitionScopedKey(WorkChangeKey.Definition(worker.DefinitionName), worker.DefinitionName, keys);
         if (worker.SubjectId is { } subjectId)
         {
-            keys.Add(WorkChangeKey.Subject(subjectId));
+            AddDefinitionScopedKey(WorkChangeKey.Subject(subjectId), worker.DefinitionName, keys);
         }
 
         if (worker.ConcurrencyKey is { } concurrencyKey)
         {
-            keys.Add(WorkChangeKey.Concurrency(concurrencyKey));
+            AddDefinitionScopedKey(WorkChangeKey.Concurrency(concurrencyKey), worker.DefinitionName, keys);
         }
 
         foreach (var identifier in worker.Identifiers)
         {
-            keys.Add(WorkChangeKey.Identifier(identifier));
+            AddDefinitionScopedKey(WorkChangeKey.Identifier(identifier), worker.DefinitionName, keys);
         }
 
         if (worker.OriginActorId is { } actorId)
         {
-            keys.Add(WorkChangeKey.Actor(actorId));
+            AddDefinitionScopedKey(WorkChangeKey.Actor(actorId), worker.DefinitionName, keys);
         }
     }
+
+    private static void AddDefinitionScopedKey(
+        WorkChangeKey key,
+        string definitionName,
+        HashSet<WorkChangeKey> keys)
+        => keys.Add(key.ScopeToDefinition(definitionName));
 
     private bool ShouldPublishSnapshot(bool queueDrained, DateTimeOffset lastPublishedAt)
         => queueDrained ||

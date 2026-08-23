@@ -105,4 +105,23 @@ public sealed class WorkableHttpCriteriaShould
         Assert.Equal(23, actual.Skip);
         Assert.Equal(45, actual.Take);
     }
+
+    [Fact]
+    public void PreserveNullCollectionFiltersAcrossEveryHttpCriteriaAdapter()
+    {
+        Assert.Null(new WorkableHttpWorkerIterationCriteria().ToWorkerIterationCriteria().Statuses);
+        Assert.Null(new WorkableHttpWorkerKeyTypeCriteria().ToWorkerKeyTypeCriteria().States);
+        Assert.Null(new WorkableHttpWorkIterationKeyTypeCriteria().ToWorkIterationKeyTypeCriteria().Statuses);
+
+        Assert.Equal(
+            [WorkerState.Running],
+            new WorkableHttpWorkerKeyTypeCriteria(States: [WorkerState.Running])
+                .ToWorkerKeyTypeCriteria()
+                .States);
+        Assert.Equal(
+            [WorkCompletionStatus.Failed],
+            new WorkableHttpWorkIterationKeyTypeCriteria(Statuses: [WorkCompletionStatus.Failed])
+                .ToWorkIterationKeyTypeCriteria()
+                .Statuses);
+    }
 }

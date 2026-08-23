@@ -24,6 +24,26 @@ public sealed record WorkSystemAccessSummary(
     int OperableDefinitionCount)
 {
     /// <summary>
+    /// Gets whether the caller can discover every definition and its schemas.
+    /// </summary>
+    public bool CanDiscoverAllWork { get; init; }
+
+    /// <summary>
+    /// Gets the number of definitions the caller can discover.
+    /// </summary>
+    public int DiscoverableDefinitionCount { get; init; }
+
+    /// <summary>
+    /// Gets the number of workflow definitions the caller can read.
+    /// </summary>
+    public int ReadableWorkflowDefinitionCount { get; init; }
+
+    /// <summary>
+    /// Gets the number of workflow definitions the caller can operate.
+    /// </summary>
+    public int OperableWorkflowDefinitionCount { get; init; }
+
+    /// <summary>
     /// Determines whether the caller has any meaningful access to the system.
     /// </summary>
     /// <returns><see langword="true"/> when any system-level or definition-level access is present; otherwise <see langword="false"/>.</returns>
@@ -34,6 +54,10 @@ public sealed record WorkSystemAccessSummary(
             this.CanControlSystem ||
             this.CanReadAllWork ||
             this.CanOperateAllWork ||
+            this.CanDiscoverAllWork ||
+            this.DiscoverableDefinitionCount > 0 ||
             this.ReadableDefinitionCount > 0 ||
-            this.OperableDefinitionCount > 0;
+            this.OperableDefinitionCount > 0 ||
+            this.ReadableWorkflowDefinitionCount > 0 ||
+            this.OperableWorkflowDefinitionCount > 0;
 }

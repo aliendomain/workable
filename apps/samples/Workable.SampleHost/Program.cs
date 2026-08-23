@@ -520,6 +520,7 @@ app.Use((context, next) =>
 });
 
 app.UseRouting();
+app.UseWorkableSignalRAccessTokens();
 
 app.MapGet("/", (HttpContext context) =>
 {

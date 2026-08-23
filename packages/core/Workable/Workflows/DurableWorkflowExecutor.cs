@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 
@@ -14,6 +15,8 @@ internal sealed class DurableWorkflowExecutor(
     WorkQueueService? delegatedQueue = null,
     WorkerOperations? delegatedWorkers = null)
 {
+    private readonly ILogger logger = logger ?? NullLogger.Instance;
+
     internal DurableWorkflowExecutor(
         string workSystemKey,
         Func<string, RegisteredWork?> getRegisteredWork,
@@ -140,7 +143,7 @@ internal sealed class DurableWorkflowExecutor(
                 run,
                 [WorkMessage.Error(
                     "workable.workflow.execution_exception",
-                    exception.Message,
+                    "Workflow execution failed with an unhandled exception.",
                     "workflow.execution")],
                 cancellationToken);
         }
@@ -168,7 +171,7 @@ internal sealed class DurableWorkflowExecutor(
                 failureCount++;
                 if ((failureCount & (failureCount - 1)) == 0)
                 {
-                    logger?.LogWarning(
+                    this.logger.LogWarning(
                         exception.InnerException ?? exception,
                         "Authorization-group resolution failed for durable workflow run {WorkflowRunId} in work system {WorkSystem}; retrying after attempt {Attempt}.",
                         run.Id.Value,
@@ -504,7 +507,8 @@ internal sealed class DurableWorkflowExecutor(
                                 transactionCancellationToken);
                         if (!handle.QueueOutcome.IsAccepted || handle.WorkerId is not { } workerId)
                         {
-                            throw new WorkflowDispatchRejectedException(handle.QueueOutcome.Messages);
+                            throw new WorkflowDispatchRejectedException(
+                                WorkflowExecutionSupport.CreateChildDispatchRejectedMessages(step.Name));
                         }
 
                         run.MarkStepCompleted(step.Name, [workerId]);
@@ -602,7 +606,8 @@ internal sealed class DurableWorkflowExecutor(
                                     transactionCancellationToken);
                             if (!handle.QueueOutcome.IsAccepted || handle.WorkerId is not { } childWorkerId)
                             {
-                                throw new WorkflowDispatchRejectedException(handle.QueueOutcome.Messages);
+                                throw new WorkflowDispatchRejectedException(
+                                    WorkflowExecutionSupport.CreateChildDispatchRejectedMessages(step.Name));
                             }
 
                             workerIds.Add(childWorkerId);
@@ -693,10 +698,9 @@ internal sealed class DurableWorkflowExecutor(
                         : WorkflowCanceledChildBehavior.Block);
                 if (status != WorkflowRunStatus.Completed)
                 {
-                    return new WorkflowRunCompletion(
-                        status,
-                        null,
-                        completion.Messages);
+                    return WorkflowExecutionSupport.CreateChildRunCompletion(
+                        completion.Status,
+                        status);
                 }
 
                 run.RemoveStepWorkerId(joinStepName, completed.WorkerId);
@@ -755,10 +759,9 @@ internal sealed class DurableWorkflowExecutor(
                         : WorkflowCanceledChildBehavior.Block);
                 if (status != WorkflowRunStatus.Completed)
                 {
-                    return new WorkflowRunCompletion(
-                        status,
-                        null,
-                        completion.Messages);
+                    return WorkflowExecutionSupport.CreateChildRunCompletion(
+                        completion.Status,
+                        status);
                 }
             }
 
@@ -777,8 +780,7 @@ internal sealed class DurableWorkflowExecutor(
         CancellationToken cancellationToken,
         Func<WorkerId, CancellationToken, Task<bool>>? durableWorkerExists = null)
     {
-        if (run.TryGetChildReceipt(workerId, out var receipt) &&
-            receipt is not null)
+        if (run.TryGetChildReceipt(workerId, out var receipt))
         {
             return WorkflowExecutionSupport.FromReceipt(receipt);
         }
@@ -801,7 +803,7 @@ internal sealed class DurableWorkflowExecutor(
 
         if (!await WorkerExists(workerId, durableWorkerExists, cancellationToken))
         {
-            if (run.TryGetChildReceipt(workerId, out receipt) && receipt is not null)
+            if (run.TryGetChildReceipt(workerId, out receipt))
             {
                 return WorkflowExecutionSupport.FromReceipt(receipt);
             }
@@ -851,7 +853,7 @@ internal sealed class DurableWorkflowExecutor(
 
             if (!await WorkerExists(workerId, durableWorkerExists, cancellationToken))
             {
-                if (run.TryGetChildReceipt(workerId, out receipt) && receipt is not null)
+                if (run.TryGetChildReceipt(workerId, out receipt))
                 {
                     return WorkflowExecutionSupport.FromReceipt(receipt);
                 }

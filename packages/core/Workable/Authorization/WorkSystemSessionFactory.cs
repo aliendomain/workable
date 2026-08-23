@@ -77,9 +77,15 @@ internal sealed class WorkSystemSessionFactory(
             requestContext,
             capabilities,
             getSystemState,
+            (worker, changes) => this.CanReconfigureWorker(
+                projection.Authorization,
+                requestContext,
+                worker,
+                changes),
             projection.CanViewDiagnostics
                 ? sessionDiagnostics
                 : new UnauthorizedWorkSystemDiagnostics(systemId, systemName),
+            new AuthorizedWorkDiscoveryCatalog(catalog, projection.Authorization),
             new AuthorizedWorkCatalog(catalog, sessionCatalog, projection.Authorization, requestContext),
             new AuthorizedWorkQueueService(
                 catalog,
@@ -106,7 +112,8 @@ internal sealed class WorkSystemSessionFactory(
                 projection.ReadableWorkflowDefinitionNames),
             new AuthorizedWorkIterationStatusStream(
                 iterationStatuses,
-                projection.ReadableWorkDefinitionNames),
+                projection.ReadableWorkDefinitionNames,
+                projection.CanViewDiagnostics),
             new AuthorizedWorkChangeStream(
                 sessionChanges,
                 projection.Authorization,
@@ -204,12 +211,11 @@ internal sealed class WorkSystemSessionFactory(
             return false;
         }
 
+        // The weak-table lookup above attests this exact immutable snapshot instance to
+        // this projection. Only request-context values that can be replaced while the
+        // snapshot reference is retained need to be checked again.
         return snapshot.Actor == requestContext.Actor &&
-            snapshot.IsAuthenticated == requestContext.IsAuthenticated &&
-            snapshot.Scope is { } scope &&
-            scope.IsForSystem(systemName) &&
-            string.Equals(snapshot.ReadFingerprint, projection.ReadFingerprint, StringComparison.Ordinal) &&
-            GroupsEqual(snapshot.Groups, projection.Groups);
+            snapshot.IsAuthenticated == requestContext.IsAuthenticated;
     }
 
     private void RegisterCanonicalSnapshot(
@@ -246,7 +252,9 @@ internal sealed class WorkSystemSessionFactory(
             requestContext,
             capabilities,
             getSystemState,
+            (_, _) => true,
             sessionDiagnostics,
+            new AuthorizedWorkDiscoveryCatalog(catalog),
             sessionCatalog,
             sessionQueue,
             sessionWorkers,
@@ -255,6 +263,18 @@ internal sealed class WorkSystemSessionFactory(
             sessionIterationStatuses,
             sessionChanges);
     }
+
+    private bool CanReconfigureWorker(
+        WorkAuthorizationEvaluator authorization,
+        WorkRequestContext requestContext,
+        WorkerSnapshot worker,
+        WorkerReconfiguration changes)
+        => catalog.TryGetWork(worker.DefinitionName, out var registeredWork) &&
+            authorization.AuthorizeWorkerReconfiguration(
+                registeredWork,
+                worker,
+                changes,
+                requestContext).IsAllowed;
 
     private static WorkRequestContext SanitizeRequestContext(
         WorkRequestContext requestContext,

@@ -1,10 +1,42 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Workable.Tests;
 
 [Trait("Category", "SignalR")]
 public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
 {
+    [Fact]
+    public async Task EnforcePerConnectionAndGlobalWorkerOverviewSubscriptionLimits()
+    {
+        await using var system = CreateSystem();
+        var groups = new RecordingSignalRGroupManager();
+        var criteria = Criteria(WorkComponentShapes.Standard);
+        var perConnection = new WorkableRealtimeWorkerOverviewSubscriptions(Options.Create(new WorkableSignalROptions
+        {
+            MaximumSubscriptionsPerConnectionPerKind = 1,
+            MaximumSubscriptionsPerKind = 2,
+        }));
+        await WatchAndStart(perConnection, groups, system, "connection-1", "first", WorkerId.New(), criteria);
+
+        await Assert.ThrowsAsync<HubException>(() => perConnection.Watch(
+            "connection-1", groups, system, "second", WorkerId.New(), criteria,
+            Authorization(), CancellationToken.None));
+
+        var global = new WorkableRealtimeWorkerOverviewSubscriptions(Options.Create(new WorkableSignalROptions
+        {
+            MaximumSubscriptionsPerConnectionPerKind = 1,
+            MaximumSubscriptionsPerKind = 1,
+        }));
+        await WatchAndStart(global, groups, system, "connection-1", "first", WorkerId.New(), criteria);
+
+        await Assert.ThrowsAsync<HubException>(() => global.Watch(
+            "connection-2", groups, system, "second", WorkerId.New(), criteria,
+            Authorization(), CancellationToken.None));
+    }
+
     [Fact]
     public async Task WaitForStreamingBeforeCompletingWatch()
     {
@@ -25,7 +57,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
             timeout.Token);
 
         var added = await groups.WaitForAdd();
-        var snapshot = Assert.Single(subscriptions.GetDebugSubscriptions(system));
+        var snapshot = Assert.Single(subscriptions.GetSubscriptionSnapshots(system));
 
         Assert.False(watch.IsCompleted);
         Assert.Equal("worker-panel", snapshot.SubscriptionId);
@@ -38,7 +70,30 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
         var subscription = await watch.WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal("worker-panel", subscription.SubscriptionId);
-        Assert.True(Assert.Single(subscriptions.GetDebugSubscriptions(system)).IsStreaming);
+        Assert.True(Assert.Single(subscriptions.GetSubscriptionSnapshots(system)).IsStreaming);
+    }
+
+    [Fact]
+    public async Task ReleaseAWatcherThatLosesItsGroupBeforeStreamingStarts()
+    {
+        var subscriptions = new WorkableRealtimeWorkerOverviewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        await using var system = CreateSystem();
+        var watch = subscriptions.Watch(
+            "connection",
+            groups,
+            system,
+            "panel",
+            WorkerId.New(),
+            Criteria(WorkComponentShapes.Standard),
+            Authorization(),
+            CancellationToken.None);
+        await groups.WaitForAdd();
+
+        subscriptions.RemoveConnection("connection");
+
+        await watch.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Empty(subscriptions.GetActiveSubscriptions(system));
     }
 
     [Fact]
@@ -64,7 +119,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
         Assert.Same(first, second);
         Assert.Single(groups.Adds);
         Assert.Empty(groups.Removes);
-        Assert.Single(subscriptions.GetDebugSubscriptions(system));
+        Assert.Single(subscriptions.GetSubscriptionSnapshots(system));
     }
 
     [Fact]
@@ -97,7 +152,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
         var second = await secondWatch.WaitAsync(TimeSpan.FromSeconds(1));
 
         var removed = Assert.Single(groups.Removes);
-        var snapshot = Assert.Single(subscriptions.GetDebugSubscriptions(system));
+        var snapshot = Assert.Single(subscriptions.GetSubscriptionSnapshots(system));
 
         Assert.NotEqual(first.GroupName, second.GroupName);
         Assert.Equal(first.GroupName, removed.GroupName);
@@ -121,7 +176,27 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
         Assert.Equal(2, groups.Adds.Count);
         Assert.Single(subscriptions.GetActiveSubscriptions(system));
         Assert.Equal(2, subscriptions.GetGroupSubscriptions(first.GroupName).Count);
-        Assert.All(subscriptions.GetDebugSubscriptions(system), snapshot => Assert.Equal(2, snapshot.GroupConnectionCount));
+        Assert.All(subscriptions.GetSubscriptionSnapshots(system), snapshot => Assert.Equal(2, snapshot.GroupConnectionCount));
+    }
+
+    [Fact]
+    public async Task SeparateGroupsWhenActorsDifferDespiteEquivalentReadScope()
+    {
+        var subscriptions = new WorkableRealtimeWorkerOverviewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        await using var system = CreateSystem();
+        var workerId = WorkerId.New();
+        var criteria = Criteria(WorkComponentShapes.Standard);
+
+        var first = await WatchAndStart(
+            subscriptions, groups, system, "connection-1", "first", workerId, criteria,
+            Authorization("actor-1"));
+        var second = await WatchAndStart(
+            subscriptions, groups, system, "connection-2", "second", workerId, criteria,
+            Authorization("actor-2"));
+
+        Assert.NotEqual(first.GroupName, second.GroupName);
+        Assert.Equal(2, subscriptions.GetActiveSubscriptions(system).Count);
     }
 
     [Fact]
@@ -149,7 +224,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
 
         var removed = Assert.Single(groups.Removes);
         Assert.Equal(subscription.GroupName, removed.GroupName);
-        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(subscriptions.GetSubscriptionSnapshots(system));
         Assert.Empty(subscriptions.GetActiveSubscriptions(system));
     }
 
@@ -164,12 +239,11 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
         await WatchAndStart(subscriptions, groups, system, "connection-1", "second", WorkerId.New(), Criteria(WorkComponentShapes.Compact));
         await WatchAndStart(subscriptions, groups, system, "connection-2", "third", WorkerId.New(), Criteria(WorkComponentShapes.Compact));
 
-        await subscriptions.RemoveConnection("connection-1", groups, CancellationToken.None);
+        subscriptions.RemoveConnection("connection-1");
 
-        Assert.Equal(2, groups.Removes.Count);
-        Assert.All(groups.Removes, remove => Assert.Equal("connection-1", remove.ConnectionId));
+        Assert.Empty(groups.Removes);
         Assert.Collection(
-            subscriptions.GetDebugSubscriptions(system),
+            subscriptions.GetSubscriptionSnapshots(system),
             snapshot => Assert.Equal("connection-2", snapshot.ConnectionId));
     }
 
@@ -204,11 +278,49 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
         subscriptions.ReportError(subscription.GroupName, "  stream stopped  ");
         subscriptions.SetChangeStreamDiagnosticsProvider(subscription.GroupName, () => diagnostics);
 
-        var snapshot = Assert.Single(subscriptions.GetDebugSubscriptions(system));
+        var snapshot = Assert.Single(subscriptions.GetSubscriptionSnapshots(system));
         Assert.Equal(occurredAt, snapshot.LastActivityAt);
         Assert.Equal("stream stopped", snapshot.LastError);
         Assert.NotNull(snapshot.StreamingStoppedAt);
         Assert.Equal(diagnostics, snapshot.ChangeStreamDiagnostics);
+    }
+
+    [Fact]
+    public async Task IgnoreMissingGroupsAndTrackEverySeedStateTransition()
+    {
+        var subscriptions = new WorkableRealtimeWorkerOverviewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        await using var system = CreateSystem();
+        const string Missing = "missing-group";
+
+        await subscriptions.WaitForChange(subscriptions.Version - 1, CancellationToken.None);
+        Assert.False(subscriptions.IsSeeded(Missing));
+        Assert.False(subscriptions.HasPublishedState(Missing));
+        subscriptions.SetSeeded(Missing, hasPublishedState: true);
+        subscriptions.ReportActivity(Missing, DateTimeOffset.UtcNow);
+        subscriptions.ReportError(Missing, "ignored");
+        subscriptions.SetChangeStreamDiagnosticsProvider(Missing, diagnosticsProvider: null);
+
+        var subscription = await WatchAndStart(
+            subscriptions,
+            groups,
+            system,
+            "connection-seed",
+            "panel",
+            WorkerId.New(),
+            Criteria(WorkComponentShapes.Standard));
+        Assert.False(subscriptions.IsSeeded(subscription.GroupName));
+        Assert.False(subscriptions.HasPublishedState(subscription.GroupName));
+
+        subscriptions.SetSeeded(subscription.GroupName, hasPublishedState: false);
+        Assert.True(subscriptions.IsSeeded(subscription.GroupName));
+        Assert.False(subscriptions.HasPublishedState(subscription.GroupName));
+        subscriptions.SetSeeded(subscription.GroupName, hasPublishedState: true);
+        Assert.True(subscriptions.HasPublishedState(subscription.GroupName));
+        subscriptions.SetSeeded(subscription.GroupName, hasPublishedState: true);
+        subscriptions.SetSeeded(subscription.GroupName, hasPublishedState: false);
+        subscriptions.ReportError(subscription.GroupName, " ");
+        Assert.Null(Assert.Single(subscriptions.GetSubscriptionSnapshots(system)).LastError);
     }
 
     [Fact]
@@ -229,9 +341,61 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
             CancellationToken.None));
 
         Assert.Equal("Add failed.", exception.Message);
-        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(subscriptions.GetSubscriptionSnapshots(system));
         Assert.Empty(subscriptions.GetActiveSubscriptions(system));
         Assert.Empty(groups.Removes);
+    }
+
+    [Fact]
+    public async Task KeepNewerSubscriptionWhenPreviousGroupAddFailsAfterReplacement()
+    {
+        var subscriptions = new WorkableRealtimeWorkerOverviewSubscriptions();
+        var groups = new DelayedFirstAddGroupManager();
+        await using var system = CreateSystem();
+
+        var first = subscriptions.Watch(
+            "connection-1", groups, system, "panel", WorkerId.New(),
+            Criteria(WorkComponentShapes.Compact), Authorization(), CancellationToken.None);
+        await groups.WaitForFirstAdd();
+
+        var secondWatch = subscriptions.Watch(
+            "connection-1", groups, system, "panel", WorkerId.New(),
+            Criteria(WorkComponentShapes.Detailed), Authorization(), CancellationToken.None);
+        var secondAdd = await groups.WaitForSecondAdd();
+        subscriptions.SetStreaming(secondAdd.GroupName, isStreaming: true);
+        var second = await secondWatch;
+
+        groups.FailFirstAdd();
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => first);
+        var snapshot = Assert.Single(subscriptions.GetSubscriptionSnapshots(system));
+
+        Assert.Equal("First add failed.", exception.Message);
+        Assert.Equal(second.GroupName, snapshot.GroupName);
+        Assert.Equal(second.GroupName, Assert.Single(subscriptions.GetActiveSubscriptions(system)).GroupName);
+    }
+
+    [Fact]
+    public async Task FilterSnapshotsForOtherSystemsAndIgnoreMissingReleaseGroups()
+    {
+        var subscriptions = new WorkableRealtimeWorkerOverviewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        await using var system = CreateSystem();
+        await using var other = CreateSystem();
+
+        await WatchAndStart(
+            subscriptions,
+            groups,
+            system,
+            "connection-1",
+            "panel",
+            WorkerId.New(),
+            Criteria(WorkComponentShapes.Standard));
+
+        Assert.Empty(subscriptions.GetActiveSubscriptions(other));
+        Assert.Empty(subscriptions.GetSubscriptionSnapshots(other));
+        typeof(WorkableRealtimeWorkerOverviewSubscriptions)
+            .GetMethod("ReleaseGroupLocked", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(subscriptions, ["missing-group"]);
     }
 
     private static async Task<WorkableRealtimeWorkerOverviewSubscription> WatchAndStart(
@@ -241,7 +405,8 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
         string connectionId,
         string subscriptionId,
         WorkerId workerId,
-        WorkWorkerOverviewRealtimeCriteria criteria)
+        WorkWorkerOverviewRealtimeCriteria criteria,
+        WorkAuthorizationSnapshot? authorization = null)
     {
         var watch = subscriptions.Watch(
             connectionId,
@@ -250,7 +415,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
             subscriptionId,
             workerId,
             criteria,
-            Authorization(),
+            authorization ?? Authorization(),
             CancellationToken.None);
         var added = await groups.WaitForAdd();
         subscriptions.SetStreaming(added.GroupName, isStreaming: true);
@@ -273,10 +438,49 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptionsShould
         return services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
     }
 
-    private static WorkAuthorizationSnapshot Authorization()
+    private static WorkAuthorizationSnapshot Authorization(
+        string actorId = "signalr-worker-overview-subscription-user")
         => WorkAuthorizationSnapshot.CreateForSystem(
             systemName: null,
-            new WorkActor("signalr-worker-overview-subscription-user", "SignalR Worker Overview Subscription User"),
+            new WorkActor(actorId, "SignalR Worker Overview Subscription User"),
             ["signalr.read"],
             readableDefinitionIds: null);
+
+    private sealed class DelayedFirstAddGroupManager : IGroupManager
+    {
+        private readonly TaskCompletionSource<object?> firstAddStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<object?> firstAddResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<SignalRGroupCall> secondAdd = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int addCount;
+
+        public Task AddToGroupAsync(
+            string connectionId,
+            string groupName,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref this.addCount) == 1)
+            {
+                this.firstAddStarted.SetResult(null);
+                return this.firstAddResult.Task;
+            }
+
+            this.secondAdd.SetResult(new SignalRGroupCall(connectionId, groupName));
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveFromGroupAsync(
+            string connectionId,
+            string groupName,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task WaitForFirstAdd()
+            => this.firstAddStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        public Task<SignalRGroupCall> WaitForSecondAdd()
+            => this.secondAdd.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        public void FailFirstAdd()
+            => this.firstAddResult.SetException(new InvalidOperationException("First add failed."));
+    }
 }

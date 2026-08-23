@@ -54,23 +54,65 @@ public static class WorkableMcpServerExtensions
     /// <param name="endpoints">The endpoint route builder to configure.</param>
     /// <param name="pattern">The HTTP route pattern to map.</param>
     /// <param name="systemName">The Workable system name to expose, or <see langword="null"/> for the default unnamed system.</param>
+    /// <param name="authorizationPolicy">
+    /// Optional host-defined authorization policy for this mapping. When omitted, the host's default policy applies.
+    /// </param>
+    /// <param name="useHostFallbackPolicy">
+    /// Whether to leave the endpoint without authorization metadata so the host's fallback policy applies.
+    /// </param>
     /// <returns>The endpoint convention builder for further endpoint customization.</returns>
     /// <exception cref="InvalidOperationException">Thrown when the selected system does not exist or does not require authorization.</exception>
     public static IEndpointConventionBuilder MapWorkableMcp(
         this IEndpointRouteBuilder endpoints,
         string pattern = "/workable/mcp",
-        string? systemName = null)
+        string? systemName = null,
+        string? authorizationPolicy = null,
+        bool useHostFallbackPolicy = false)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        ValidateHostAuthorizationSelection(authorizationPolicy, useHostFallbackPolicy);
         EnsureSystemRequiresAuthorization(
             endpoints.ServiceProvider.GetRequiredService<IWorkSystemRegistry>(),
             systemName);
 
         var builder = endpoints.MapMcp(pattern);
         RequireAuthenticated(builder);
+        ApplyHostAuthorization(builder, authorizationPolicy, useHostFallbackPolicy);
         builder.WithMetadata(new WorkableMcpEndpointMetadata(systemName));
         return builder;
+    }
+
+    private static void ApplyHostAuthorization(
+        IEndpointConventionBuilder builder,
+        string? authorizationPolicy,
+        bool useHostFallbackPolicy)
+    {
+        if (authorizationPolicy is not null)
+        {
+            builder.RequireAuthorization(authorizationPolicy);
+        }
+        else if (!useHostFallbackPolicy)
+        {
+            builder.RequireAuthorization();
+        }
+    }
+
+    private static void ValidateHostAuthorizationSelection(
+        string? authorizationPolicy,
+        bool useHostFallbackPolicy)
+    {
+        if (authorizationPolicy is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(authorizationPolicy);
+        }
+
+        if (authorizationPolicy is not null && useHostFallbackPolicy)
+        {
+            throw new ArgumentException(
+                "A named authorization policy and the host fallback policy cannot both be selected.",
+                nameof(useHostFallbackPolicy));
+        }
     }
 
     private static async ValueTask<ListToolsResult> ListTools(
@@ -227,15 +269,19 @@ public static class WorkableMcpServerExtensions
     {
         builder.Add(endpointBuilder =>
         {
-            var next = endpointBuilder.RequestDelegate
-                ?? throw new InvalidOperationException("Workable MCP endpoint did not provide a request delegate.");
+            var next = endpointBuilder.RequestDelegate!;
             endpointBuilder.RequestDelegate = async httpContext =>
             {
                 if (!await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
                 {
-                    httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    if (!await WorkableAspNetCoreAuthentication.ChallengeAsync(httpContext))
+                    {
+                        httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    }
                     return;
                 }
+
+                await WorkableAspNetCoreAuthentication.PrepareAuthorizationSnapshotAsync(httpContext);
 
                 await next(httpContext);
             };

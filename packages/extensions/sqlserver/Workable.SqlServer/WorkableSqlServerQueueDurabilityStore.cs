@@ -1672,24 +1672,6 @@ VALUES
 
     private async Task ExecuteOwned(
         string commandText,
-        Action<DbCommand> configure,
-        CancellationToken cancellationToken)
-    {
-        await ExecuteWithStoreUnavailableHandling(
-            "executing a persistence store command",
-            async () =>
-            {
-                await using var connection = new SqlConnection(options.ConnectionString);
-                await connection.OpenAsync(cancellationToken);
-                await using var command = connection.CreateCommand();
-                command.CommandText = commandText;
-                configure(command);
-                await command.ExecuteNonQueryAsync(cancellationToken);
-            });
-    }
-
-    private async Task ExecuteOwned(
-        string commandText,
         Func<DbCommand, Task> execute,
         CancellationToken cancellationToken)
     {
@@ -2038,9 +2020,7 @@ VALUES
         {
             var itemType = typeToConvert.GetGenericArguments()[0];
             var converterType = typeof(IReadOnlySetJsonConverter<>).MakeGenericType(itemType);
-            return Activator.CreateInstance(converterType) is JsonConverter converter
-                ? converter
-                : throw new InvalidOperationException($"Could not create converter for {typeToConvert}.");
+            return (JsonConverter)Activator.CreateInstance(converterType)!;
         }
 
         private sealed class IReadOnlySetJsonConverter<T> : JsonConverter<IReadOnlySet<T>>
@@ -2050,7 +2030,7 @@ VALUES
                 ref Utf8JsonReader reader,
                 Type typeToConvert,
                 JsonSerializerOptions options)
-                => JsonSerializer.Deserialize<HashSet<T>>(ref reader, options) ?? [];
+                => JsonSerializer.Deserialize<HashSet<T>>(ref reader, options)!;
 
             public override void Write(
                 Utf8JsonWriter writer,

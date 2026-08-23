@@ -23,8 +23,15 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = await WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts);
-            return await WorkableHttpRouteResults.ToOk(
-                () => queries.Components(session, query, cancellationToken: cancellationToken));
+            try
+            {
+                return await WorkableHttpRouteResults.ToOk(
+                    () => queries.Components(session, query, cancellationToken: cancellationToken));
+            }
+            catch (ArgumentException exception)
+            {
+                return InvalidComponentRequest(exception);
+            }
         });
 
         group.MapPost("/components/{componentName}", async (
@@ -67,8 +74,15 @@ internal static class WorkableHttpQueryRoutes
             }
 
             var session = await WorkableHttpRequestContext.CreateSession(httpContext, system, requestContexts);
-            return await WorkableHttpRouteResults.ToOk(
-                () => queries.View(session, viewName, query, cancellationToken: cancellationToken));
+            try
+            {
+                return await WorkableHttpRouteResults.ToOk(
+                    () => queries.View(session, viewName, query, cancellationToken: cancellationToken));
+            }
+            catch (ArgumentException exception)
+            {
+                return InvalidComponentRequest(exception);
+            }
         });
 
         group.MapPost("/definitions/query", async (
@@ -595,4 +609,16 @@ internal static class WorkableHttpQueryRoutes
 
         return parsed;
     }
+
+    private static IResult InvalidComponentRequest(ArgumentException exception)
+        => Results.BadRequest(new
+        {
+            Messages = new[]
+            {
+                WorkMessage.Error(
+                    "workable.http.components.invalid_request",
+                    exception.Message,
+                    "components"),
+            },
+        });
 }

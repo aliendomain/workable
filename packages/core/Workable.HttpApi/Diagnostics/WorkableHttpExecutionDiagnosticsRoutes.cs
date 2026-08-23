@@ -21,7 +21,7 @@ internal static class WorkableHttpExecutionDiagnosticsRoutes
             WorkableHttpRequestAccessContext requestAccess,
             CancellationToken cancellationToken) =>
         {
-            if (take is <= 0 or > 1_000)
+            if (take is <= 0 or > WorkExecutionDiagnosticCriteria.MaximumTake)
             {
                 return Results.BadRequest(new
                 {
@@ -29,7 +29,7 @@ internal static class WorkableHttpExecutionDiagnosticsRoutes
                     {
                         WorkMessage.Error(
                             "workable.execution_diagnostics.query.invalid",
-                            "Execution diagnostic query take must be between 1 and 1,000.",
+                            $"Execution diagnostic query take must be between 1 and {WorkExecutionDiagnosticCriteria.MaximumTake}.",
                             "take"),
                     },
                 });
@@ -49,7 +49,7 @@ internal static class WorkableHttpExecutionDiagnosticsRoutes
                     completedAfter,
                     completedBefore,
                     minimumLogLevel,
-                    Take: take ?? 100),
+                    Take: take ?? WorkExecutionDiagnosticCriteria.DefaultTake),
                 cancellationToken);
             return Results.Ok(result);
         });
@@ -119,13 +119,13 @@ internal static class WorkableHttpExecutionDiagnosticsRoutes
                 });
             }
 
+            var requestContext = await WorkableHttpRequestContext.Create(
+                httpContext,
+                system,
+                requestContexts,
+                request.Description);
             try
             {
-                var requestContext = await WorkableHttpRequestContext.Create(
-                    httpContext,
-                    system,
-                    requestContexts,
-                    request.Description);
                 var rule = await diagnostics.CreateExecutionDiagnosticCaptureRule(
                     request.DefinitionName,
                     request.MinimumLogLevel,
@@ -148,6 +148,21 @@ internal static class WorkableHttpExecutionDiagnosticsRoutes
                             "captureRule"),
                     },
                 });
+            }
+            catch (WorkExecutionDiagnosticsRepositoryException)
+            {
+                return Results.Json(
+                    new
+                    {
+                        Messages = new[]
+                        {
+                            WorkMessage.Error(
+                                "workable.execution_diagnostics.repository_failed",
+                                "The execution diagnostics capture rule could not be persisted.",
+                                "captureRule"),
+                        },
+                    },
+                    statusCode: StatusCodes.Status500InternalServerError);
             }
         });
 

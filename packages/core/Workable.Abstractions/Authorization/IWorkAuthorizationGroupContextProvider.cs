@@ -10,6 +10,11 @@ namespace Workable;
 public interface IWorkAuthorizationGroupContextProvider
 {
     /// <summary>
+    /// Gets the provider order. Host providers run before adapter defaults when they use a lower value.
+    /// </summary>
+    int Order => 0;
+
+    /// <summary>
     /// Attempts to resolve groups from the current invocation context.
     /// </summary>
     /// <param name="actor">The actor whose groups are required.</param>

@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Workable.Tests;
@@ -6,6 +7,22 @@ namespace Workable.Tests;
 [Trait("Category", "Authorization")]
 public sealed class ChildWorkExecutionShould
 {
+    [Fact]
+    public void TypedChildInputPreservesNullRawAndSerializedForms()
+    {
+        var method = typeof(ChildWorkQueueService).GetMethod(
+            "ToWorkInput",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var objectMethod = method.MakeGenericMethod(typeof(object));
+        var raw = WorkInput.FromJson("{\"value\":1}");
+
+        Assert.Null(objectMethod.Invoke(null, [null]));
+        Assert.Same(raw, objectMethod.Invoke(null, [raw]));
+        var serialized = Assert.IsType<WorkInput>(objectMethod.Invoke(null, [new { Value = 2 }]));
+        Assert.Contains("2", serialized.Json, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task RejectMalformedIdentifiersWithoutThrowing()
     {
@@ -236,7 +253,7 @@ public sealed class ChildWorkExecutionShould
         var parentCompletion = await parentHandle.WaitForCompletion();
         var childRequestContext = await childRan.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal(WorkQueueStatus.Unauthorized, directChild.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.NotFound, directChild.QueueOutcome.Status);
         Assert.True(parentHandle.QueueOutcome.IsAccepted);
         Assert.True(parentCompletion.IsCompletedSuccessfully);
         Assert.NotNull(delegatedOutcome);

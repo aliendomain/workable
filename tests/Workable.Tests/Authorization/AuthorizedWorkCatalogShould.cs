@@ -30,7 +30,7 @@ public sealed class AuthorizedWorkCatalogShould
     }
 
     [Fact]
-    public async Task DelegateReconfigurationForOperableDefinitions()
+    public async Task DelegateReconfigurationWithoutDisclosingUnreadableDefinition()
     {
         var catalog = CreateCatalog(
             out var visible,
@@ -46,11 +46,54 @@ public sealed class AuthorizedWorkCatalogShould
             new WorkDefinitionReconfiguration(WorkerOptions.Default with { ProfilingEnabled = true }));
 
         Assert.Equal(WorkDefinitionReconfigurationStatus.Accepted, outcome.Status);
-        Assert.NotNull(outcome.Definition);
-        Assert.True(outcome.Definition.DefaultOptions.ProfilingEnabled);
+        Assert.Null(outcome.Definition);
+        Assert.Equal(visible.Revision + 1, outcome.Revision);
         var updated = RequireFound(catalog.TryGet(visible.Name, out var found), found);
         Assert.True(updated.DefaultOptions.ProfilingEnabled);
         Assert.Equal(visible.Revision + 1, updated.Revision);
+    }
+
+    [Fact]
+    public async Task ReturnDefinitionSnapshotWhenReconfiguringCallerCanAlsoRead()
+    {
+        var catalog = CreateCatalog(
+            out var visible,
+            out _);
+        var authorized = new AuthorizedWorkCatalog(
+            catalog,
+            catalog,
+            new WorkAuthorizationEvaluator(catalog, Groups("visible.operate", "visible.read"), false),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var outcome = await authorized.Reconfigure(
+            visible.Version,
+            new WorkDefinitionReconfiguration(WorkerOptions.Default with { ProfilingEnabled = true }));
+
+        Assert.Equal(WorkDefinitionReconfigurationStatus.Accepted, outcome.Status);
+        Assert.NotNull(outcome.Definition);
+        Assert.True(outcome.Definition.DefaultOptions.ProfilingEnabled);
+        Assert.Equal(visible.Revision + 1, outcome.Revision);
+    }
+
+    [Fact]
+    public async Task RedactAuthoritativeDefinitionFromOperateOnlyRevisionConflict()
+    {
+        var catalog = CreateCatalog(
+            out var visible,
+            out _);
+        var authorized = new AuthorizedWorkCatalog(
+            catalog,
+            catalog,
+            new WorkAuthorizationEvaluator(catalog, Groups("visible.operate"), false),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var outcome = await authorized.Reconfigure(
+            new WorkDefinitionVersion(visible.Id, visible.Revision + 1),
+            new WorkDefinitionReconfiguration(WorkerOptions.Default with { ProfilingEnabled = true }));
+
+        Assert.Equal(WorkDefinitionReconfigurationStatus.Conflict, outcome.Status);
+        Assert.Null(outcome.Definition);
+        Assert.Equal(visible.Revision, outcome.Revision);
     }
 
     [Fact]

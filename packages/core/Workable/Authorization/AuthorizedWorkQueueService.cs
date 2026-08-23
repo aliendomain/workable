@@ -21,11 +21,19 @@ internal sealed class AuthorizedWorkQueueService(
             return NotFound(name);
         }
 
+        if (!authorization.CanDiscover(registeredWork.Definition))
+        {
+            return NotFound(name);
+        }
+
         var decision = authorization.AuthorizeQueue(registeredWork, input, options, requestContext);
         if (decision.IsAllowed)
         {
             var handle = await inner.Enqueue(name, input, options, cancellationToken);
-            return canViewDiagnostics ? handle : new ProfileFilteredWorkerHandle(handle);
+            var canRead = authorization.CanRead(registeredWork.Definition);
+            return canRead && canViewDiagnostics
+                ? handle
+                : new AuthorizedWorkerHandle(handle, canRead, canViewDiagnostics);
         }
 
         return decision.IsInvalid
@@ -44,12 +52,20 @@ internal sealed class AuthorizedWorkQueueService(
             return NotFound(name);
         }
 
+        if (!authorization.CanDiscover(registeredWork.Definition))
+        {
+            return NotFound(name);
+        }
+
         var workInput = ToWorkInput(input);
         var decision = authorization.AuthorizeQueue(registeredWork, workInput, options, requestContext);
         if (decision.IsAllowed)
         {
             var handle = await inner.Enqueue(name, workInput, options, cancellationToken);
-            return canViewDiagnostics ? handle : new ProfileFilteredWorkerHandle(handle);
+            var canRead = authorization.CanRead(registeredWork.Definition);
+            return canRead && canViewDiagnostics
+                ? handle
+                : new AuthorizedWorkerHandle(handle, canRead, canViewDiagnostics);
         }
 
         return decision.IsInvalid
@@ -74,22 +90,66 @@ internal sealed class AuthorizedWorkQueueService(
             _ => WorkInput.FromValue(input, WorkData.DefaultJsonOptions),
         };
 
-    private sealed class ProfileFilteredWorkerHandle(IWorkerHandle inner) : IWorkerHandle
+    private sealed class AuthorizedWorkerHandle(
+        IWorkerHandle inner,
+        bool canRead,
+        bool canViewDiagnostics) : IWorkerHandle
     {
-        public WorkQueueOutcome QueueOutcome => inner.QueueOutcome;
+        public WorkQueueOutcome QueueOutcome { get; } = WorkMessageAccessFilter.Apply(
+            inner.QueueOutcome,
+            canRead || canViewDiagnostics);
 
         public WorkerId? WorkerId => inner.WorkerId;
 
         public async Task<WorkCompletion> WaitForCompletion(
             CancellationToken cancellationToken = default)
-            => WorkProfileAccessFilter.Apply(
+        {
+            var completion = WorkProfileAccessFilter.Apply(
                 await inner.WaitForCompletion(cancellationToken),
-                canViewDiagnostics: false);
+                canViewDiagnostics);
+            completion = completion with
+            {
+                Messages = WorkMessageAccessFilter.Apply(
+                    completion.Messages,
+                    canRead || canViewDiagnostics),
+            };
+            return canRead
+                ? completion
+                : completion with
+                {
+                    Worker = null,
+                    Output = null,
+                };
+        }
 
         public async Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(
             CancellationToken cancellationToken = default)
-            => WorkProfileAccessFilter.Apply(
+        {
+            if (!canRead)
+            {
+                var untypedCompletion = WorkProfileAccessFilter.Apply(
+                    await inner.WaitForCompletion(cancellationToken),
+                    canViewDiagnostics);
+                return new WorkCompletion<TOutput>(
+                    untypedCompletion.Status,
+                    Worker: null,
+                    Output: default,
+                    RawOutput: null,
+                    Messages: WorkMessageAccessFilter.Apply(
+                        untypedCompletion.Messages,
+                        canViewDiagnostics));
+            }
+
+            var completion = WorkProfileAccessFilter.Apply(
                 await inner.WaitForCompletion<TOutput>(cancellationToken),
-                canViewDiagnostics: false);
+                canViewDiagnostics);
+            completion = completion with
+            {
+                Messages = WorkMessageAccessFilter.Apply(
+                    completion.Messages,
+                    canRead || canViewDiagnostics),
+            };
+            return completion;
+        }
     }
 }

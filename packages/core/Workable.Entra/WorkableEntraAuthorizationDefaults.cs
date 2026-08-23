@@ -11,11 +11,6 @@ public static class WorkableEntraAuthorizationDefaults
     public const string ConfigurationSectionName = "Workable:Entra";
 
     /// <summary>
-    /// The default Microsoft Entra authority host.
-    /// </summary>
-    public const string AuthorityHost = "https://login.microsoftonline.com";
-
-    /// <summary>
     /// The delegated-scope claim type.
     /// </summary>
     public const string ScopeClaimType = "scp";
@@ -34,16 +29,6 @@ public static class WorkableEntraAuthorizationDefaults
     /// The singular app-role claim type.
     /// </summary>
     public const string RoleClaimType = "role";
-
-    /// <summary>
-    /// The default SignalR query-string parameter name used for browser access tokens.
-    /// </summary>
-    public const string SignalRAccessTokenQueryStringName = "access_token";
-
-    /// <summary>
-    /// The default Workable SignalR hub path.
-    /// </summary>
-    public const string SignalRHubPath = "/workable/realtime";
 
     /// <summary>
     /// A suggested read-oriented delegated scope name.

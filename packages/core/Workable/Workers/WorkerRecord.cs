@@ -593,6 +593,7 @@ internal sealed class WorkerRecord(
         long expectedRevision,
         bool persistenceStoreAvailable = true)
     {
+        ArgumentNullException.ThrowIfNull(changes);
         lock (this.sync)
         {
             if (this.CheckRevision(WorkAction.Start, expectedRevision) is { } conflict)
@@ -608,9 +609,32 @@ internal sealed class WorkerRecord(
                     [WorkMessage.Error("workable.worker.final", "Final workers cannot be reconfigured.", "worker")]);
             }
 
+            if (!HasReconfigurationChanges(changes))
+            {
+                return WorkActionOutcome.Invalid(
+                    WorkAction.Start,
+                    this.ToSnapshotLocked(),
+                    [WorkMessage.Error(
+                        "workable.worker.reconfiguration.empty",
+                        "Worker reconfiguration requires at least one change.",
+                        "changes")]);
+            }
+
+            if (changes.ProfilingCaptureMode is { } profilingCaptureMode && !Enum.IsDefined(profilingCaptureMode))
+            {
+                return WorkActionOutcome.Invalid(
+                    WorkAction.Start,
+                    this.ToSnapshotLocked(),
+                    [WorkMessage.Error(
+                        "workable.worker.profiling_capture_mode.invalid",
+                        $"Profiling capture mode '{profilingCaptureMode}' is not supported.",
+                        "profilingCaptureMode")]);
+            }
+
             var options = this.Options with
             {
                 ProfilingEnabled = changes.ProfilingEnabled ?? this.Options.ProfilingEnabled,
+                ProfilingCaptureMode = changes.ProfilingCaptureMode ?? this.Options.ProfilingCaptureMode,
             };
 
             var configuration = this.Configuration;
@@ -705,6 +729,17 @@ internal sealed class WorkerRecord(
                 [WorkMessage.Info("workable.worker.reconfigured", "Worker configuration was updated.")]);
         }
     }
+
+    private static bool HasReconfigurationChanges(WorkerReconfiguration changes)
+        => changes.ProfilingEnabled is not null ||
+            changes.ProfilingCaptureMode is not null ||
+            changes.Start is not null ||
+            changes.Coordination is not null ||
+            changes.Recurrence is not null ||
+            changes.TransientRetry is not null ||
+            changes.FailedWorker is not null ||
+            changes.Logging is not null ||
+            changes.Retention is not null;
 
     public void SetFailedWorkerAutoCancelOverride(FailedWorkerAutoCancelOverride failedWorkerAutoCancelOverride)
     {

@@ -2189,7 +2189,7 @@ public sealed class WorkflowRuntimeInternalsShould
         Assert.False(outcome.IsAccepted);
         Assert.Equal(WorkflowActionStatus.Invalid, outcome.Status);
         Assert.Equal(WorkflowRunStatus.Blocked, run.GetStatus());
-        Assert.Contains(outcome.Messages, message => message.Code == "workable.worker.unauthorized");
+        Assert.Contains(outcome.Messages, message => message.Code == "workable.workflow.child_cancel_rejected");
         Assert.Single(workers.Executions);
     }
 
@@ -2302,7 +2302,7 @@ public sealed class WorkflowRuntimeInternalsShould
 
             Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
             Assert.False(completion.IsFinal);
-            Assert.Contains(completion.Messages, message => message.Code == "workable.worker.unauthorized");
+            Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_cancel_rejected");
             Assert.Contains(store.UpsertedRuns, persisted =>
                 persisted.RunId == run.Id && persisted.Status == WorkflowRunStatus.Blocked);
         }
@@ -2360,7 +2360,7 @@ public sealed class WorkflowRuntimeInternalsShould
             Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
             Assert.False(completion.IsFinal);
             Assert.Equal(WorkflowRunStatus.Blocked, run.GetStatus());
-            Assert.Contains(completion.Messages, message => message.Code == "workable.worker.unauthorized");
+            Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_cancel_rejected");
             Assert.Single(workers.Executions);
         }
         finally
@@ -2430,7 +2430,7 @@ public sealed class WorkflowRuntimeInternalsShould
             Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
             Assert.False(completion.IsFinal);
             Assert.Equal(WorkflowRunStatus.Blocked, run.GetStatus());
-            Assert.Contains(completion.Messages, message => message.Code == "workable.worker.unauthorized");
+            Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_cancel_rejected");
             Assert.Equal([(runningWorkerId, WorkAction.Cancel)], workers.Executions);
         }
         finally
@@ -2474,7 +2474,7 @@ public sealed class WorkflowRuntimeInternalsShould
         await task;
 
         Assert.Equal(WorkflowRunStatus.Blocked, run.GetStatus());
-        Assert.Contains(run.ToSnapshot().Messages, message => message.Code == "workable.worker.unauthorized");
+        Assert.Contains(run.ToSnapshot().Messages, message => message.Code == "workable.workflow.child_cancel_rejected");
         Assert.Contains(store.UpsertedRuns, persisted => persisted.Status == WorkflowRunStatus.Blocked);
         Assert.Equal(0, GetActionGateCount(runtime));
     }
@@ -2637,6 +2637,49 @@ public sealed class WorkflowRuntimeInternalsShould
             startExecution.Invoke(runtime, [run, workflow, false, null]));
 
         Assert.IsType<InvalidOperationException>(exception.InnerException);
+    }
+
+    [Fact]
+    public void StartExecutionRejectsDuplicateControlBookkeepingAndUnknownActions()
+    {
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.runtime.duplicate-control"),
+            Dispatch("dispatch", "sample.dispatch"));
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: null,
+            systemName: null,
+            createSession: _ => throw new NotSupportedException(),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var controlType = typeof(WorkflowRuntime).GetNestedType(
+            "WorkflowExecutionControl",
+            BindingFlags.NonPublic)!;
+        var control = Activator.CreateInstance(
+            controlType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [CancellationToken.None],
+            culture: null)!;
+        var controls = typeof(WorkflowRuntime).GetField(
+            "controls",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(runtime)!;
+        Assert.True((bool)controls.GetType().GetMethod("TryAdd")!.Invoke(controls, [run.Id, control])!);
+        var startExecution = typeof(WorkflowRuntime).GetMethod(
+            "StartExecution",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        var duplicate = Assert.Throws<TargetInvocationException>(() =>
+            startExecution.Invoke(runtime, [run, workflow, false, null]));
+        var toOperateAction = typeof(WorkflowRuntime).GetMethod(
+            "ToOperateAction",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        var invalidAction = Assert.Throws<TargetInvocationException>(() =>
+            toOperateAction.Invoke(null, [(WorkflowAction)int.MaxValue]));
+
+        Assert.IsType<InvalidOperationException>(duplicate.InnerException);
+        Assert.IsType<InvalidOperationException>(invalidAction.InnerException);
+        ((IDisposable)control).Dispose();
     }
 
     [Fact]

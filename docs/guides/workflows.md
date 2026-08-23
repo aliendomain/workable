@@ -294,7 +294,16 @@ builder.AddWorkflow(
         .AllowOperateToGroups("workflow.ops"));
 ```
 
-Starting a workflow checks workflow operate permission.
+Workflow controls enforce the same fine-grained grants and synchronous requirements as work controls:
+
+- starting a new workflow run requires `WorkOperationPermissions.Queue`
+- resuming a paused or blocked run requires `WorkOperationPermissions.Start`
+- pausing a run requires `WorkOperationPermissions.Pause`
+- canceling a run requires `WorkOperationPermissions.Cancel`
+
+`AllowOperateToGroups(...)` and `AllowOperateToKnownAuthenticatedUsers()` grant all of those operations. Use `AllowQueue...`, `AllowWorkerActions...`, or `AllowOperations...(mask)` when a workflow needs narrower audiences. Queue requirements evaluate the proposed workflow input. Worker-action requirements evaluate the retained original workflow input and receive the workflow action and run id through the existing work-authorization requirement contexts. The context's definition projection carries the workflow's name, description, category, schemas, metadata, and authorization metadata.
+
+Read remains independent from operation authorization. Read controls workflow catalog and retained-run queries; it is not required to start or control a run. Read and operation grants both imply discoverability. Requests for a workflow name or run id that the caller cannot discover return the same not-found outcome as nonexistent targets, while a discoverable target can return unauthorized when the caller lacks the requested operation.
 
 The workflow graph is also its child-execution declaration. `DispatchWork(...)`,
 `DispatchWorkFromWorkflowInput(...)`, and `DispatchEach(...)` may queue the work definitions named by
@@ -313,6 +322,16 @@ That delegation exists only while Workable executes the registered workflow grap
 The initiating actor, origin, and authentication state remain attached to each dispatched child for audit.
 For durable workflows, recovery retains that accepted graph-execution authority; it does not create a
 general permission to queue or control the child outside the workflow.
+
+Workflow operator projections enforce that same child Read boundary. Child ids, definition names,
+states, samples, summaries, and paged totals include only child definitions the viewing caller may
+Read, including when a completed child is represented by a retained workflow receipt.
+
+Parent workflow state also does not copy arbitrary child queue, completion, cancellation, or exception
+messages across that boundary. An unsuccessful child is represented by a stable workflow-owned status
+message, and a rejected child dispatch or cancellation uses a stable workflow-owned rejection message.
+The child's retained output and diagnostic messages remain available only through child-authorized reads;
+workflow engine exceptions and malformed dispatch-each JSON errors likewise use non-diagnostic text.
 
 ## Starting From In-Process Code
 
@@ -452,12 +471,23 @@ When starting a workflow over HTTP, the request body can include `input` for ste
 - `includeFinal`
 - `definitionName`
 - `childSampleSize`
+- `skip`
+- `take`
 
 `GET /workable/workflow-runs/{runId}` accepts:
 
 - `childSampleSize`
 
-`GET /workable/workflow-runs/{runId}/steps/{stepName}/children` accepts `skip` and `take` and returns a paged worker slice for the selected workflow node, including branch and parallel structure nodes.
+`childSampleSize` defaults to `3` and must be between `0` and `25`, inclusive. HTTP rejects values
+outside that range with `400 Bad Request`; MCP and SignalR return their normal invalid-request errors.
+Workflow-run lists default to `skip=0` and `take=50`; `skip` must be between `0` and `10000`, and
+`take` must be between `1` and `100`. The response includes `totalCount`, `skip`, and `take`.
+The runtime selects the bounded page from lightweight run state before resolving child snapshots.
+List and detail projections retain at most 256 distinct child-worker ids and matching completion receipts per run before building summaries or samples. This keeps one high-fan-out run from making HTTP, MCP, or recurring SignalR view work proportional to its complete child history. Use the paged step-children route when an operator must traverse a larger fan-out.
+
+`GET /workable/workflow-runs/{runId}/steps/{stepName}/children` accepts `skip` from `0` through
+`100000` and `take` from `1` through `100`. It returns a paged worker slice for the selected workflow
+node, including branch and parallel structure nodes, without snapshotting unrelated steps or receipts.
 
 ### MCP
 
@@ -486,11 +516,17 @@ The SignalR adapter exposes matching live workflow operator views through `Watch
 - `includeFinal`
 - `definitionName`
 - `childSampleSize`
+- `skip`
+- `take`
 
 `workflow-run` uses one `workflowRun` component and accepts:
 
 - `runId`
 - `childSampleSize`
+
+SignalR workflow options are strict JSON objects. Unknown properties, wrong value types, blank string
+values, child sample sizes outside `0` through `25`, and run pages outside the bounds above reject the watch before it consumes a
+subscription slot.
 
 These live views refresh when the workflow runtime changes and when child-worker state changes, so operator screens can show the authored workflow graph while still reflecting authoritative child-worker progress.
 
@@ -514,3 +550,7 @@ The event envelope uses the workflow definition name as `WorkDefinitionName`, se
 - `workflow-run`
 
 `workflow.step.updated` is useful for graph refresh triggers, and the final events are useful for list refresh, notifications, or audit-style monitoring.
+Workflow events are thin workflow-authorized change notifications: they omit child-worker counts and
+sanitize raw unhandled-exception text and metadata propagated from child completions. Query the child
+worker through its own Read-authorized surface when exact child cardinality or retained failure detail is
+required.

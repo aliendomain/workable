@@ -2,12 +2,15 @@ namespace Workable;
 
 internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
 {
+    private IEnumerable<string>? discoverGroups;
+    private bool discoverKnownAuthenticatedUsers;
     private IEnumerable<string>? readGroups;
+    private bool readKnownAuthenticatedUsers;
     private readonly List<WorkOperateAuthorizationGrant> groupOperateGrants = [];
     private readonly List<WorkOperateAuthorizationGrant> knownAuthenticatedOperateGrants = [];
 
     /// <summary>
-    /// Replaces both read and operate group requirements.
+    /// Resets explicit discovery and replaces read and operate authorization with group-based requirements.
     /// </summary>
     /// <param name="readGroups">The groups allowed to read the definition.</param>
     /// <param name="operateGroups">The groups allowed to queue and operate the definition.</param>
@@ -16,7 +19,10 @@ internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
         IEnumerable<string>? readGroups = null,
         IEnumerable<string>? operateGroups = null)
     {
+        this.discoverGroups = null;
+        this.discoverKnownAuthenticatedUsers = false;
         this.readGroups = readGroups;
+        this.readKnownAuthenticatedUsers = false;
         this.groupOperateGrants.Clear();
         this.knownAuthenticatedOperateGrants.Clear();
 
@@ -30,6 +36,37 @@ internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
                 []));
         }
 
+        return this;
+    }
+
+    /// <summary>
+    /// Replaces the explicit discover groups for the definition.
+    /// </summary>
+    /// <param name="groups">The groups allowed to discover the definition and its schemas.</param>
+    /// <returns>The same builder for chaining.</returns>
+    public IWorkAuthorizationBuilder AllowDiscoverToGroups(params string[] groups)
+    {
+        this.discoverGroups = groups;
+        return this;
+    }
+
+    /// <summary>
+    /// Allows discovery to callers represented by a known authenticated actor.
+    /// </summary>
+    /// <returns>The same builder for chaining.</returns>
+    public IWorkAuthorizationBuilder AllowDiscoverToKnownAuthenticatedUsers()
+    {
+        this.discoverKnownAuthenticatedUsers = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Allows read access to callers represented by a known authenticated actor.
+    /// </summary>
+    /// <returns>The same builder for chaining.</returns>
+    public IWorkAuthorizationBuilder AllowReadToKnownAuthenticatedUsers()
+    {
+        this.readKnownAuthenticatedUsers = true;
         return this;
     }
 
@@ -187,7 +224,10 @@ internal sealed class WorkAuthorizationBuilder : IWorkAuthorizationBuilder
                 this.readGroups,
                 operateAuthorization.Groups,
                 WorkAuthorizationRegistrationSource.Fluent,
-                operateKnownAuthenticatedUsers: operateAuthorization.AllowsKnownAuthenticatedUsers),
+                readKnownAuthenticatedUsers: this.readKnownAuthenticatedUsers,
+                operateKnownAuthenticatedUsers: operateAuthorization.AllowsKnownAuthenticatedUsers,
+                discoverGroups: this.discoverGroups,
+                discoverKnownAuthenticatedUsers: this.discoverKnownAuthenticatedUsers),
             operateAuthorization);
     }
 

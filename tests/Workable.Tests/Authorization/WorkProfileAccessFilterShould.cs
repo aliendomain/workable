@@ -53,6 +53,23 @@ public sealed class WorkProfileAccessFilterShould
         AssertProfileVisibility(worker, expected: true);
     }
 
+    [Fact]
+    public void PreserveCleanWorkerPrefixesWhileFilteringLaterProfiles()
+    {
+        var profiled = CreateProfiledWorker();
+        var clean = WorkProfileAccessFilter.Apply(profiled, canViewDiagnostics: false);
+        var result = new WorkSystemStopResult([clean, profiled])
+        {
+            CancellationRequestedWorkers = [clean],
+        };
+
+        var filtered = WorkProfileAccessFilter.Apply(result, canViewDiagnostics: false);
+
+        Assert.Same(clean, filtered.ForceInterruptedWorkers[0]);
+        AssertProfileVisibility(filtered.ForceInterruptedWorkers[1], expected: false);
+        Assert.Same(clean, filtered.CancellationRequestedWorkers[0]);
+    }
+
     private static WorkerSnapshot CreateProfiledWorker()
     {
         var now = DateTimeOffset.UtcNow;

@@ -40,8 +40,7 @@ internal static class WorkflowEventPayloads
         DateTimeOffset? CompletedAt,
         string? CurrentStepName,
         WorkflowStepKind? CurrentStepKind,
-        WorkflowStepRunStatus? CurrentStepStatus,
-        int OutstandingChildWorkerCount)
+        WorkflowStepRunStatus? CurrentStepStatus)
     {
         public static WorkflowEventRunPayload From(WorkflowRunSnapshot run)
         {
@@ -55,8 +54,7 @@ internal static class WorkflowEventPayloads
                 run.CompletedAt,
                 currentStep?.Name,
                 currentStep?.Kind,
-                currentStep?.Status,
-                CountOutstandingChildren(run));
+                currentStep?.Status);
         }
 
         private static WorkflowStepRunSnapshot? ResolveCurrentStep(WorkflowRunSnapshot run)
@@ -64,52 +62,12 @@ internal static class WorkflowEventPayloads
                 ?? run.Steps.LastOrDefault(step => step.Status == WorkflowStepRunStatus.Running)
                 ?? run.Steps.LastOrDefault(step => step.Status == WorkflowStepRunStatus.Completed);
 
-        private static int CountOutstandingChildren(WorkflowRunSnapshot run)
-        {
-            var outstanding = 0;
-            foreach (var step in run.Steps)
-            {
-                switch (step.Kind)
-                {
-                    case WorkflowStepKind.DispatchWork:
-                    case WorkflowStepKind.DispatchEach:
-                    case WorkflowStepKind.Parallel:
-                    case WorkflowStepKind.Branch:
-                        if (step.Status == WorkflowStepRunStatus.Completed)
-                        {
-                            outstanding += step.WorkerIds.Count(workerId =>
-                                !run.ChildReceipts.Any(receipt =>
-                                    receipt.WorkerId == workerId &&
-                                    receipt.CompletionStatus == WorkCompletionStatus.Completed));
-                        }
-
-                        break;
-                    case WorkflowStepKind.Join:
-                        if (step.Status == WorkflowStepRunStatus.Completed)
-                        {
-                            outstanding = 0;
-                        }
-                        else if (step.Status == WorkflowStepRunStatus.Running && step.WorkerIds.Count > 0)
-                        {
-                            outstanding = step.WorkerIds.Count(workerId =>
-                                !run.ChildReceipts.Any(receipt =>
-                                    receipt.WorkerId == workerId &&
-                                    receipt.CompletionStatus == WorkCompletionStatus.Completed));
-                        }
-
-                        break;
-                }
-            }
-
-            return outstanding;
-        }
     }
 
     private sealed record WorkflowEventStepPayload(
         string Name,
         WorkflowStepKind Kind,
         WorkflowStepRunStatus Status,
-        int WorkerCount,
         DateTimeOffset? StartedAt,
         DateTimeOffset? CompletedAt)
     {
@@ -118,7 +76,6 @@ internal static class WorkflowEventPayloads
                 step.Name,
                 step.Kind,
                 step.Status,
-                step.WorkerIds.Count,
                 step.StartedAt,
                 step.CompletedAt);
     }

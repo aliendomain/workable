@@ -86,6 +86,21 @@ public sealed record WorkWorkerOverviewWorker(
     int ConfigDifferenceCount)
 {
     /// <summary>
+    /// Gets whether profiling is enabled for this worker.
+    /// </summary>
+    public bool ProfilingEnabled { get; init; }
+
+    /// <summary>
+    /// Gets how automatic instrumentation is retained for this worker.
+    /// </summary>
+    public WorkProfileCaptureMode ProfilingCaptureMode { get; init; }
+
+    /// <summary>
+    /// Gets whether the caller may toggle full profile capture for this worker.
+    /// </summary>
+    public bool CanToggleFullProfileCapture { get; init; }
+
+    /// <summary>
     /// Gets the trusted workflow run associated with the worker, when the worker belongs to a workflow.
     /// </summary>
     public WorkflowRunId? WorkflowRunId { get; init; }

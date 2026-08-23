@@ -95,7 +95,7 @@ Explicit nodes created through `AddInfo`, `StartTiming`, `CreateScope`, and `Cre
 
 ### Temporary Full Capture
 
-The Workable HTTP API and admin UI can create temporary full-capture rules for future workers. A rule can match a work definition, the stable `WorkRequestContext.Actor.Id`, or both. A matching rule:
+The Workable HTTP API and admin UI can create temporary full-capture rules for future workers. A rule can match a work definition, the stable `WorkRequestContext.Actor.Id`, both selectors, or neither selector as a system-wide fallback. A matching rule:
 
 - enables profiling for the worker even if its inherited option was disabled;
 - sets `WorkerOptions.ProfilingCaptureMode` to `Full`;
@@ -105,11 +105,11 @@ The Workable HTTP API and admin UI can create temporary full-capture rules for f
 
 Rules are intentionally in-memory operational state. They do not survive a host restart. The resolved `Full` capture mode is stored on an accepted worker's effective options, including durable queue entries, so delayed execution still honors the capture decision.
 
-Rules default to one match and a 30-minute lifetime. The supported ranges are 1–1,000 matches and 1–1,440 minutes, each work-definition or actor-id selector is limited to 512 characters, and a system can have at most 1,000 active rules. When a worker matches more than one rule, a combined work-type-and-actor rule is selected before a broader single-selector rule; equally specific rules are selected oldest first. Steady-state queue matching uses immutable indexes for the exact work-type and actor selectors, then reserves and completes a match atomically without taking the rule-administration lock or scanning unrelated rules. Administrative reads and creates reclaim exhausted or expired rules in one batch and rebuild the index once under the administration lock. Stopping and restarting a system in the same host does not clear its rules, but restarting the host does.
+Rules default to one match and a 30-minute lifetime. The supported ranges are 1–1,000 matches and 1–1,440 minutes, each work-definition or actor-id selector is limited to 512 characters, and a system can have at most 1,000 active rules. A rule with neither selector is a system-wide fallback for all future workers. When a worker matches more than one rule, a combined work-type-and-actor rule is selected before a broader single-selector rule, and a global rule is considered only after selector-based rules are unavailable; equally specific rules are selected oldest first. Steady-state queue matching uses immutable indexes for the exact work-type and actor selectors plus the global fallback, then reserves and completes a match atomically without taking the rule-administration lock or scanning unrelated rules. Administrative reads and creates reclaim exhausted or expired rules in one batch and rebuild the index once under the administration lock. Stopping and restarting a system in the same host does not clear its rules, but restarting the host does.
 
 Use short expirations and small match counts. Full capture is deliberately unbounded because it represents an explicit diagnostic choice.
 
-On an authorization-enabled system, explicitly selecting `WorkerOptions.ProfilingCaptureMode.Full` at queue time requires both the work definition's normal queue permission and system-level diagnostics permission. Persisting `Full` in reconfigured definition defaults likewise requires both definition-reconfiguration permission and diagnostics permission. Trusted host startup configuration is not caller-authorized and is unaffected.
+On an authorization-enabled system, queueing a worker whose effective options enable `WorkerOptions.ProfilingCaptureMode.Full` requires both the work definition's normal queue permission and system-level diagnostics permission. This includes enabling profiling while inheriting `Full` from definition defaults, as well as queuing against defaults that already enable full capture. Reconfiguring a worker or definition from a non-full state into effective full capture has the same diagnostics requirement; merely selecting `Full` while profiling remains disabled does not. Trusted host startup configuration can still declare those defaults, but callers need diagnostics access when a queue operation would activate them.
 
 `Full` bypasses only the automatic instrumentation node-count limit. It does not bypass:
 
@@ -123,22 +123,31 @@ A system administrator can create a capture rule because system administration i
 
 ### Bypass the Limit in the Admin UI
 
-To capture a work type:
+To capture the next workers across the system:
+
+1. Select the system.
+2. Open **Catalog**.
+3. At the top of the catalog, set **Workers to capture** and **Expires after (minutes)** in **Full profile capture**.
+4. Select **Capture all work**.
+
+To capture the next workers for one work definition:
 
 1. Select the system.
 2. Open **Catalog** and select the work definition.
-3. In **Full profile capture**, set **Matching workers** and **Expires after (minutes)**.
-4. Select **Capture by work type**.
+3. In **Full profile capture**, set **Workers to capture** and **Expires after (minutes)**.
+4. Select **Capture this definition**.
 
-To capture work for a user or actor:
+To change one existing worker:
 
 1. Select the system and open **Workers**.
-2. Open a retained worker created by that actor and expand **Worker controls**.
-3. In **Full profile capture**, choose **Capture by user** or **Capture this user + work type**.
+2. Open the worker and expand **Worker controls**.
+3. In **Full profile capture**, choose **Capture this worker**. The same control disables full capture after it is enabled.
 
-The worker detail page uses that worker's stable actor id only as a selector. It does not recapture or change the existing worker. The rule applies to future accepted workers. Definition names match case-insensitively; actor ids match exactly.
+The worker control reconfigures only that worker. The change applies to its next execution; an iteration already running is not restarted. Disabling full capture returns the worker to normal bounded profiling. It requires both diagnostics access and permission to reconfigure that worker.
 
-The UI needs access to the built-in Workable HTTP surface and diagnostics access to list, create, or delete rules. Full-capture controls are not rendered when the selected system reports that the caller lacks diagnostics access. A system administrator has diagnostics permission by default. Rule creation is separate from queueing, and the UI does not elevate queue rights.
+Actor-id and combined actor/definition rules remain available through the HTTP API for clients that have a trusted actor identifier. The admin UI does not currently provide actor-rule creation because it cannot enumerate or validate the host application's actor ids. Definition names match case-insensitively; actor ids match exactly.
+
+The UI needs access to the built-in Workable HTTP surface and diagnostics access to list rules. Creating or deleting global and definition rules requires `ControlSystem`; without it, the card remains visible but read-only. The card is not rendered when the selected system reports that the caller lacks diagnostics access. A system administrator has both diagnostics and control permission by default. Rule creation is separate from queueing, and the UI does not elevate queue rights. The exact worker toggle remains subject to diagnostics access and the worker's normal reconfiguration authorization.
 
 ## Profile From Work
 

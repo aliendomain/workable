@@ -18,13 +18,15 @@ public sealed class AuthorizedWorkQueueServiceShould
             out var inner);
 
         var byName = await queue.Enqueue("missing.work");
+        var typed = await queue.Enqueue("missing.work", new QueueInput("missing"));
 
         Assert.Equal(WorkQueueStatus.NotFound, byName.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.NotFound, typed.QueueOutcome.Status);
         Assert.Empty(inner.Calls);
     }
 
     [Fact]
-    public async Task ReturnUnauthorizedWithoutCallingInnerForInoperableDefinitions()
+    public async Task ReturnNotFoundWithoutCallingInnerForHiddenInoperableDefinitions()
     {
         var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
         var hidden = CreateRegisteredWork("hidden.work", authorize => authorize.AllowOperateToGroups("hidden.operate"));
@@ -35,6 +37,28 @@ public sealed class AuthorizedWorkQueueServiceShould
             out var inner);
 
         var byName = await queue.Enqueue(hidden.Definition.Name);
+        var typed = await queue.Enqueue(hidden.Definition.Name, new QueueInput("hidden"));
+
+        Assert.Equal(WorkQueueStatus.NotFound, byName.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.NotFound, typed.QueueOutcome.Status);
+        Assert.Empty(inner.Calls);
+    }
+
+    [Fact]
+    public async Task ReturnUnauthorizedForDiscoverableDefinitionsOutsideQueueScope()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize
+                .AllowReadToGroups("visible.read")
+                .AllowQueueToGroups("visible.queue"));
+        var queue = CreateQueueService(
+            groups: ["visible.read"],
+            works: [visible],
+            out _,
+            out var inner);
+
+        var byName = await queue.Enqueue(visible.Definition.Name);
 
         Assert.Equal(WorkQueueStatus.Unauthorized, byName.QueueOutcome.Status);
         Assert.Empty(inner.Calls);
@@ -229,6 +253,165 @@ public sealed class AuthorizedWorkQueueServiceShould
         Assert.Single(inner.Calls);
     }
 
+    [Fact]
+    public async Task RedactWorkerAndUnhandledExceptionDetailsFromQueueOnlyCompletions()
+    {
+        var visible = CreateRegisteredWork(
+            "queue.only.completion",
+            authorize => authorize.AllowQueueToGroups("visible.queue"));
+        var queue = CreateQueueService(
+            groups: ["visible.queue"],
+            works: [visible],
+            out _,
+            out var inner);
+        var occurredAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        inner.Completion = new WorkCompletion(
+            WorkCompletionStatus.Failed,
+            CreateWorker(visible.Definition.Name),
+            Output: WorkOutput.FromValue("secret completion output"),
+            Messages:
+            [
+                new WorkMessage(
+                    "workable.execution.exception",
+                    WorkMessageSeverity.Error,
+                    "System.InvalidOperationException: secret stack",
+                    Metadata: new Dictionary<string, object?> { ["exception"] = "secret" })
+                {
+                    OccurredAt = occurredAt,
+                },
+                WorkMessage.Error("workable.test.safe", "safe detail"),
+            ]);
+
+        var handle = await queue.Enqueue(visible.Definition.Name);
+        var raw = await handle.WaitForCompletion();
+        var typed = await handle.WaitForCompletion<string>();
+
+        Assert.Null(raw.Worker);
+        Assert.Null(raw.Output);
+        Assert.Null(typed.Worker);
+        Assert.Null(typed.Output);
+        Assert.Null(typed.RawOutput);
+        Assert.Equal(WorkCompletionStatus.Failed, raw.Status);
+        Assert.Equal("Work execution failed with an unhandled exception.", raw.Messages[0].Text);
+        Assert.Null(raw.Messages[0].Metadata);
+        Assert.Equal(occurredAt, raw.Messages[0].OccurredAt);
+        Assert.Equal("safe detail", raw.Messages[1].Text);
+        Assert.Equal(raw.Messages, typed.Messages);
+    }
+
+    [Fact]
+    public async Task RedactQueueOnlyOutputBeforeTypedDeserialization()
+    {
+        var visible = CreateRegisteredWork(
+            "queue.only.malformed.completion",
+            authorize => authorize.AllowQueueToGroups("visible.queue"));
+        var queue = CreateQueueService(
+            groups: ["visible.queue"],
+            works: [visible],
+            out _,
+            out var inner);
+        inner.Completion = new WorkCompletion(
+            WorkCompletionStatus.Completed,
+            CreateWorker(visible.Definition.Name),
+            Output: WorkOutput.FromJson("{malformed-json"),
+            Messages: []);
+
+        var completion = await (await queue.Enqueue(visible.Definition.Name))
+            .WaitForCompletion<QueueInput>();
+
+        Assert.Equal(WorkCompletionStatus.Completed, completion.Status);
+        Assert.Null(completion.Worker);
+        Assert.Null(completion.Output);
+        Assert.Null(completion.RawOutput);
+    }
+
+    [Fact]
+    public async Task PreserveWorkerAndExceptionDetailsWhenReadIsGranted()
+    {
+        var visible = CreateRegisteredWork(
+            "readable.completion",
+            authorize =>
+            {
+                authorize.AllowQueueToGroups("visible.queue");
+                authorize.AllowReadToGroups("visible.read");
+            });
+        var queue = CreateQueueService(
+            groups: ["visible.queue", "visible.read"],
+            works: [visible],
+            out _,
+            out var inner);
+        var worker = CreateWorker(visible.Definition.Name);
+        var output = WorkOutput.FromValue("retained completion output");
+        var exception = WorkMessage.Error(
+            "workable.execution.exception",
+            "System.InvalidOperationException: retained detail");
+        inner.Completion = new WorkCompletion(WorkCompletionStatus.Failed, worker, output, [exception]);
+
+        var completion = await (await queue.Enqueue(visible.Definition.Name)).WaitForCompletion();
+
+        Assert.Same(worker, completion.Worker);
+        Assert.Same(output, completion.Output);
+        Assert.Same(exception, Assert.Single(completion.Messages));
+    }
+
+    [Fact]
+    public async Task RedactPersistenceProviderDetailsFromQueueOnlyOutcomes()
+    {
+        var visible = CreateRegisteredWork(
+            "queue.only.persistence.failure",
+            authorize => authorize.AllowQueueToGroups("visible.queue"));
+        var queue = CreateQueueService(
+            groups: ["visible.queue"],
+            works: [visible],
+            out _,
+            out var inner);
+        var providerFailure = new WorkMessage(
+            "workable.queue_durability.store_unreachable",
+            WorkMessageSeverity.Error,
+            "Server=db.internal;Password=secret",
+            Metadata: new Dictionary<string, object?> { ["provider"] = "secret" });
+        inner.NextQueueOutcome = WorkQueueOutcome.Invalid(
+            [providerFailure, WorkMessage.Error("workable.test.safe", "safe detail")]);
+
+        var handle = await queue.Enqueue(visible.Definition.Name);
+        var outcome = handle.QueueOutcome;
+
+        Assert.Equal(WorkQueueStatus.Invalid, outcome.Status);
+        Assert.Equal(
+            "The persistence store required for durable queueing is currently unavailable.",
+            outcome.Messages[0].Text);
+        Assert.Null(outcome.Messages[0].Metadata);
+        Assert.Equal("safe detail", outcome.Messages[1].Text);
+        Assert.Same(providerFailure, inner.NextQueueOutcome.Messages[0]);
+        Assert.Same(outcome, handle.QueueOutcome);
+    }
+
+    [Fact]
+    public async Task PreservePersistenceProviderDetailsInQueueOutcomesWhenReadIsGranted()
+    {
+        var visible = CreateRegisteredWork(
+            "readable.persistence.failure",
+            authorize =>
+            {
+                authorize.AllowQueueToGroups("visible.queue");
+                authorize.AllowReadToGroups("visible.read");
+            });
+        var queue = CreateQueueService(
+            groups: ["visible.queue", "visible.read"],
+            works: [visible],
+            out _,
+            out var inner);
+        inner.NextQueueOutcome = WorkQueueOutcome.Invalid(
+            [WorkMessage.Error(
+                "workable.idempotency.persistence_store_unreachable",
+                "diagnostic provider detail")]);
+
+        var handle = await queue.Enqueue(visible.Definition.Name);
+
+        Assert.Same(inner.NextQueueOutcome, handle.QueueOutcome);
+        Assert.Equal("diagnostic provider detail", Assert.Single(handle.QueueOutcome.Messages).Text);
+    }
+
     private static AuthorizedWorkQueueService CreateQueueService(
         IReadOnlyList<string> groups,
         IReadOnlyList<RegisteredWork> works,
@@ -253,6 +436,31 @@ public sealed class AuthorizedWorkQueueServiceShould
                     : new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, normalizedGroups)),
             requestContext,
             canViewDiagnostics: false);
+    }
+
+    private static WorkerSnapshot CreateWorker(string definitionName)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new WorkerSnapshot(
+            WorkerId.New(),
+            Revision: 1,
+            StateSequence: 1,
+            DefinitionName: definitionName,
+            DefinitionCategory: "Tests",
+            SubjectId: null,
+            ConcurrencyKey: null,
+            Identifiers: new HashSet<WorkIdentifier>(),
+            RequestContext: WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            State: WorkerState.Failed,
+            Input: null,
+            Output: null,
+            Options: WorkerOptions.Default,
+            Configuration: WorkConfiguration.Default,
+            Messages: [],
+            InterruptionReason: null,
+            CreatedAt: now,
+            StateChangedAt: now,
+            UpdatedAt: now);
     }
 
     private static RegisteredWork CreateRegisteredWork(
@@ -300,6 +508,14 @@ public sealed class AuthorizedWorkQueueServiceShould
     {
         public List<RecordedQueueCall> Calls { get; } = [];
 
+        public WorkQueueOutcome? NextQueueOutcome { get; set; }
+
+        public WorkCompletion Completion { get; set; } = new(
+            WorkCompletionStatus.Completed,
+            Worker: null,
+            Output: null,
+            Messages: []);
+
         public int DurableWorkNotifications { get; private set; }
 
         public void NotifyDurableWorkAvailable()
@@ -325,22 +541,25 @@ public sealed class AuthorizedWorkQueueServiceShould
             return Accepted();
         }
 
-        private static Task<IWorkerHandle> Accepted()
+        private Task<IWorkerHandle> Accepted()
             => Task.FromResult<IWorkerHandle>(new RecordingWorkerHandle(
-                WorkQueueOutcome.Accepted(WorkerId.New())));
+                this.NextQueueOutcome ?? WorkQueueOutcome.Accepted(WorkerId.New()),
+                this.Completion));
     }
 
-    private sealed class RecordingWorkerHandle(WorkQueueOutcome queueOutcome) : IWorkerHandle
+    private sealed class RecordingWorkerHandle(
+        WorkQueueOutcome queueOutcome,
+        WorkCompletion completion) : IWorkerHandle
     {
         public WorkQueueOutcome QueueOutcome { get; } = queueOutcome;
 
         public WorkerId? WorkerId => this.QueueOutcome.WorkerId;
 
         public Task<WorkCompletion> WaitForCompletion(CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
+            => Task.FromResult(completion);
 
         public Task<WorkCompletion<TOutput>> WaitForCompletion<TOutput>(CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
+            => Task.FromResult(completion.ToTyped<TOutput>());
     }
 
     private sealed class NoopExecutor : IWorkExecutor

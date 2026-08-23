@@ -31,12 +31,16 @@ internal sealed class WorkflowPersistenceCoordinator(
             return Task.CompletedTask;
         }
 
-        return this.store?.InitializeWorkflows(
+        if (this.store is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return this.store.InitializeWorkflows(
             new WorkflowPersistenceInitializationContext(
                 this.workSystemName,
                 durableDefinitions),
-            cancellationToken)
-            ?? Task.CompletedTask;
+            cancellationToken);
     }
 
     public IAsyncEnumerable<WorkflowRunPersistenceRecord> ListRuns(CancellationToken cancellationToken)
@@ -60,7 +64,9 @@ internal sealed class WorkflowPersistenceCoordinator(
         ArgumentNullException.ThrowIfNull(createRun);
         return this.RunExclusive(
             runId,
-            () => this.store?.UpsertWorkflowRun(createRun(), cancellationToken) ?? Task.CompletedTask,
+            () => this.store is null
+                ? Task.CompletedTask
+                : this.store.UpsertWorkflowRun(createRun(), cancellationToken),
             cancellationToken);
     }
 
@@ -154,8 +160,9 @@ internal sealed class WorkflowPersistenceCoordinator(
     public Task<IReadOnlySet<WorkerId>> DurableWorkersExist(
         IReadOnlyCollection<WorkerId> workerIds,
         CancellationToken cancellationToken)
-        => this.store?.DurableWorkersExist(workerIds, cancellationToken)
-        ?? Task.FromResult<IReadOnlySet<WorkerId>>(new HashSet<WorkerId>());
+        => this.store is null
+            ? Task.FromResult<IReadOnlySet<WorkerId>>(new HashSet<WorkerId>())
+            : this.store.DurableWorkersExist(workerIds, cancellationToken);
 
     public Task ExecuteTransaction(
         WorkflowRunId runId,

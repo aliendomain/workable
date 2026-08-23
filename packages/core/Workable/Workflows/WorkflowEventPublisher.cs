@@ -47,7 +47,9 @@ internal sealed class WorkflowEventPublisher(
         this.Publish(
             completion.Run,
             eventType,
-            messages: completion.Messages.Count > 0 ? completion.Messages : null);
+            messages: completion.Messages.Count > 0
+                ? WorkMessageAccessFilter.Apply(completion.Messages, canReadRetainedDetails: false)
+                : null);
     }
 
     private void Publish(

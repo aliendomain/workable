@@ -68,6 +68,7 @@ public sealed class WorkableHttpWorkerAdapter
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Changes);
 
         return session.Workers.Reconfigure(new WorkerVersion(workerId, request.Revision), request.Changes, cancellationToken);
     }

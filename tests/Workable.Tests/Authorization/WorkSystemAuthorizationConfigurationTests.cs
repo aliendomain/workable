@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Reflection;
 using Workable;
 
 namespace Workable.Tests;
@@ -122,15 +123,50 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         await using var subscription = readerSession.Changes.Subscribe();
         await using var reader = subscription.Read().GetAsyncEnumerator();
 
-        inMemory.ChangeStream.Publish(WorkChangeKey.Actor("hidden-actor"));
+        inMemory.ChangeStream.Publish(
+            WorkChangeKey.Worker(WorkerId.New()).ScopeToDefinition(hidden.Name));
+        inMemory.ChangeStream.Publish(
+            WorkChangeKey.Subject(new WorkSubjectId("tenant", "visible"))
+                .ScopeToDefinition(visible.Name));
         inMemory.ChangeStream.Publish(WorkChangeKey.Definition(hidden.Name));
+        inMemory.ChangeStream.Publish(new WorkChangeKey((WorkChangeKind)int.MaxValue, "unknown", "unknown"));
         inMemory.ChangeStream.Publish(WorkChangeKey.Definition(visible.Name));
 
-        var change = await ReadNextChange(reader);
-        Assert.Equal(WorkChangeKey.Definition(visible.Name), change.Key);
+        var scopedChange = await ReadNextChange(reader);
+        var definitionChange = await ReadNextChange(reader);
+        Assert.Equal(WorkChangeKind.Subject, scopedChange.Key.Kind);
+        Assert.Equal(visible.Name, scopedChange.Key.DefinitionName);
+        Assert.Equal(WorkChangeKey.Definition(visible.Name), definitionChange.Key);
         var diagnostics = Assert.IsAssignableFrom<IWorkChangeSubscriptionDiagnostics>(subscription)
             .GetDiagnosticsSnapshot();
         Assert.Equal(0, diagnostics.AcceptedChangeCount);
+    }
+
+    [Fact]
+    public async Task DiagnosticsOnlySessionObservesDiagnosticsChangeKeys()
+    {
+        var definition = PausedDefinition("diagnostics.change");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["diagnostics"] = Groups("system.diagnostics"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .ConfigureAuthorization(authorization => authorization.AllowDiagnosticsToGroups("system.diagnostics"))
+                .AddWork(definition, SuccessfulWork, configure: null, authorize: authorize =>
+                    authorize.AllowReadToGroups("private.read")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var inMemory = Assert.IsType<InMemoryWorkSystem>(system);
+        var session = await system.CreateSession(CreateRequestContext("diagnostics"));
+        await using var subscription = session.Changes.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var expected = WorkChangeKey.Diagnostics("queue");
+
+        inMemory.ChangeStream.Publish(WorkChangeKey.Worker(WorkerId.New()));
+        inMemory.ChangeStream.Publish(expected);
+
+        Assert.Equal(expected, (await ReadNextChange(reader)).Key);
     }
 
     [Fact]
@@ -387,7 +423,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Empty(session.Catalog.Definitions);
-        Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.NotFound, queued.QueueOutcome.Status);
     }
 
     [Fact]
@@ -403,9 +439,14 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var system = provider.GetRequiredService<IWorkSystem>();
         await system.Start();
 
-        var session = await system.CreateSession(CreateRequestContext("operator"));
+        var requestContext = CreateRequestContext("operator");
+        var access = await system.DescribeAccess(requestContext);
+        var session = await system.CreateSession(requestContext);
         var queued = await session.Queue.Enqueue(definition.Name);
 
+        Assert.True(access.CanDiscoverAllWork);
+        Assert.Equal(1, access.DiscoverableDefinitionCount);
+        Assert.Single(session.Discovery.Definitions);
         Assert.Single(session.Catalog.Definitions);
         Assert.True(queued.QueueOutcome.IsAccepted);
     }
@@ -453,8 +494,10 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
         var definition = Assert.Single((await system.CreateSession(CreateRequestContext("reader"))).Catalog.Definitions);
 
+        Assert.Equal(WorkAuthorizationRegistrationSource.Attribute, definition.Authorization.Discover.Source);
         Assert.Equal(WorkAuthorizationRegistrationSource.Attribute, definition.Authorization.Read.Source);
         Assert.Equal(WorkAuthorizationRegistrationSource.Attribute, definition.Authorization.Operate.Source);
+        Assert.Equal(["attr.discover"], definition.Authorization.Discover.Groups.OrderBy(group => group).ToArray());
         Assert.Equal(["attr.read"], definition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
         Assert.Equal(["attr.operate"], definition.Authorization.Operate.Groups.OrderBy(group => group).ToArray());
     }
@@ -479,6 +522,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
         Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Read.Source);
         Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, definition.Authorization.Operate.Source);
+        Assert.Equal(WorkAuthorizationRegistrationSource.None, definition.Authorization.Discover.Source);
         Assert.Equal(["fluent.read"], definition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
         Assert.Equal(["fluent.operate"], definition.Authorization.Operate.Groups.OrderBy(group => group).ToArray());
     }
@@ -505,6 +549,168 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         Assert.Equal(["allow.read"], definition.Authorization.Read.Groups.OrderBy(group => group).ToArray());
         Assert.Equal(WorkAuthorizationRegistrationSource.None, definition.Authorization.Operate.Source);
         Assert.Empty(definition.Authorization.Operate.Groups);
+    }
+
+    [Fact]
+    public async Task FluentAllowReadToKnownAuthenticatedUsersExposesSchemaWithoutOperateAccess()
+    {
+        var inputSchema = WorkSchema.FromType<string>();
+        var registeredDefinition = WorkDefinition.Create(
+            "allow.read.known.authenticated.definition",
+            inputSchema: inputSchema,
+            configuration: WorkConfiguration.Default with { Start = WorkStartConfiguration.DoNotStart });
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                registeredDefinition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowReadToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var session = await system.CreateSession(CreateKnownAuthenticatedRequestContext("known-reader"));
+
+        var visibleDefinition = Assert.Single(session.Catalog.Definitions);
+        var queued = await session.Queue.Enqueue(registeredDefinition.Name);
+
+        Assert.Equal(inputSchema, visibleDefinition.InputSchema);
+        Assert.Equal(WorkAuthorizationRegistrationSource.Fluent, visibleDefinition.Authorization.Read.Source);
+        Assert.True(visibleDefinition.Authorization.Read.AllowsKnownAuthenticatedUsers);
+        Assert.Equal(WorkAuthorizationRegistrationSource.None, visibleDefinition.Authorization.Operate.Source);
+        Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
+    }
+
+    [Fact]
+    public async Task DiscoveryOnlyAndOperateAudiencesSeeRedactedDescriptorsWithoutReceivingReadAccess()
+    {
+        var metadata = new WorkDefinitionMetadata(
+            Purpose: "Describe discovery authorization in tests.",
+            Capabilities: ["discovery-test"]);
+        var inputSchema = WorkSchema.FromType<string>();
+        var discoverableDefinition = WorkDefinition.Create(
+            "allow.discover.definition",
+            description: "Discoverable without retained work access.",
+            category: "Discovery",
+            inputSchema: inputSchema,
+            metadata: metadata,
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.Mcp),
+            });
+        var operableDefinition = PausedDefinition("operate.implies.discovery");
+        var hiddenDefinition = PausedDefinition("hidden.from.discovery");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>
+                {
+                    ["caller"] = Groups("work.discover", "work.operate"),
+                }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .AddWork(
+                    discoverableDefinition,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowDiscoverToGroups("work.discover"))
+                .AddWork(
+                    operableDefinition,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowOperateToGroups("work.operate"))
+                .AddWork(
+                    hiddenDefinition,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowDiscoverToGroups("other.discover")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        await system.Start();
+        var session = await system.CreateSession(CreateRequestContext("caller"));
+
+        var descriptors = session.Discovery.Definitions.OrderBy(definition => definition.Name).ToArray();
+        var discoverable = Assert.Single(
+            descriptors,
+            descriptor => descriptor.Name == discoverableDefinition.Name);
+        var discoverOnlyQueue = await session.Queue.Enqueue(discoverableDefinition.Name);
+        var operateQueue = await session.Queue.Enqueue(operableDefinition.Name);
+
+        Assert.Equal(2, descriptors.Length);
+        Assert.Equal(discoverableDefinition.Description, discoverable.Description);
+        Assert.Equal(discoverableDefinition.Category, discoverable.Category);
+        Assert.Equal(inputSchema, discoverable.InputSchema);
+        Assert.NotSame(metadata, discoverable.Metadata);
+        Assert.Equal(metadata.Purpose, discoverable.Metadata?.Purpose);
+        Assert.Equal(metadata.Capabilities, discoverable.Metadata?.Capabilities);
+        Assert.Empty(session.Catalog.Definitions);
+        Assert.Equal(
+            [discoverableDefinition.Name],
+            session.Discovery.ListInvocableBy(WorkInvocationChannel.Mcp).Select(definition => definition.Name));
+        Assert.Empty(session.Discovery.ListInvocableBy(WorkInvocationChannel.SignalR));
+        Assert.Equal(WorkQueueStatus.Unauthorized, discoverOnlyQueue.QueueOutcome.Status);
+        Assert.True(operateQueue.QueueOutcome.IsAccepted);
+    }
+
+    [Fact]
+    public async Task KnownAuthenticatedDiscoveryQualifiesForNamedSystemAccess()
+    {
+        var definition = PausedDefinition("known.authenticated.discovery");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests("remote", builder => builder.AddWork(
+                definition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowDiscoverToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(registry.TryGet("remote", out var namedSystem));
+        var system = Assert.IsAssignableFrom<IWorkSystem>(namedSystem);
+        var knownContext = CreateKnownAuthenticatedRequestContext("known-discoverer");
+
+        var access = await system.DescribeAccess(knownContext);
+        var knownSession = await system.CreateSession(knownContext);
+        var unknownSession = await system.CreateSession(WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            WorkActor.Unknown,
+            isAuthenticated: true));
+        var unauthenticatedSession = await system.CreateSession(CreateRequestContext("known-discoverer"));
+
+        Assert.True(access.HasAnyAccess());
+        Assert.True(access.CanDiscoverAllWork);
+        Assert.Equal(1, access.DiscoverableDefinitionCount);
+        Assert.Single(knownSession.Discovery.Definitions);
+        Assert.Empty(knownSession.Catalog.Definitions);
+        Assert.Empty(unknownSession.Discovery.Definitions);
+        Assert.Empty(unauthenticatedSession.Discovery.Definitions);
+    }
+
+    [Fact]
+    public async Task UnknownOrUnauthenticatedActorsDoNotQualifyForKnownAuthenticatedUserReadAccess()
+    {
+        var registeredDefinition = PausedDefinition("allow.read.known.authenticated.denied");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder.AddWork(
+                registeredDefinition,
+                SuccessfulWork,
+                configure: null,
+                authorize: authorize => authorize.AllowReadToKnownAuthenticatedUsers()))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+
+        var unknownActorSession = await system.CreateSession(WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor: WorkActor.Unknown,
+            description: "Authenticated but unknown actor.",
+            isAuthenticated: true));
+        var unauthenticatedActorSession = await system.CreateSession(CreateRequestContext("known-reader"));
+
+        Assert.Empty(unknownActorSession.Catalog.Definitions);
+        Assert.Empty(unauthenticatedActorSession.Catalog.Definitions);
     }
 
     [Fact]
@@ -660,6 +866,8 @@ public sealed class WorkSystemAuthorizationConfigurationTests
             {
                 ["reader"] = Groups("work.read"),
                 ["diagnostics"] = Groups("system.diagnostics"),
+                ["workflow-reader"] = Groups("workflow.read"),
+                ["workflow-operator"] = Groups("workflow.operate"),
             }))
             .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
                 .ConfigureAuthorization(authorization => authorization.AllowDiagnosticsToGroups("system.diagnostics"))
@@ -667,13 +875,92 @@ public sealed class WorkSystemAuthorizationConfigurationTests
                     WorkDefinition.Create("connect.permission"),
                     SuccessfulWork,
                     configure: null,
-                    authorize: authorize => authorize.AllowReadToGroups("work.read")))
+                    authorize: authorize => authorize.AllowReadToGroups("work.read"))
+                .AddWorkflow(
+                    WorkflowDefinition.Create("connect.workflow"),
+                    workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("connect.permission")),
+                    authorize: authorize => authorize
+                        .AllowReadToGroups("workflow.read")
+                        .AllowOperateToGroups("workflow.operate")))
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystem>();
+        var workflowReader = await system.DescribeAccess(CreateRequestContext("workflow-reader"));
+        var workflowOperator = await system.DescribeAccess(CreateRequestContext("workflow-operator"));
 
         Assert.True((await system.DescribeAccess(CreateRequestContext("reader"))).HasAnyAccess());
         Assert.True((await system.DescribeAccess(CreateRequestContext("diagnostics"))).HasAnyAccess());
+        Assert.True(workflowReader.HasAnyAccess());
+        Assert.Equal(1, workflowReader.ReadableWorkflowDefinitionCount);
+        Assert.True(workflowOperator.HasAnyAccess());
+        Assert.Equal(1, workflowOperator.OperableWorkflowDefinitionCount);
         Assert.False((await system.DescribeAccess(CreateRequestContext("unknown"))).HasAnyAccess());
+
+        var emptyProvider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+                new Dictionary<string, IReadOnlySet<string>>()))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => { })
+            .BuildServiceProvider();
+        var emptySystem = emptyProvider.GetRequiredService<IWorkSystem>();
+        var emptyAccess = await emptySystem.DescribeAccess(CreateRequestContext("unknown"));
+
+        Assert.False(emptyAccess.CanDiscoverAllWork);
+        Assert.False(emptyAccess.HasAnyAccess());
+    }
+
+    [Fact]
+    public async Task AccessSummaryCountsDiscoverReadOperateAndWorkflowRightsIndependently()
+    {
+        var workflowWork = WorkDefinition.Create("access.summary.workflow.work");
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["mixed-access"] = Groups(
+                    "work.discover",
+                    "work.read",
+                    "work.operate",
+                    "workflow.read",
+                    "workflow.operate"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .AddWork(
+                    WorkDefinition.Create("access.summary.discover"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization.AllowDiscoverToGroups("work.discover"))
+                .AddWork(
+                    WorkDefinition.Create("access.summary.read"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization.AllowReadToGroups("work.read"))
+                .AddWork(
+                    WorkDefinition.Create("access.summary.operate"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization.AllowOperateToGroups("work.operate"))
+                .AddWork(WorkDefinition.Create("access.summary.hidden"), SuccessfulWork)
+                .AddWork(workflowWork, SuccessfulWork)
+                .AddWorkflow(
+                    WorkflowDefinition.Create("access.summary.workflow.read"),
+                    workflow => workflow.DispatchWork("dispatch", workflowWork),
+                    authorize: authorization => authorization.AllowReadToGroups("workflow.read"))
+                .AddWorkflow(
+                    WorkflowDefinition.Create("access.summary.workflow.operate"),
+                    workflow => workflow.DispatchWork("dispatch", workflowWork),
+                    authorize: authorization => authorization.AllowOperateToGroups("workflow.operate")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+
+        var access = await system.DescribeAccess(CreateRequestContext("mixed-access"));
+
+        Assert.Equal(5, access.TotalDefinitionCount);
+        Assert.Equal(3, access.DiscoverableDefinitionCount);
+        Assert.Equal(1, access.ReadableDefinitionCount);
+        Assert.Equal(1, access.OperableDefinitionCount);
+        Assert.Equal(1, access.ReadableWorkflowDefinitionCount);
+        Assert.Equal(1, access.OperableWorkflowDefinitionCount);
+        Assert.False(access.CanDiscoverAllWork);
+        Assert.False(access.CanReadAllWork);
+        Assert.False(access.CanOperateAllWork);
     }
 
     [Fact]
@@ -859,7 +1146,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var queued = await session.Queue.Enqueue(definition.Name);
 
         Assert.Empty(session.Catalog.Definitions);
-        Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.NotFound, queued.QueueOutcome.Status);
     }
 
     [Fact]
@@ -989,6 +1276,52 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [Fact]
+    public async Task ControlOnlyStopDoesNotReturnRetainedWorkerDataOutsideReadScope()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["operator"] = Groups("system.control", "work.read", "work.operate"),
+                ["controller"] = Groups("system.control"),
+            }))
+            .AddDefaultWorkableSystemForAuthorizationTests(builder => builder
+                .RequireAuthorization()
+                .UseShutdownGracePeriod(TimeSpan.FromMilliseconds(20))
+                .ConfigureAuthorization(authorization => authorization
+                    .AllowControlSystemToGroups("system.control"))
+                .AddWork(
+                    WorkDefinition.Create("secure.shutdown"),
+                    async (context, input, cancellationToken) =>
+                    {
+                        started.TrySetResult();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
+                        return WorkExecutionResult.Success();
+                    },
+                    configure: null,
+                    authorize: authorization => authorization.RequireGroups(
+                        readGroups: ["work.read"],
+                        operateGroups: ["work.operate"])))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystem>();
+        var operatorContext = CreateRequestContext("operator");
+
+        await system.Start(operatorContext);
+        var session = await system.CreateSession(operatorContext);
+        var handle = await session.Queue.Enqueue("secure.shutdown");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var stop = await system.Stop(CreateRequestContext("controller"));
+
+        Assert.Empty(stop.CancellationRequestedWorkers);
+        Assert.Empty(stop.ForceInterruptedWorkers);
+        Assert.Empty(stop.CancellationRequestedWorkerSummaries);
+        Assert.Empty(stop.ForceInterruptedWorkerSummaries);
+        Assert.Empty(stop.ForceInterruptedWorkerNames);
+        Assert.Equal(WorkCompletionStatus.Interrupted, (await handle.WaitForCompletion()).Status);
+    }
+
+    [Fact]
     public async Task UnknownActorsDoNotQualifyForKnownAuthenticatedUserOperateAccess()
     {
         var definition = PausedDefinition("known.authenticated.denied");
@@ -1010,7 +1343,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
 
         var queued = await session.Queue.Enqueue(definition.Name);
 
-        Assert.Equal(WorkQueueStatus.Unauthorized, queued.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.NotFound, queued.QueueOutcome.Status);
     }
 
     [Fact]
@@ -1035,7 +1368,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         var unauthenticatedQueue = await unauthenticated.Queue.Enqueue(definition.Name);
 
         Assert.True(authenticatedQueue.QueueOutcome.IsAccepted);
-        Assert.Equal(WorkQueueStatus.Unauthorized, unauthenticatedQueue.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.NotFound, unauthenticatedQueue.QueueOutcome.Status);
     }
 
     [Fact]
@@ -1100,6 +1433,66 @@ public sealed class WorkSystemAuthorizationConfigurationTests
         Assert.NotEqual(first.ReadFingerprint, diagnosticsReadable.ReadFingerprint);
         Assert.NotEqual(first.ReadFingerprint, authenticated.ReadFingerprint);
         Assert.NotEqual(delimiterInOneGroup.ReadFingerprint, delimiterBetweenGroups.ReadFingerprint);
+    }
+
+    [Fact]
+    public void AuthorizationProjectionCacheKeyComparesEveryIdentityDimension()
+    {
+        var keyType = typeof(WorkSystemSessionFactory).GetNestedType(
+            "AuthorizationProjectionKey",
+            BindingFlags.NonPublic)!;
+        var comparerType = typeof(WorkSystemSessionFactory).GetNestedType(
+            "AuthorizationProjectionKeyComparer",
+            BindingFlags.NonPublic)!;
+        object Key(IReadOnlySet<string> groups, bool known, bool authenticated)
+            => Activator.CreateInstance(
+                keyType,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                args: [groups, known, authenticated],
+                culture: null)!;
+        var comparer = comparerType.GetProperty(
+            "Instance",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.GetValue(null)!;
+        var equals = comparerType.GetMethods()
+            .Single(method => method.Name == "Equals" &&
+                method.GetParameters() is [{ ParameterType: var first }, { ParameterType: var second }] &&
+                first == keyType && second == keyType);
+        var baseline = Key(new HashSet<string>(["reader"], StringComparer.OrdinalIgnoreCase), true, true);
+
+        Assert.True(Assert.IsType<bool>(equals.Invoke(comparer, [
+            baseline,
+            Key(new HashSet<string>(["READER"], StringComparer.OrdinalIgnoreCase), true, true),
+        ])));
+        Assert.False(Assert.IsType<bool>(equals.Invoke(comparer, [baseline, Key(new HashSet<string>(), false, true)])));
+        Assert.False(Assert.IsType<bool>(equals.Invoke(comparer, [baseline, Key(new HashSet<string>(), true, false)])));
+        Assert.False(Assert.IsType<bool>(equals.Invoke(comparer, [baseline, Key(new HashSet<string>(), true, true)])));
+    }
+
+    [Fact]
+    public void AuthorizationSnapshotFingerprintCoversLegacyAndNullProjectionInputs()
+    {
+        var actor = new WorkActor("legacy-user");
+#pragma warning disable CS0618
+        var legacy = WorkAuthorizationSnapshot.Create(actor, groups: null, readableDefinitionIds: null);
+#pragma warning restore CS0618
+        var scoped = WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            actor,
+            groups: null,
+            readableDefinitionIds: null,
+            readableWorkflowDefinitionIds: null);
+
+        Assert.Null(legacy.Scope);
+        Assert.NotNull(scoped.Scope);
+        Assert.NotEqual(legacy.ReadFingerprint, scoped.ReadFingerprint);
+
+        var normalizeStrings = typeof(WorkAuthorizationSnapshot).GetMethod(
+            "NormalizeStrings",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(normalizeStrings);
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<string>>(
+            normalizeStrings.Invoke(null, [null])));
     }
 
     private static Task<WorkExecutionResult> SuccessfulWork(
@@ -1173,7 +1566,10 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     }
 
     [WorkMetadata("attributed.authorization", "Authorization")]
-    [WorkAuthorization(ReadGroups = new[] { "attr.read" }, OperateGroups = new[] { "attr.operate" })]
+    [WorkAuthorization(
+        DiscoverGroups = new[] { "attr.discover" },
+        ReadGroups = new[] { "attr.read" },
+        OperateGroups = new[] { "attr.operate" })]
     private sealed class AttributedAuthorizationWork : IWorkExecutor
     {
         public Task<WorkExecutionResult> Execute(

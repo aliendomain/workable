@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using System.Reflection;
 using System.Text.Json;
 using Workable;
 
@@ -258,6 +260,10 @@ public sealed class WorkableViewContractShould
                     "invalid-worker-id",
                     "workerCurrentIteration",
                     JsonSerializer.SerializeToElement(new { workerId = "not-a-guid" })),
+                new WorkComponentRequest(
+                    "blank-actor-id",
+                    "workerGrid",
+                    JsonSerializer.SerializeToElement(new { actorId = " " })),
             ]));
 
         Assert.Equal("ok", result.Components["system"].Status);
@@ -265,6 +271,62 @@ public sealed class WorkableViewContractShould
         Assert.Contains("workerId is required", result.Components["missing-worker-id"].Error);
         Assert.Equal("error", result.Components["invalid-worker-id"].Status);
         Assert.Contains("valid GUID", result.Components["invalid-worker-id"].Error);
+        Assert.Equal("error", result.Components["blank-actor-id"].Status);
+        Assert.Contains("actorId must not be empty", result.Components["blank-actor-id"].Error);
+    }
+
+    [Fact]
+    public async Task RedactUnexpectedComponentFailureDetails()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.RequireAuthorization(false));
+        await using var provider = services.BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var inner = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var query = DispatchProxy.Create<IWorkQueryService, ThrowingQueryProxy>();
+        ((ThrowingQueryProxy)(object)query).Exception = new ArgumentException("database-password=secret");
+        var session = new QueryOverrideSession(inner, query);
+
+        var result = await new WorkableViewQueryAdapter(NullLogger<WorkableViewQueryAdapter>.Instance).Components(
+            session,
+            new WorkComponentCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "worker",
+                    "workerDetail",
+                    JsonSerializer.SerializeToElement(new { workerId = Guid.NewGuid() })),
+            ]));
+
+        var component = result.Components["worker"];
+        Assert.Equal("error", component.Status);
+        Assert.Equal("The component query failed.", component.Error);
+        Assert.DoesNotContain("database-password", component.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PropagateComponentQueryCancellation()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.RequireAuthorization(false));
+        await using var provider = services.BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var inner = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var query = DispatchProxy.Create<IWorkQueryService, ThrowingQueryProxy>();
+        ((ThrowingQueryProxy)(object)query).Exception = new OperationCanceledException("query canceled");
+        var session = new QueryOverrideSession(inner, query);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            new WorkableViewQueryAdapter().Components(
+                session,
+                new WorkComponentCriteria(Components:
+                [
+                    new WorkComponentRequest(
+                        "worker",
+                        "workerDetail",
+                        JsonSerializer.SerializeToElement(new { workerId = Guid.NewGuid() })),
+                ])));
     }
 
     [Fact]
@@ -341,6 +403,41 @@ public sealed class WorkableViewContractShould
         WorkInput? input,
         CancellationToken cancellationToken)
         => Task.FromResult(WorkExecutionResult.Success());
+
+    private sealed class QueryOverrideSession(
+        IWorkSystemSession inner,
+        IWorkQueryService query) : IWorkSystemSession
+    {
+        public string? SystemName => inner.SystemName;
+
+        public WorkSystemState SystemState => inner.SystemState;
+
+        public WorkSystemCapabilities Capabilities => inner.Capabilities;
+
+        public IWorkSystemDiagnostics Diagnostics => inner.Diagnostics;
+
+        public IWorkCatalog Catalog => inner.Catalog;
+
+        public IWorkQueueService Queue => inner.Queue;
+
+        public IWorkerOperations Workers => inner.Workers;
+
+        public IWorkQueryService Query => query;
+
+        public IWorkEventStream Events => inner.Events;
+
+        public IWorkIterationStatusStream IterationStatuses => inner.IterationStatuses;
+
+        public IWorkChangeStream Changes => inner.Changes;
+    }
+
+    public class ThrowingQueryProxy : DispatchProxy
+    {
+        public Exception Exception { get; set; } = new InvalidOperationException("Query failure.");
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => throw this.Exception;
+    }
 
     private static void AssertComponents(
         WorkableViewQueryAdapter adapter,

@@ -1,5 +1,9 @@
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Options;
 
 namespace Workable;
 
@@ -7,17 +11,36 @@ namespace Workable;
 /// Tracks active raw event subscriptions for the Workable SignalR adapter.
 /// </summary>
 /// <remarks>
-/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The public debug snapshot method
-/// exists so local diagnostics endpoints can inspect current subscription state.
+/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The internal snapshot method
+/// supports runtime verification without exposing subscription state through a host endpoint.
 /// </remarks>
 public sealed class WorkableRealtimeEventSubscriptions
 {
     private readonly object gate = new();
+    private readonly WorkableSignalROptions options;
     private readonly Dictionary<string, EventSubscription> connectionGroups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, EventSubscriptionGroup> groups = new(StringComparer.Ordinal);
     private readonly HashSet<string> streamingGroups = new(StringComparer.Ordinal);
     private TaskCompletionSource changed = CreateChangeSignal();
     private long version;
+
+    /// <summary>
+    /// Creates a tracker with the default Workable SignalR subscription limits.
+    /// </summary>
+    public WorkableRealtimeEventSubscriptions()
+        : this(Options.Create(new WorkableSignalROptions()))
+    {
+    }
+
+    /// <summary>
+    /// Creates a tracker with the configured Workable SignalR subscription limits.
+    /// </summary>
+    /// <param name="options">The realtime adapter options.</param>
+    public WorkableRealtimeEventSubscriptions(IOptions<WorkableSignalROptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        this.options = options.Value;
+    }
 
     internal long Version => Volatile.Read(ref this.version);
 
@@ -32,7 +55,26 @@ public sealed class WorkableRealtimeEventSubscriptions
     {
         ArgumentNullException.ThrowIfNull(authorization);
 
-        var filter = CreateFilter(catalog, criteria);
+        var filter = this.CreateFilter(catalog, criteria);
+        await this.WatchEvents(
+            connectionId,
+            groupManager,
+            system,
+            filter,
+            authorization,
+            cancellationToken);
+    }
+
+    internal async Task WatchEvents(
+        string connectionId,
+        IGroupManager groupManager,
+        IWorkSystem system,
+        WorkEventFilter? filter,
+        WorkAuthorizationSnapshot authorization,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+
         var groupName = CreateSystemEventsGroupName(system, filter, authorization.ReadFingerprint);
         await this.WatchGroup(
             connectionId,
@@ -53,7 +95,7 @@ public sealed class WorkableRealtimeEventSubscriptions
         WorkableRealtimeEventCriteria? criteria,
         CancellationToken cancellationToken)
     {
-        var filter = CreateFilter(catalog, criteria);
+        var filter = this.CreateFilter(catalog, criteria);
         return this.UnwatchGroup(
             connectionId,
             groupManager,
@@ -62,22 +104,13 @@ public sealed class WorkableRealtimeEventSubscriptions
             cancellationToken);
     }
 
-    internal async Task RemoveConnection(
-        string connectionId,
-        IGroupManager groupManager,
-        CancellationToken cancellationToken)
+    internal void RemoveConnection(string connectionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
-        ArgumentNullException.ThrowIfNull(groupManager);
-
-        EventSubscription[] subscriptions;
         lock (this.gate)
         {
             var keys = this.connectionGroups.Keys
                 .Where(key => key.StartsWith($"{connectionId}:", StringComparison.Ordinal))
-                .ToArray();
-            subscriptions = keys
-                .Select(key => this.connectionGroups[key])
                 .ToArray();
 
             foreach (var key in keys.Where(this.connectionGroups.ContainsKey))
@@ -86,11 +119,6 @@ public sealed class WorkableRealtimeEventSubscriptions
                 this.connectionGroups.Remove(key);
                 this.ReleaseGroupLocked(subscription.GroupName);
             }
-        }
-
-        foreach (var subscription in subscriptions)
-        {
-            await groupManager.RemoveFromGroupAsync(connectionId, subscription.GroupName, cancellationToken);
         }
     }
 
@@ -101,19 +129,17 @@ public sealed class WorkableRealtimeEventSubscriptions
         lock (this.gate)
         {
             return [.. this.groups.Values
-                .Where(group =>
-                group.ConnectionCount > 0 &&
-                group.Subscription.SystemId == system.Id)
+                .Where(group => group.Subscription.SystemId == system.Id)
                 .Select(group => group.Subscription)];
         }
     }
 
     /// <summary>
-    /// Gets debug snapshots for the active raw event subscriptions that belong to one Workable system.
+    /// Gets internal snapshots for the active raw event subscriptions that belong to one Workable system.
     /// </summary>
     /// <param name="system">The system whose realtime event subscriptions should be described.</param>
     /// <returns>The current raw event subscription snapshots for the system.</returns>
-    public IReadOnlyList<WorkableRealtimeDebugEventSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
+    internal IReadOnlyList<WorkableRealtimeEventSubscriptionSnapshot> GetSubscriptionSnapshots(IWorkSystem system)
     {
         ArgumentNullException.ThrowIfNull(system);
 
@@ -121,13 +147,11 @@ public sealed class WorkableRealtimeEventSubscriptions
         {
             return [.. this.connectionGroups.Values
                 .Where(subscription => subscription.SystemId == system.Id)
-                .Select(subscription => new WorkableRealtimeDebugEventSubscriptionSnapshot(
+                .Select(subscription => new WorkableRealtimeEventSubscriptionSnapshot(
                     subscription.ConnectionId,
                     subscription.GroupName,
                     subscription.Filter,
-                    this.groups.TryGetValue(subscription.GroupName, out var group)
-                        ? group.ConnectionCount
-                        : 0,
+                    this.groups[subscription.GroupName].ConnectionCount,
                     this.streamingGroups.Contains(subscription.GroupName)))];
         }
     }
@@ -204,6 +228,7 @@ public sealed class WorkableRealtimeEventSubscriptions
 
         var connectionGroupKey = ConnectionGroupKey(connectionId, systemId, filter);
         EventSubscription? oldSubscription = null;
+        EventSubscription? subscription = null;
         var addToGroup = false;
 
         lock (this.gate)
@@ -219,8 +244,12 @@ public sealed class WorkableRealtimeEventSubscriptions
             {
                 this.ReleaseGroupLocked(oldSubscription.GroupName);
             }
+            else
+            {
+                this.EnsureSubscriptionCapacityLocked(connectionId);
+            }
 
-            var subscription = new EventSubscription(connectionId, systemId, groupName, filter, authorization);
+            subscription = new EventSubscription(connectionId, systemId, groupName, filter, authorization);
             this.connectionGroups[connectionGroupKey] = subscription;
             if (this.groups.TryGetValue(groupName, out var group))
             {
@@ -249,8 +278,10 @@ public sealed class WorkableRealtimeEventSubscriptions
             {
                 lock (this.gate)
                 {
-                    if (this.connectionGroups.Remove(connectionGroupKey, out var subscription))
+                    if (this.connectionGroups.TryGetValue(connectionGroupKey, out var current) &&
+                        ReferenceEquals(current, subscription))
                     {
+                        this.connectionGroups.Remove(connectionGroupKey);
                         this.ReleaseGroupLocked(subscription.GroupName);
                     }
                 }
@@ -301,26 +332,22 @@ public sealed class WorkableRealtimeEventSubscriptions
         WorkEventFilter? filter)
         => $"{connectionId}:{systemId.Value:N}:{CreateFilterKey(filter)}";
 
-    private static WorkEventFilter? CreateFilter(IWorkCatalog catalog, WorkableRealtimeEventCriteria? criteria)
+    internal WorkEventFilter? CreateFilter(IWorkCatalog catalog, WorkableRealtimeEventCriteria? criteria)
     {
-        var eventTypes = criteria?.EventTypes?
-            .Select(eventType => eventType.Trim())
-            .Where(eventType => eventType.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        ArgumentNullException.ThrowIfNull(catalog);
+        var eventTypes = this.NormalizeValues(criteria?.EventTypes, "eventTypes");
+        var definitionNames = this.NormalizeValues(criteria?.DefinitionNames, "definitionNames");
 
-        var definitionNames = criteria?.DefinitionNames?
-            .Select(definitionName => definitionName.Trim())
-            .Where(definitionName => definitionName.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        if (criteria?.Keys is { Count: > 0 } keysCriteria &&
+            keysCriteria.Count > this.options.MaximumEventFilterValuesPerField)
+        {
+            throw new ArgumentException(
+                $"Realtime event filter 'keys' cannot contain more than {this.options.MaximumEventFilterValuesPerField} values.",
+                "keys");
+        }
 
         var keys = criteria?.Keys?
-            .Select(NormalizeKey)
-            .Where(key => key is not null)
-            .Select(key => key!)
+            .Select(this.NormalizeKey)
             .Distinct()
             .OrderBy(key => key.Kind?.ToString() ?? "", StringComparer.OrdinalIgnoreCase)
             .ThenBy(key => key.Type, StringComparer.Ordinal)
@@ -337,6 +364,38 @@ public sealed class WorkableRealtimeEventSubscriptions
             : null;
     }
 
+    private string[]? NormalizeValues(IReadOnlyList<string>? values, string fieldName)
+    {
+        if (values is null)
+        {
+            return null;
+        }
+
+        if (values.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException($"Realtime event filter '{fieldName}' values cannot be empty.", fieldName);
+        }
+
+        if (values.Count > this.options.MaximumEventFilterValuesPerField)
+        {
+            throw new ArgumentException(
+                $"Realtime event filter '{fieldName}' cannot contain more than {this.options.MaximumEventFilterValuesPerField} values.",
+                fieldName);
+        }
+
+        if (values.Any(value => value.Trim().Length > this.options.MaximumEventFilterValueLength))
+        {
+            throw new ArgumentException(
+                $"Realtime event filter '{fieldName}' values cannot exceed {this.options.MaximumEventFilterValueLength} characters.",
+                fieldName);
+        }
+
+        return [.. values
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)];
+    }
+
     private static string CreateSystemEventsGroupName(
         IWorkSystem system,
         WorkEventFilter? filter,
@@ -350,47 +409,33 @@ public sealed class WorkableRealtimeEventSubscriptions
             return WorkableRealtimeGroups.SystemEvents(system, readFingerprint);
         }
 
-        var parts = new List<string>();
-        if (filter.EventTypes is { Count: > 0 })
-        {
-            parts.Add("types:" + string.Join(
-                ",",
-                filter.EventTypes
-                    .Order(StringComparer.OrdinalIgnoreCase)
-                    .Select(Uri.EscapeDataString)));
-        }
-
-        if (filter.DefinitionNames is { Count: > 0 })
-        {
-            parts.Add("definitions:" + string.Join(
-                ",",
-                filter.DefinitionNames
-                    .Order(StringComparer.OrdinalIgnoreCase)
-                    .Select(Uri.EscapeDataString)));
-        }
-
-        if (filter.Keys is { Count: > 0 })
-        {
-            parts.Add("keys:" + string.Join(
-                ",",
-                filter.Keys
-                    .OrderBy(key => key.Kind?.ToString() ?? "", StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(key => key.Type, StringComparer.Ordinal)
-                    .ThenBy(key => key.Value, StringComparer.Ordinal)
-                    .Select(key => Uri.EscapeDataString($"{key.Kind?.ToString() ?? "Any"}:{key.Type}:{key.Value}"))));
-        }
-
-        parts.Add($"read:{readFingerprint}");
-        return WorkableRealtimeGroups.SystemEvents(system, string.Join("|", parts));
+        return WorkableRealtimeGroups.SystemEvents(
+            system,
+            $"filter:{CreateFilterKey(filter)}:read:{readFingerprint}");
     }
 
-    private static WorkEventKeyFilter? NormalizeKey(WorkableRealtimeEventKeyCriteria criteria)
+    private WorkEventKeyFilter NormalizeKey(WorkableRealtimeEventKeyCriteria criteria)
     {
+        if (criteria is null || string.IsNullOrWhiteSpace(criteria.Type) || string.IsNullOrWhiteSpace(criteria.Value))
+        {
+            throw new ArgumentException("Realtime event filter keys require non-empty type and value fields.", "keys");
+        }
+
+        if (criteria.Kind is { } kind && !Enum.IsDefined(typeof(WorkKeyKind), kind))
+        {
+            throw new ArgumentException("Realtime event filter key kinds must be a defined WorkKeyKind value.", "keys");
+        }
+
         var type = criteria.Type.Trim();
         var value = criteria.Value.Trim();
-        return type.Length == 0 || value.Length == 0
-            ? null
-            : new WorkEventKeyFilter(criteria.Kind, type, value);
+        if (type.Length > this.options.MaximumEventFilterValueLength ||
+            value.Length > this.options.MaximumEventFilterValueLength)
+        {
+            throw new ArgumentException(
+                $"Realtime event filter key type and value cannot exceed {this.options.MaximumEventFilterValueLength} characters.",
+                "keys");
+        }
+        return new WorkEventKeyFilter(criteria.Kind, type, value);
     }
 
     private static string CreateFilterKey(WorkEventFilter? filter)
@@ -401,47 +446,43 @@ public sealed class WorkableRealtimeEventSubscriptions
             return "system";
         }
 
-        var parts = new List<string>();
-        if (filter.WorkerId is { } workerId)
+        var canonical = JsonSerializer.Serialize(new
         {
-            parts.Add($"worker:{workerId.Value:N}");
-        }
-
-        if (!string.IsNullOrWhiteSpace(filter.DefinitionName))
-        {
-            parts.Add($"definition:{Uri.EscapeDataString(filter.DefinitionName)}");
-        }
-
-        if (filter.DefinitionNames is { Count: > 0 })
-        {
-            parts.Add("definitions:" + string.Join(
-                ",",
-                filter.DefinitionNames
-                    .Order(StringComparer.OrdinalIgnoreCase)
-                    .Select(Uri.EscapeDataString)));
-        }
-
-        if (filter.Keys is { Count: > 0 })
-        {
-            parts.Add("keys:" + string.Join(
-                ",",
-                filter.Keys
-                    .OrderBy(static key => key.Kind?.ToString() ?? "", StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(static key => key.Type, StringComparer.Ordinal)
-                    .ThenBy(static key => key.Value, StringComparer.Ordinal)
-                    .Select(static key => $"{key.Kind?.ToString() ?? "Any"}:{key.Type}:{key.Value}")));
-        }
-
-        if (filter.EventTypes is { Count: > 0 })
-        {
-            parts.Add("types:" + string.Join(
-                ",",
-                filter.EventTypes.Order(StringComparer.OrdinalIgnoreCase)));
-        }
-
-        return parts.Count == 0
-            ? "system"
-            : string.Join("|", parts);
+            WorkerId = filter.WorkerId?.Value.ToString("N"),
+            filter.DefinitionName,
+            DefinitionNames = filter.DefinitionNames?
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            Subject = filter.SubjectId is { } subject
+                ? new { subject.Type, subject.Value }
+                : null,
+            Concurrency = filter.ConcurrencyKey is { } concurrency
+                ? new { concurrency.Type, concurrency.Value }
+                : null,
+            Identifier = filter.Identifier is { } identifier
+                ? new { identifier.Type, identifier.Value }
+                : null,
+            Keys = filter.Keys?
+                .OrderBy(static key => key.Kind)
+                .ThenBy(static key => key.Type, StringComparer.Ordinal)
+                .ThenBy(static key => key.Value, StringComparer.Ordinal)
+                .Select(static key => new
+                {
+                    Kind = key.Kind is { } kind ? (int?)kind : null,
+                    key.Type,
+                    key.Value,
+                })
+                .ToArray(),
+            filter.EventType,
+            EventTypes = filter.EventTypes?
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            DefinitionKind = filter.DefinitionKind is { } definitionKind
+                ? (int?)definitionKind
+                : null,
+        });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
+            .ToLowerInvariant();
     }
 
     private void ReleaseGroupLocked(string groupName)
@@ -458,6 +499,17 @@ public sealed class WorkableRealtimeEventSubscriptions
         }
 
         this.SignalChangedLocked();
+    }
+
+    private void EnsureSubscriptionCapacityLocked(string connectionId)
+    {
+        if (this.connectionGroups.Count >= this.options.MaximumSubscriptionsPerKind ||
+            this.connectionGroups.Values.Count(subscription =>
+                string.Equals(subscription.ConnectionId, connectionId, StringComparison.Ordinal)) >=
+                this.options.MaximumSubscriptionsPerConnectionPerKind)
+        {
+            throw new HubException("The Workable realtime raw-event subscription limit was reached.");
+        }
     }
 
     private void SignalChangedLocked()

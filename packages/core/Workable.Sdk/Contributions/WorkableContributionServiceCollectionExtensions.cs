@@ -52,7 +52,7 @@ public static class WorkableContributionServiceCollectionExtensions
     /// <param name="definition">The definition metadata and baseline configuration for the contributed work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this contribution.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this contribution.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this contribution.</param>
     /// <param name="systemName">
     /// The optional target system name. Leave this <see langword="null"/> to contribute the work to any system
     /// that includes unbound feature work.
@@ -131,7 +131,7 @@ public static class WorkableContributionServiceCollectionExtensions
     /// <param name="definition">The definition metadata and baseline configuration for the contributed work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this contribution.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this contribution.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this contribution.</param>
     /// <param name="systemName">
     /// The optional target system name. Leave this <see langword="null"/> to contribute the work to any system
     /// that includes unbound feature work.
@@ -214,7 +214,7 @@ public static class WorkableContributionServiceCollectionExtensions
     /// <param name="definition">The definition metadata and baseline configuration for the contributed work.</param>
     /// <param name="execute">The delegate Workable invokes when a worker executes this definition.</param>
     /// <param name="configure">The callback that refines the work configuration for this contribution.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this contribution.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this contribution.</param>
     /// <param name="systemName">
     /// The optional target system name. Leave this <see langword="null"/> to contribute the work to any system
     /// that includes unbound feature work.
@@ -290,7 +290,7 @@ public static class WorkableContributionServiceCollectionExtensions
     /// <typeparam name="TExecutor">The executor type Workable should resolve from dependency injection.</typeparam>
     /// <param name="services">The service collection that should receive the work contribution.</param>
     /// <param name="configure">The callback that refines the work configuration for this contribution.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this contribution.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this contribution.</param>
     /// <param name="systemName">
     /// The optional target system name. Leave this <see langword="null"/> to contribute the work to any system
     /// that includes unbound feature work.
@@ -353,7 +353,7 @@ public static class WorkableContributionServiceCollectionExtensions
     /// <param name="services">The service collection that should receive the work contribution.</param>
     /// <param name="definition">The definition metadata and baseline configuration for the contributed work.</param>
     /// <param name="configure">The callback that refines the work configuration for this contribution.</param>
-    /// <param name="authorize">The callback that defines work-level read and operate authorization for this contribution.</param>
+    /// <param name="authorize">The callback that defines work-level discover, read, and operate authorization for this contribution.</param>
     /// <param name="systemName">
     /// The optional target system name. Leave this <see langword="null"/> to contribute the work to any system
     /// that includes unbound feature work.

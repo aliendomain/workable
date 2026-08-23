@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Options;
 
 namespace Workable;
 
@@ -10,8 +11,8 @@ namespace Workable;
 /// Tracks active named-view subscriptions for the Workable SignalR adapter.
 /// </summary>
 /// <remarks>
-/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The public debug snapshot method
-/// exists so local diagnostics endpoints can inspect current grouped subscription state.
+/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The internal snapshot method
+/// supports runtime verification without exposing subscription state through a host endpoint.
 /// </remarks>
 public sealed class WorkableRealtimeViewSubscriptions
 {
@@ -21,6 +22,7 @@ public sealed class WorkableRealtimeViewSubscriptions
     };
 
     private readonly object gate = new();
+    private readonly WorkableSignalROptions options;
     private readonly Dictionary<string, WorkableRealtimeViewSubscription> connectionViewGroups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SubscriptionGroup> groups = new(StringComparer.Ordinal);
     private readonly HashSet<WorkSystemId> streamingSystems = [];
@@ -29,6 +31,24 @@ public sealed class WorkableRealtimeViewSubscriptions
     private TaskCompletionSource streamingChanged = CreateStreamingSignal();
     private TaskCompletionSource seedChanged = CreateStreamingSignal();
     private TaskCompletionSource reconciliationChanged = CreateStreamingSignal();
+
+    /// <summary>
+    /// Creates a tracker with the default Workable SignalR subscription limits.
+    /// </summary>
+    public WorkableRealtimeViewSubscriptions()
+        : this(Options.Create(new WorkableSignalROptions()))
+    {
+    }
+
+    /// <summary>
+    /// Creates a tracker with the configured Workable SignalR subscription limits.
+    /// </summary>
+    /// <param name="options">The realtime adapter options.</param>
+    public WorkableRealtimeViewSubscriptions(IOptions<WorkableSignalROptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        this.options = options.Value;
+    }
 
     internal async Task<WorkableRealtimeViewSubscription> WatchView(
         string connectionId,
@@ -68,6 +88,10 @@ public sealed class WorkableRealtimeViewSubscriptions
             if (oldSubscription is not null)
             {
                 ReleaseGroupLocked(oldSubscription.GroupName);
+            }
+            else
+            {
+                this.EnsureSubscriptionCapacityLocked(connectionId);
             }
 
             this.connectionViewGroups[connectionViewKey] = subscription;
@@ -135,10 +159,9 @@ public sealed class WorkableRealtimeViewSubscriptions
 
         lock (this.gate)
         {
-            if (this.connectionViewGroups.Remove(connectionViewKey, out subscription) &&
-                subscription is not null)
+            if (this.connectionViewGroups.Remove(connectionViewKey, out subscription))
             {
-                ReleaseGroupLocked(subscription.GroupName);
+                ReleaseGroupLocked(subscription!.GroupName);
             }
         }
 
@@ -148,36 +171,21 @@ public sealed class WorkableRealtimeViewSubscriptions
         }
     }
 
-    internal async Task RemoveConnection(
-        string connectionId,
-        IGroupManager groupManager,
-        CancellationToken cancellationToken)
+    internal void RemoveConnection(string connectionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
-        ArgumentNullException.ThrowIfNull(groupManager);
-
-        WorkableRealtimeViewSubscription[] subscriptions;
         lock (this.gate)
         {
             var keys = this.connectionViewGroups.Keys
                 .Where(key => key.StartsWith($"{connectionId}:", StringComparison.Ordinal))
                 .ToArray();
-            subscriptions = keys
-                .Select(key => this.connectionViewGroups[key])
-                .ToArray();
 
-            var removedSubscriptions = keys
-                .Select(key => this.connectionViewGroups.Remove(key, out var subscription) ? subscription : null)
-                .OfType<WorkableRealtimeViewSubscription>();
-            foreach (var subscription in removedSubscriptions)
+            foreach (var key in keys)
             {
+                var subscription = this.connectionViewGroups[key];
+                this.connectionViewGroups.Remove(key);
                 ReleaseGroupLocked(subscription.GroupName);
             }
-        }
-
-        foreach (var subscription in subscriptions)
-        {
-            await groupManager.RemoveFromGroupAsync(connectionId, subscription.GroupName, cancellationToken);
         }
     }
 
@@ -188,7 +196,7 @@ public sealed class WorkableRealtimeViewSubscriptions
         lock (this.gate)
         {
             return [.. this.groups.Values
-                .Where(group => group.ConnectionCount > 0 && group.Subscription.SystemId == system.Id)
+                .Where(group => group.Subscription.SystemId == system.Id)
                 .Select(group => group.Subscription)];
         }
     }
@@ -340,11 +348,11 @@ public sealed class WorkableRealtimeViewSubscriptions
     }
 
     /// <summary>
-    /// Gets debug snapshots for the active named-view subscriptions that belong to one Workable system.
+    /// Gets internal snapshots for the active named-view subscriptions that belong to one Workable system.
     /// </summary>
     /// <param name="system">The system whose realtime view subscriptions should be described.</param>
     /// <returns>The current named-view subscription snapshots for the system.</returns>
-    public IReadOnlyList<WorkableRealtimeDebugViewSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
+    internal IReadOnlyList<WorkableRealtimeViewSubscriptionSnapshot> GetSubscriptionSnapshots(IWorkSystem system)
     {
         ArgumentNullException.ThrowIfNull(system);
 
@@ -352,16 +360,14 @@ public sealed class WorkableRealtimeViewSubscriptions
         {
             return [.. this.connectionViewGroups.Values
                 .Where(subscription => subscription.SystemId == system.Id)
-                .Select(subscription => new WorkableRealtimeDebugViewSubscriptionSnapshot(
+                .Select(subscription => new WorkableRealtimeViewSubscriptionSnapshot(
                     subscription.ConnectionId,
                     subscription.SubscriptionId,
                     subscription.ViewName,
                     subscription.GroupName,
                     subscription.Criteria,
                     subscription.InitialReadModelSequence,
-                    this.groups.TryGetValue(subscription.GroupName, out var group)
-                        ? group.ConnectionCount
-                        : 0))];
+                    this.groups[subscription.GroupName].ConnectionCount))];
         }
     }
 
@@ -373,7 +379,7 @@ public sealed class WorkableRealtimeViewSubscriptions
         WorkViewCriteria criteria,
         WorkAuthorizationSnapshot authorization)
     {
-        var key = CreateGroupKey(system.Id, viewName, criteria, authorization.ReadFingerprint);
+        var key = CreateGroupKey(system.Id, viewName, criteria, authorization);
         return new WorkableRealtimeViewSubscription(
             connectionId,
             subscriptionId,
@@ -401,14 +407,15 @@ public sealed class WorkableRealtimeViewSubscriptions
         WorkSystemId systemId,
         string viewName,
         WorkViewCriteria criteria,
-        string readFingerprint)
+        WorkAuthorizationSnapshot authorization)
     {
         var json = JsonSerializer.Serialize(new
         {
             SystemId = systemId.Value,
             ViewName = viewName,
             Criteria = criteria,
-            ReadFingerprint = readFingerprint,
+            authorization.ReadFingerprint,
+            authorization.Actor,
         }, KeyJsonOptions);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(hash).ToLowerInvariant();
@@ -487,6 +494,17 @@ public sealed class WorkableRealtimeViewSubscriptions
             {
                 SignalSeedChangedLocked();
             }
+        }
+    }
+
+    private void EnsureSubscriptionCapacityLocked(string connectionId)
+    {
+        if (this.connectionViewGroups.Count >= this.options.MaximumSubscriptionsPerKind ||
+            this.connectionViewGroups.Values.Count(subscription =>
+                string.Equals(subscription.ConnectionId, connectionId, StringComparison.Ordinal)) >=
+                this.options.MaximumSubscriptionsPerConnectionPerKind)
+        {
+            throw new HubException("The Workable realtime named-view subscription limit was reached.");
         }
     }
 

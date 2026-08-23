@@ -4,13 +4,19 @@ namespace Workable;
 /// Represents the immediate result of a definition reconfiguration request.
 /// </summary>
 /// <param name="Status">The high-level reconfiguration status returned by the request.</param>
-/// <param name="Definition">The authoritative definition snapshot returned with the outcome, when available.</param>
+/// <param name="Definition">The authoritative definition snapshot returned only when the caller may read it.</param>
 /// <param name="Messages">Structured messages that describe validation, authorization, or conflict details.</param>
 public sealed record WorkDefinitionReconfigurationOutcome(
     WorkDefinitionReconfigurationStatus Status,
     WorkDefinition? Definition,
     IReadOnlyList<WorkMessage> Messages)
 {
+    /// <summary>
+    /// Gets the authoritative definition revision returned by the operation, even when the caller cannot read the
+    /// complete definition snapshot.
+    /// </summary>
+    public long? Revision { get; init; } = Definition?.Revision;
+
     /// <summary>
     /// Gets a value indicating whether the reconfiguration request was accepted and applied.
     /// </summary>
@@ -23,7 +29,10 @@ public sealed record WorkDefinitionReconfigurationOutcome(
     /// <param name="messages">Optional informational messages to retain alongside the accepted outcome.</param>
     /// <returns>An accepted reconfiguration outcome.</returns>
     public static WorkDefinitionReconfigurationOutcome Accepted(WorkDefinition definition, IEnumerable<WorkMessage>? messages = null)
-        => new(WorkDefinitionReconfigurationStatus.Accepted, definition, [.. messages ?? []]);
+        => new(WorkDefinitionReconfigurationStatus.Accepted, definition, [.. messages ?? []])
+        {
+            Revision = definition.Revision,
+        };
 
     /// <summary>
     /// Creates an unauthorized reconfiguration outcome for a definition the caller cannot operate.
@@ -57,7 +66,10 @@ public sealed record WorkDefinitionReconfigurationOutcome(
     /// <param name="messages">The messages that explain why the request was invalid.</param>
     /// <returns>An invalid reconfiguration outcome.</returns>
     public static WorkDefinitionReconfigurationOutcome Invalid(WorkDefinition definition, IEnumerable<WorkMessage> messages)
-        => new(WorkDefinitionReconfigurationStatus.Invalid, definition, [.. messages]);
+        => new(WorkDefinitionReconfigurationStatus.Invalid, definition, [.. messages])
+        {
+            Revision = definition.Revision,
+        };
 
     /// <summary>
     /// Creates a conflict reconfiguration outcome for a definition revision mismatch.
@@ -72,5 +84,8 @@ public sealed record WorkDefinitionReconfigurationOutcome(
             [WorkMessage.Error(
                 "workable.definition.revision_conflict",
                 $"Work definition '{definition.Name}' is at revision {definition.Revision}, but revision {expectedRevision} was supplied.",
-                "definition.revision")]);
+                "definition.revision")])
+        {
+            Revision = definition.Revision,
+        };
 }

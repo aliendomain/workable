@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 
@@ -11,7 +12,11 @@ namespace Workable;
 public class WorkableViewQueryAdapter
 {
     private const int InitialWorkerOverviewRealtimeActivityTake = 50;
+    /// <summary>Gets the largest component list accepted by one component or named-view request.</summary>
+    public const int MaximumComponentsPerRequest = 32;
     private readonly record struct WorkerOverviewLogRecord(long Sequence, WorkerLogEntry Entry);
+    private sealed class WorkComponentValidationException(string message, Exception? innerException = null)
+        : Exception(message, innerException);
 
     private static readonly JsonSerializerOptions ComponentOptionsJson = new(JsonSerializerDefaults.Web)
     {
@@ -22,6 +27,25 @@ public class WorkableViewQueryAdapter
         {
             ["throughput"] = new(RequiresIntervalPublish: true),
         };
+    private readonly ILogger<WorkableViewQueryAdapter> logger;
+
+    /// <summary>
+    /// Initializes a view query adapter without an exception logger.
+    /// </summary>
+    public WorkableViewQueryAdapter()
+    {
+        this.logger = NullLogger<WorkableViewQueryAdapter>.Instance;
+    }
+
+    /// <summary>
+    /// Initializes a view query adapter with logging for unexpected component failures.
+    /// </summary>
+    /// <param name="logger">The logger that receives unexpected component failures.</param>
+    public WorkableViewQueryAdapter(ILogger<WorkableViewQueryAdapter> logger)
+    {
+        ArgumentNullException.ThrowIfNull(logger);
+        this.logger = logger;
+    }
 
     /// <summary>
     /// Builds a component result map from an arbitrary component request list.
@@ -76,6 +100,8 @@ public class WorkableViewQueryAdapter
                     [name] = new("error", Error: $"Unknown view '{name}'."),
                 }));
         }
+
+        ValidateComponentRequests(requests);
 
         return this.Components(
             session,
@@ -322,6 +348,9 @@ public class WorkableViewQueryAdapter
                 worker.Identifiers.ToArray(),
                 CountWorkerOverviewConfigurationDifferences(worker, definition))
             {
+                ProfilingEnabled = worker.Options.ProfilingEnabled,
+                ProfilingCaptureMode = worker.Options.ProfilingCaptureMode,
+                CanToggleFullProfileCapture = CanToggleFullProfileCapture(session, worker),
                 WorkflowRunId = worker.WorkflowRunId,
             },
             worker.Input,
@@ -476,6 +505,9 @@ public class WorkableViewQueryAdapter
                 worker.Identifiers.ToArray(),
                 CountWorkerOverviewConfigurationDifferences(worker, definition))
             {
+                ProfilingEnabled = worker.Options.ProfilingEnabled,
+                ProfilingCaptureMode = worker.Options.ProfilingCaptureMode,
+                CanToggleFullProfileCapture = CanToggleFullProfileCapture(session, worker),
                 WorkflowRunId = worker.WorkflowRunId,
             },
             latestIteration is null
@@ -570,15 +602,21 @@ public class WorkableViewQueryAdapter
     /// <summary>
     /// Normalizes a named view request into the canonical shape used by the adapter and realtime grouping.
     /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is not a recognized named view.</exception>
     public WorkViewCriteria NormalizeViewCriteria(
         string name,
         WorkViewCriteria? criteria = null)
     {
         var query = criteria ?? new WorkViewCriteria();
         var requests = NormalizeViewComponentRequests(name, query.Components);
-        return requests is null
-            ? query
-            : new WorkViewCriteria(query.Scope, [.. requests.Select(NormalizeComponentRequest)]);
+        if (requests is null)
+        {
+            throw new ArgumentException($"Unknown view '{name}'.", nameof(name));
+        }
+
+        ValidateComponentRequests(requests);
+
+        return new WorkViewCriteria(query.Scope, [.. requests.Select(NormalizeComponentRequest)]);
     }
 
     /// <summary>
@@ -704,9 +742,25 @@ public class WorkableViewQueryAdapter
                 ? new WorkComponentResult("error", Error: $"Unknown component '{request.Type}'.", Shape: request.Shape)
                 : new WorkComponentResult("ok", data, Shape: request.Shape);
         }
-        catch (Exception exception)
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (WorkComponentValidationException exception)
         {
             return new WorkComponentResult("error", Error: exception.Message, Shape: request.Shape);
+        }
+        catch (Exception exception)
+        {
+            this.logger.LogError(
+                exception,
+                "Failed to create Workable view component {ComponentType} with id {ComponentId}.",
+                request.Type,
+                request.Id);
+            return new WorkComponentResult(
+                "error",
+                Error: "The component query failed.",
+                Shape: request.Shape);
         }
     }
 
@@ -1086,7 +1140,7 @@ public class WorkableViewQueryAdapter
         var normalized = values
             .Distinct()
             .ToArray();
-        return normalized.Length == 0 ? null : normalized;
+        return normalized;
     }
 
     private static WorkWorkerOverviewActivity ResolveWorkerOverviewActivity(
@@ -1598,6 +1652,27 @@ public class WorkableViewQueryAdapter
             pageItems.LastOrDefault()?.Id.ToString("N"));
     }
 
+    private static bool CanToggleFullProfileCapture(
+        IWorkSystemSession session,
+        WorkerSnapshot worker)
+    {
+        if (session is not IWorkWorkerReconfigurationAuthorizationSource authorization)
+        {
+            return false;
+        }
+
+        var fullCaptureEnabled = worker.Options.ProfilingEnabled &&
+            worker.Options.ProfilingCaptureMode == WorkProfileCaptureMode.Full;
+        return authorization.CanReconfigureWorker(
+            worker,
+            new WorkerReconfiguration(ProfilingEnabled: true)
+            {
+                ProfilingCaptureMode = fullCaptureEnabled
+                    ? WorkProfileCaptureMode.Bounded
+                    : WorkProfileCaptureMode.Full,
+            });
+    }
+
     private static int CountWorkerOverviewConfigurationDifferences(
         WorkerSnapshot worker,
         WorkDefinition? definition)
@@ -1983,7 +2058,8 @@ public class WorkableViewQueryAdapter
 
     private static IReadOnlyList<WorkComponentRequest> NormalizeComponentRequests(
         IReadOnlyList<WorkComponentRequest>? requests)
-        => requests is { Count: > 0 }
+    {
+        IReadOnlyList<WorkComponentRequest> normalized = requests is { Count: > 0 }
             ? requests
             : [
                 new("system", "system"),
@@ -1993,6 +2069,35 @@ public class WorkableViewQueryAdapter
                 new("failedIterations", "failedIterations", Shape: WorkComponentShapes.Standard),
                 new("completedIterations", "completedIterations", Shape: WorkComponentShapes.Standard),
             ];
+        ValidateComponentRequests(normalized);
+        return normalized;
+    }
+
+    private static void ValidateComponentRequests(IReadOnlyList<WorkComponentRequest> requests)
+    {
+        if (requests.Count > MaximumComponentsPerRequest)
+        {
+            throw new ArgumentException(
+                $"A component request cannot contain more than {MaximumComponentsPerRequest} components.",
+                "components");
+        }
+
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var request in requests)
+        {
+            if (request is null || string.IsNullOrWhiteSpace(request.Id))
+            {
+                throw new ArgumentException("Every component requires a non-empty id.", "components");
+            }
+
+            if (!ids.Add(request.Id))
+            {
+                throw new ArgumentException(
+                    $"Component ids must be unique. Duplicate id: '{request.Id}'.",
+                    "components");
+            }
+        }
+    }
 
     private static WorkComponentRequest NormalizeComponentRequest(WorkComponentRequest request)
     {
@@ -2114,7 +2219,8 @@ public class WorkableViewQueryAdapter
     }
 
     private static bool ShouldFallbackToPublishing(Exception exception)
-        => exception is JsonException or
+        => exception is WorkComponentValidationException or
+            JsonException or
             InvalidOperationException or
             ArgumentException or
             NullReferenceException;
@@ -2344,7 +2450,7 @@ public class WorkableViewQueryAdapter
 
         if (string.IsNullOrWhiteSpace(actorId))
         {
-            throw new ArgumentException("Worker-grid actorId must not be empty.", nameof(actorId));
+            throw new WorkComponentValidationException("Worker-grid actorId must not be empty.");
         }
 
         return actorId.Trim();
@@ -2467,12 +2573,12 @@ public class WorkableViewQueryAdapter
         var query = DeserializeOptions<WorkViewWorkerOptions>(options);
         if (string.IsNullOrWhiteSpace(query?.WorkerId))
         {
-            throw new InvalidOperationException("workerId is required.");
+            throw new WorkComponentValidationException("workerId is required.");
         }
 
         return Guid.TryParse(query.WorkerId, out var workerId)
             ? new WorkerId(workerId)
-            : throw new InvalidOperationException("workerId must be a valid GUID.");
+            : throw new WorkComponentValidationException("workerId must be a valid GUID.");
     }
 
     private static bool TryGetWorkerId(JsonElement? options, out WorkerId workerId)
@@ -2495,7 +2601,14 @@ public class WorkableViewQueryAdapter
             return default;
         }
 
-        return options.Value.Deserialize<T>(ComponentOptionsJson);
+        try
+        {
+            return options.Value.Deserialize<T>(ComponentOptionsJson);
+        }
+        catch (JsonException exception)
+        {
+            throw new WorkComponentValidationException(exception.Message, exception);
+        }
     }
 
     private static bool MatchesScope(

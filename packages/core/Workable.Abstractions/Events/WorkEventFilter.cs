@@ -40,19 +40,51 @@ public sealed record WorkEventFilter(
     {
         ArgumentNullException.ThrowIfNull(workEvent);
 
-        return (this.DefinitionKind is null || this.DefinitionKind == workEvent.DefinitionKind) &&
-            (this.AuthorizedDefinitions is not { Count: > 0 } ||
-                workEvent.DefinitionScope is { } definitionScope &&
-                    this.AuthorizedDefinitions.Contains(definitionScope)) &&
-            (this.WorkerId is null || this.WorkerId == workEvent.WorkerId) &&
-            (this.DefinitionName is null || string.Equals(this.DefinitionName, workEvent.WorkDefinitionName, StringComparison.OrdinalIgnoreCase)) &&
-            (this.DefinitionNames is not { Count: > 0 } ||
-                (!string.IsNullOrWhiteSpace(workEvent.WorkDefinitionName) &&
-                    this.DefinitionNames.Contains(workEvent.WorkDefinitionName, StringComparer.OrdinalIgnoreCase))) &&
-            (this.SubjectId is null || this.SubjectId == workEvent.SubjectId) &&
-            (this.ConcurrencyKey is null || this.ConcurrencyKey == workEvent.ConcurrencyKey) &&
-            (this.Identifier is null || workEvent.Identifiers.Contains(this.Identifier.Value)) &&
-            KeysMatch(this.Keys, workEvent.SubjectId, workEvent.ConcurrencyKey, workEvent.Identifiers) &&
+        if (this.DefinitionKind is { } definitionKind && definitionKind != workEvent.DefinitionKind)
+        {
+            return false;
+        }
+
+        if (this.AuthorizedDefinitions is { Count: > 0 } authorizedDefinitions &&
+            (workEvent.DefinitionScope is not { } definitionScope || !authorizedDefinitions.Contains(definitionScope)))
+        {
+            return false;
+        }
+
+        if (this.WorkerId is { } workerId && workerId != workEvent.WorkerId)
+        {
+            return false;
+        }
+
+        if (this.DefinitionName is { } definitionName &&
+            !string.Equals(definitionName, workEvent.WorkDefinitionName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (this.DefinitionNames is { Count: > 0 } definitionNames &&
+            (string.IsNullOrWhiteSpace(workEvent.WorkDefinitionName) ||
+                !definitionNames.Contains(workEvent.WorkDefinitionName, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (this.SubjectId is { } subjectId && subjectId != workEvent.SubjectId)
+        {
+            return false;
+        }
+
+        if (this.ConcurrencyKey is { } concurrencyKey && concurrencyKey != workEvent.ConcurrencyKey)
+        {
+            return false;
+        }
+
+        if (this.Identifier is { } identifier && !workEvent.Identifiers.Contains(identifier))
+        {
+            return false;
+        }
+
+        return KeysMatch(this.Keys, workEvent.SubjectId, workEvent.ConcurrencyKey, workEvent.Identifiers) &&
             EventTypeMatches(workEvent.EventType);
     }
 

@@ -881,6 +881,31 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task RuntimeAutoCancelOverrideValidatesAndUsesAnExplicitDelay()
+    {
+        ArgumentOutOfRangeException? observed = null;
+        var definition = WorkDefinition.Create("failed-runtime-explicit-delay");
+        var system = CreateSystem(definition, (context, _, _) =>
+        {
+            observed = Assert.Throws<ArgumentOutOfRangeException>(() =>
+                context.AllowFailedWorkerAutoCancel(TimeSpan.Zero));
+            context.AllowFailedWorkerAutoCancel(TimeSpan.FromMilliseconds(20));
+            return Task.FromResult(WorkExecutionResult.Failure([
+                WorkMessage.Error("test.failure", "The work failed."),
+            ]));
+        });
+        await system.Start();
+
+        var completion = await (await system.Queue.Enqueue(definition.Name)).WaitForCompletion();
+        var worker = RequiredCompletionWorker(completion);
+        await TestEventually.Until(async () =>
+            (await system.Query.Worker(worker.Id))?.State == WorkerState.Canceled);
+
+        Assert.Equal(nameof(IWorkExecutionContext.AllowFailedWorkerAutoCancel), observed?.TargetSite?.Name);
+        Assert.Equal(WorkCompletionStatus.Failed, completion.Status);
+    }
+
+    [Fact]
     public async Task ReconfiguringFailedWorkerToAutoCancelSchedulesIt()
     {
         var definition = WorkDefinition.Create("failed-reconfigure-auto", "Failed workers can be reconfigured to auto-cancel.",
@@ -981,6 +1006,28 @@ public sealed class WorkerStateTests
     }
 
     [Fact]
+    public async Task ReconfigureRejectsEmptyChangesWithoutAdvancingRevision()
+    {
+        var definition = WorkDefinition.Create(
+            "configurable.empty",
+            defaultOptions: WorkerOptionFixtures.DoNotStart());
+        var system = CreateSystem(definition, (context, input, cancellationToken) =>
+            Task.FromResult(WorkExecutionResult.Success()));
+        await system.Start();
+        var handle = await system.Queue.Enqueue(definition.Name);
+        var worker = RequiredWorker(await system.Query.Worker(RequiredWorkerId(handle)));
+
+        var outcome = await system.Workers.Reconfigure(
+            worker.Version,
+            new WorkerReconfiguration());
+
+        Assert.Equal(WorkActionStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message => message.Code == "workable.worker.reconfiguration.empty");
+        var current = RequiredWorker(await system.Query.Worker(worker.Id));
+        Assert.Equal(worker.Revision, current.Revision);
+    }
+
+    [Fact]
     public async Task ReconfigureCanRejectStaleRevisions()
     {
         var definition = WorkDefinition.Create("configurable", "Can be configured.",
@@ -998,7 +1045,10 @@ public sealed class WorkerStateTests
 
         var accepted = await system.Workers.Reconfigure(
             worker.Version,
-            new WorkerReconfiguration(ProfilingEnabled: true),
+            new WorkerReconfiguration(ProfilingEnabled: true)
+            {
+                ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+            },
             cancellationToken: default);
         var conflict = await system.Workers.Reconfigure(
             worker.Version,
@@ -1007,7 +1057,38 @@ public sealed class WorkerStateTests
         Assert.True(accepted.IsAccepted);
         Assert.Equal(1, accepted.Worker?.Revision);
         Assert.True(accepted.Worker?.Options.ProfilingEnabled);
+        Assert.Equal(WorkProfileCaptureMode.Full, accepted.Worker?.Options.ProfilingCaptureMode);
         Assert.Equal(WorkActionStatus.Conflict, conflict.Status);
+    }
+
+    [Fact]
+    public async Task RejectsInvalidProfilingCaptureModeDuringWorkerReconfiguration()
+    {
+        const string definitionName = "invalid-profile-mode";
+        var system = CreateSystem(
+            WorkDefinition.Create(
+                definitionName,
+                configuration: WorkConfiguration.Default with
+                {
+                    Start = WorkStartConfiguration.DoNotStart,
+                }),
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+        await system.Start();
+        var handle = await system.Queue.Enqueue(definitionName);
+        var worker = await system.Query.Worker(handle.WorkerId!.Value)
+            ?? throw new InvalidOperationException("Expected worker.");
+
+        var outcome = await system.Workers.Reconfigure(
+            worker.Version,
+            new WorkerReconfiguration
+            {
+                ProfilingCaptureMode = (WorkProfileCaptureMode)999,
+            });
+
+        Assert.Equal(WorkActionStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message => message.Code == "workable.worker.profiling_capture_mode.invalid");
+        Assert.Equal(worker.Revision, outcome.Worker?.Revision);
+        Assert.Equal(WorkProfileCaptureMode.Bounded, outcome.Worker?.Options.ProfilingCaptureMode);
     }
 
     private static IWorkSystem CreateSystem(

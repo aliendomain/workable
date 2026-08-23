@@ -8,6 +8,44 @@ namespace Workable.Tests;
 public sealed class WorkflowPersistenceCoordinatorShould
 {
     [Fact]
+    public async Task SkipPersistenceWhenWorkflowOrSystemIdentityIsMissing()
+    {
+        var store = new RecordingWorkflowPersistenceStore();
+        var named = new WorkflowPersistenceCoordinator(store, "workflow-persistence-tests");
+        var unnamed = new WorkflowPersistenceCoordinator(store, workSystemName: " ");
+
+        await named.Initialize([], CancellationToken.None);
+        await unnamed.Initialize(
+            [WorkflowDefinition.Create(
+                "workflow.durable.unnamed",
+                coordination: WorkflowCoordinationConfiguration.Durable)],
+            CancellationToken.None);
+        var unnamedRuns = new List<WorkflowRunPersistenceRecord>();
+        await foreach (var run in unnamed.ListRuns(CancellationToken.None))
+        {
+            unnamedRuns.Add(run);
+        }
+        IWorkflowPersistenceTransaction? observedTransaction = null;
+        var transactionActionInvoked = false;
+        await unnamed.ExecuteTransaction(
+            WorkflowRunId.New(),
+            (transaction, options, _) =>
+            {
+                transactionActionInvoked = true;
+                observedTransaction = transaction;
+                Assert.Equal(WorkerOptions.Default, options);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Empty(store.WorkflowInitializations);
+        Assert.Empty(store.WorkflowReadRequests);
+        Assert.Empty(unnamedRuns);
+        Assert.True(transactionActionInvoked);
+        Assert.Null(observedTransaction);
+    }
+
+    [Fact]
     public async Task InitializeForwardsOnlyDurableWorkflowDefinitionsToTheStore()
     {
         var store = new RecordingWorkflowPersistenceStore();

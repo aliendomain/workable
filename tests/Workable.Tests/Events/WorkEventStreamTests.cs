@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
 
@@ -1476,6 +1477,273 @@ public sealed class WorkEventStreamTests
         Assert.Equal(0, AssertNoQueuedEvents(malformedKeySubscription).AcceptedEventCount);
     }
 
+    [Fact]
+    public async Task RoutingAnchorsDistinguishEveryValidAndBlankFilterShape()
+    {
+        var workerId = WorkerId.New();
+        var subject = new WorkSubjectId("invoice", "1");
+        var concurrency = new WorkConcurrencyKey("tenant", "2");
+        var identifier = new WorkIdentifier("order", "3");
+        var definitionScope = new WorkEventDefinitionScope(WorkEventDefinitionKind.Work, "billing.close");
+        var blankFilters = new WorkEventFilter[]
+        {
+            new(),
+            new(DefinitionName: " "),
+            new(DefinitionNames: new HashSet<string> { " " }),
+            new(Keys: new HashSet<WorkEventKeyFilter> { new(null, " ", " ") }),
+            new(EventType: " "),
+            new(EventTypes: new HashSet<string> { " " }),
+        };
+        foreach (var filter in blankFilters)
+        {
+            await using var subscription = streamSubscription(filter);
+            Assert.Equal("CursorLog", DeliveryKind(subscription));
+        }
+
+        var anchoredFilters = new WorkEventFilter[]
+        {
+            new(WorkerId: workerId),
+            new(DefinitionName: "billing.close"),
+            new(DefinitionNames: new HashSet<string> { "billing.close" }),
+            new(DefinitionNames: new HashSet<string> { " ", "billing.close" }),
+            new(SubjectId: subject),
+            new(ConcurrencyKey: concurrency),
+            new(Identifier: identifier),
+            new(Keys: new HashSet<WorkEventKeyFilter> { new(WorkKeyKind.Subject, "invoice", "1") }),
+            new(EventType: "worker.completed"),
+            new(EventTypes: new HashSet<string> { "worker.completed" }),
+            new(EventTypes: new HashSet<string> { " ", "worker.completed" }),
+            new() { DefinitionKind = WorkEventDefinitionKind.Work },
+            new() { AuthorizedDefinitions = new HashSet<WorkEventDefinitionScope> { definitionScope } },
+        };
+        foreach (var filter in anchoredFilters)
+        {
+            await using var subscription = streamSubscription(filter);
+            Assert.Equal("RoutedChannel", DeliveryKind(subscription));
+        }
+
+        IWorkEventSubscription streamSubscription(WorkEventFilter filter)
+            => new WorkEventStream().Subscribe(filter);
+
+        static string DeliveryKind(IWorkEventSubscription subscription)
+            => subscription.GetType()
+                .GetProperty("DeliveryKind", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
+                .GetValue(subscription)!
+                .ToString()!;
+    }
+
+    [Fact]
+    public async Task MetadataPredicateRequiresEveryConfiguredFilterDimension()
+    {
+        var stream = new WorkEventStream();
+        var workerId = WorkerId.New();
+        var subject = new WorkSubjectId("invoice", "1");
+        var concurrency = new WorkConcurrencyKey("tenant", "2");
+        var identifier = new WorkIdentifier("order", "3");
+        var scope = new WorkEventDefinitionScope(WorkEventDefinitionKind.Work, "billing.close");
+        var metadata = new WorkEventMetadata(
+            WorkSystemId.New(),
+            workerId,
+            WorkDefinitionId.New(),
+            "billing.close",
+            subject,
+            concurrency,
+            "worker.completed",
+            () => new HashSet<WorkIdentifier> { identifier });
+        var complete = new WorkEventFilter(
+            workerId,
+            "BILLING.CLOSE",
+            new HashSet<string> { "billing.close" },
+            subject,
+            concurrency,
+            identifier,
+            new HashSet<WorkEventKeyFilter> { new(WorkKeyKind.Subject, "invoice", "1") },
+            "WORKER.COMPLETED",
+            new HashSet<string> { "worker.completed" })
+        {
+            DefinitionKind = WorkEventDefinitionKind.Work,
+            AuthorizedDefinitions = new HashSet<WorkEventDefinitionScope> { scope },
+        };
+        await using var matching = stream.Subscribe(
+            complete,
+            new WorkEventSubscriptionOptions(OverflowBehavior: WorkEventOverflowBehavior.DropWrite));
+        Assert.True(ShouldPublish(matching, metadata));
+
+        var mismatches = new WorkEventFilter[]
+        {
+            complete with { DefinitionKind = WorkEventDefinitionKind.Workflow },
+            complete with { AuthorizedDefinitions = new HashSet<WorkEventDefinitionScope> { new(WorkEventDefinitionKind.Work, "other") } },
+            complete with { WorkerId = WorkerId.New() },
+            complete with { DefinitionName = "other" },
+            complete with { DefinitionNames = new HashSet<string> { "other" } },
+            complete with { SubjectId = new WorkSubjectId("invoice", "other") },
+            complete with { ConcurrencyKey = new WorkConcurrencyKey("tenant", "other") },
+            complete with { Identifier = new WorkIdentifier("order", "other") },
+            complete with { Keys = new HashSet<WorkEventKeyFilter> { new(WorkKeyKind.Subject, "invoice", "other") } },
+            complete with { EventType = "worker.failed" },
+            complete with { EventTypes = new HashSet<string> { "worker.failed" } },
+        };
+        foreach (var filter in mismatches)
+        {
+            await using var subscription = stream.Subscribe(
+                filter,
+                new WorkEventSubscriptionOptions(OverflowBehavior: WorkEventOverflowBehavior.DropWrite));
+            Assert.False(ShouldPublish(subscription, metadata));
+        }
+
+        var independentlyMatchingFilters = new WorkEventFilter[]
+        {
+            new() { DefinitionKind = WorkEventDefinitionKind.Work },
+            new() { AuthorizedDefinitions = new HashSet<WorkEventDefinitionScope> { scope } },
+            new(WorkerId: workerId),
+            new(DefinitionName: "BILLING.CLOSE"),
+            new(DefinitionNames: new HashSet<string> { "billing.close" }),
+            new(SubjectId: subject),
+            new(ConcurrencyKey: concurrency),
+            new(Identifier: identifier),
+            new(Keys: new HashSet<WorkEventKeyFilter> { new(WorkKeyKind.Subject, "invoice", "1") }),
+            new(EventType: "WORKER.COMPLETED"),
+            new(EventTypes: new HashSet<string> { "worker.completed" }),
+        };
+        foreach (var filter in independentlyMatchingFilters)
+        {
+            await using var subscription = stream.Subscribe(
+                filter,
+                new WorkEventSubscriptionOptions(OverflowBehavior: WorkEventOverflowBehavior.DropWrite));
+            Assert.True(ShouldPublish(subscription, metadata));
+        }
+
+        await using var namedSubscription = stream.Subscribe(
+            new WorkEventFilter(DefinitionNames: new HashSet<string> { "billing.close" }),
+            new WorkEventSubscriptionOptions(OverflowBehavior: WorkEventOverflowBehavior.DropWrite));
+        var unnamedMetadata = new WorkEventMetadata(
+            metadata.WorkSystemId,
+            metadata.WorkerId,
+            metadata.DefinitionId,
+            definitionName: null,
+            metadata.SubjectId,
+            metadata.ConcurrencyKey,
+            metadata.EventType,
+            () => new HashSet<WorkIdentifier> { identifier });
+        Assert.False(ShouldPublish(namedSubscription, unnamedMetadata));
+
+        var sparseMetadata = new WorkEventMetadata(
+            metadata.WorkSystemId,
+            workerId: null,
+            definitionId: null,
+            definitionName: null,
+            subjectId: null,
+            concurrencyKey: null,
+            metadata.EventType);
+        var sparseMismatches = new WorkEventFilter[]
+        {
+            new() { AuthorizedDefinitions = new HashSet<WorkEventDefinitionScope> { scope } },
+            new(WorkerId: workerId),
+            new(SubjectId: subject),
+            new(ConcurrencyKey: concurrency),
+            new(Identifier: identifier),
+            new(Keys: new HashSet<WorkEventKeyFilter> { new(WorkKeyKind.Subject, "invoice", "1") }),
+        };
+        foreach (var filter in sparseMismatches)
+        {
+            await using var subscription = stream.Subscribe(
+                filter,
+                new WorkEventSubscriptionOptions(OverflowBehavior: WorkEventOverflowBehavior.DropWrite));
+            Assert.False(ShouldPublish(subscription, sparseMetadata));
+        }
+
+        await using var full = stream.Subscribe(
+            new WorkEventFilter { DefinitionKind = WorkEventDefinitionKind.Work },
+            new WorkEventSubscriptionOptions(1, WorkEventOverflowBehavior.DropWrite));
+        Assert.True(ShouldPublish(full, metadata));
+        stream.Publish(CreateEvent(eventType: metadata.EventType));
+        Assert.False(ShouldPublish(full, metadata));
+
+        await matching.DisposeAsync();
+        Assert.False(ShouldPublish(matching, metadata));
+
+        static bool ShouldPublish(IWorkEventSubscription subscription, WorkEventMetadata metadata)
+            => (bool)subscription.GetType()
+                .GetMethod("ShouldPublish", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(subscription, [metadata])!;
+    }
+
+    [Fact]
+    public async Task LazyMetadataPublishingSharesOneEventAcrossIndexedAndScannedSubscribers()
+    {
+        await using var stream = new WorkEventStream();
+        var workerId = WorkerId.New();
+        var systemId = WorkSystemId.New();
+        var definitionId = WorkDefinitionId.New();
+        var workEvent = CreateEvent(
+            workerId,
+            definitionId,
+            "billing.close",
+            systemId,
+            eventType: "worker.completed");
+        var metadata = new WorkEventMetadata(
+            systemId,
+            workerId,
+            definitionId,
+            "billing.close",
+            subjectId: null,
+            concurrencyKey: null,
+            "worker.completed");
+        await using var scanned = stream.Subscribe(new WorkEventFilter
+        {
+            DefinitionKind = WorkEventDefinitionKind.Work,
+        });
+        await using var scannedReader = scanned.Read().GetAsyncEnumerator();
+        var createCount = 0;
+
+        stream.Publish(metadata, workEvent, state =>
+        {
+            createCount++;
+            return state;
+        });
+        Assert.Same(workEvent, await ReadNext(scannedReader));
+        Assert.Equal(1, createCount);
+
+        await using var indexed = stream.Subscribe(new WorkEventFilter(WorkerId: workerId));
+        stream.Publish(metadata, workEvent, state =>
+        {
+            createCount++;
+            return state;
+        });
+        await using var indexedReader = indexed.Read().GetAsyncEnumerator();
+        Assert.Same(workEvent, await ReadNext(scannedReader));
+        Assert.Same(workEvent, await ReadNext(indexedReader));
+        Assert.Equal(2, createCount);
+    }
+
+    [Fact]
+    public async Task EmptySubscriptionIndexAndUnfilteredAdmissionHonorCapacity()
+    {
+        var indexType = typeof(WorkEventStream).GetNestedType("SubscriptionIndex", BindingFlags.NonPublic)!;
+        var subscriptionType = typeof(WorkEventStream).GetNestedType("WorkEventSubscription", BindingFlags.NonPublic)!;
+        var emptySubscriptions = Array.CreateInstance(subscriptionType, 0);
+        Assert.NotNull(indexType.GetMethod("Create")!.Invoke(null, [emptySubscriptions]));
+
+        await using var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe(
+            filter: null,
+            new WorkEventSubscriptionOptions(1, WorkEventOverflowBehavior.DropWrite));
+        var metadata = new WorkEventMetadata(
+            WorkSystemId.New(),
+            WorkerId.New(),
+            WorkDefinitionId.New(),
+            "capacity.test",
+            subjectId: null,
+            concurrencyKey: null,
+            "worker.completed");
+        var shouldPublish = subscription.GetType().GetMethod(
+            "ShouldPublish",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Assert.True(Assert.IsType<bool>(shouldPublish.Invoke(subscription, [metadata])));
+        stream.Publish(CreateEvent(eventType: "worker.completed"));
+        Assert.False(Assert.IsType<bool>(shouldPublish.Invoke(subscription, [metadata])));
+    }
+
     private static Task<WorkExecutionResult> SuccessfulWork(
         IWorkExecutionContext context,
         WorkInput? input,
@@ -1512,6 +1780,95 @@ public sealed class WorkEventStreamTests
 
     private static async Task<bool> ReadCompletion(Task<bool> read)
         => await read.WaitAsync(TimeSpan.FromSeconds(5));
+
+    [Fact]
+    public async Task UnfilteredSubscriptionExposesNoRoutingAnchors()
+    {
+        var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe();
+        var type = subscription.GetType();
+
+        foreach (var propertyName in new[]
+        {
+            "WorkerIdFilter",
+            "SubjectIdFilter",
+            "ConcurrencyKeyFilter",
+            "IdentifierFilter",
+            "KeyFilters",
+            "DefinitionNameFilter",
+            "DefinitionNamesFilter",
+            "EventTypeFilter",
+            "EventTypesFilter",
+        })
+        {
+            Assert.Null(type.GetProperty(
+                propertyName,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!.GetValue(subscription));
+        }
+    }
+
+    [Fact]
+    public async Task EventLogCoversEmptyBoundsFilteringCapacityAndCompletion()
+    {
+        var type = typeof(WorkEventStream).GetNestedType("EventLog", BindingFlags.NonPublic)!;
+        var log = Activator.CreateInstance(type, nonPublic: true)!;
+        object?[] emptyRead = [1L, null];
+        Assert.False((bool)type.GetMethod("TryRead")!.Invoke(log, emptyRead)!);
+        Assert.Null(emptyRead[1]);
+        Assert.Equal(0, type.GetMethod("CountMatching")!.Invoke(log, [1L, 2L, null, 0]));
+        Assert.Equal(0, type.GetMethod("CountMatching")!.Invoke(log, [2L, 1L, null, 10]));
+        Assert.Equal(0, type.GetMethod("CountMatching")!.Invoke(log, [1L, 2L, null, 10]));
+
+        var first = CreateEvent(eventType: "worker.first");
+        var second = CreateEvent(eventType: "worker.second");
+        type.GetMethod("Append")!.Invoke(log, [first, 10]);
+        type.GetMethod("Append")!.Invoke(log, [second, 10]);
+        object?[] beforeFirst = [0L, null];
+        object?[] afterLast = [3L, null];
+        object?[] retained = [1L, null];
+        Assert.False((bool)type.GetMethod("TryRead")!.Invoke(log, beforeFirst)!);
+        Assert.False((bool)type.GetMethod("TryRead")!.Invoke(log, afterLast)!);
+        Assert.True((bool)type.GetMethod("TryRead")!.Invoke(log, retained)!);
+        Assert.Same(first, retained[1]);
+        Assert.Equal(2, type.GetMethod("CountMatching")!.Invoke(log, [1L, 2L, null, 10]));
+        Assert.Equal(1, type.GetMethod("CountMatching")!.Invoke(log, [1L, 1L, null, 10]));
+        Assert.Equal(1, type.GetMethod("CountMatching")!.Invoke(log, [1L, 2L, null, 1]));
+        Assert.Equal(1, type.GetMethod("CountMatching")!.Invoke(
+            log,
+            [1L, 2L, new WorkEventFilter(EventType: "worker.second"), 10]));
+        Assert.Equal(0, type.GetMethod("CountMatching")!.Invoke(log, [3L, 4L, null, 10]));
+
+        var waitForKnownTail = (Task)type.GetMethod("WaitForAdvance")!.Invoke(
+            log,
+            [0L, CancellationToken.None])!;
+        await waitForKnownTail;
+        type.GetMethod("Complete")!.Invoke(log, null);
+        type.GetMethod("Complete")!.Invoke(log, null);
+        type.GetMethod("Append")!.Invoke(log, [CreateEvent(eventType: "worker.late"), 10]);
+        var waitAfterCompletion = (Task)type.GetMethod("WaitForAdvance")!.Invoke(
+            log,
+            [2L, CancellationToken.None])!;
+        await waitAfterCompletion;
+    }
+
+    [Fact]
+    public async Task CursorSubscriptionWithOnlyBlankSetValuesSkipsPublishedEvents()
+    {
+        await using var stream = new WorkEventStream();
+        await using var subscription = stream.Subscribe(
+            new WorkEventFilter(DefinitionNames: new HashSet<string> { " " }),
+            new WorkEventSubscriptionOptions(2, WorkEventOverflowBehavior.DropOldest));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await using var reader = subscription.Read(cancellation.Token).GetAsyncEnumerator();
+
+        stream.Publish(CreateEvent(definitionName: "orders.submit"));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await reader.MoveNextAsync());
+        var diagnostics = Assert.IsAssignableFrom<IWorkEventSubscriptionDiagnostics>(subscription)
+            .GetDiagnosticsSnapshot();
+        Assert.Equal(0, diagnostics.DeliveredEventCount);
+        Assert.Equal(0, diagnostics.QueuedCount);
+    }
 
     private static async Task AssertReadAlreadyCompleted(IWorkEventSubscription subscription)
     {

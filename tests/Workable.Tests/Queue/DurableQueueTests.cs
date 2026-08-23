@@ -920,6 +920,47 @@ public sealed class DurableQueueTests
     }
 
     [Fact]
+    public async Task StartupRecoversKnownFailedWorkersAndIgnoresUnknownOrDuplicateRows()
+    {
+        var store = new InMemoryDurableQueueStore
+        {
+            SupportsFailedWorkerRecovery = true,
+        };
+        var definition = WorkDefinition.Create("startup.failed.recovery", "Recovers retained failed work.");
+        var now = DateTimeOffset.UtcNow;
+        var workerId = WorkerId.New();
+        WorkQueueDurabilityFailedEntry Failed(WorkerId id, string name) => new(
+            new WorkQueueDurabilityLease(id, "previous-owner", Guid.NewGuid().ToString("N")),
+            name,
+            WorkInput.Empty,
+            WorkerOptions.Default,
+            WorkConfiguration.Default,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            now.AddMinutes(-2),
+            now,
+            [WorkMessage.Error("recovered.failure", "Recovered failure")]);
+        store.FailedEntries.Add(Failed(workerId, definition.Name));
+        store.FailedEntries.Add(Failed(workerId, definition.Name));
+        store.FailedEntries.Add(Failed(WorkerId.New(), "startup.failed.recovery.unknown"));
+        await using var system = new ServiceCollection()
+            .AddSingleton<IWorkPersistenceStore>(store)
+            .AddWorkableSystem(builder => builder.AddWork(
+                definition,
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        await system.Start();
+        var recovered = await system.Query.Worker(workerId);
+
+        Assert.NotNull(recovered);
+        Assert.Equal(WorkerState.Failed, recovered.State);
+        Assert.Equal("recovered.failure", Assert.Single(recovered.Messages).Code);
+        Assert.Equal(2, store.ClaimFailedAttempts);
+    }
+
+    [Fact]
     public async Task InitializationFailureDoesNotPreventStartupDrain()
     {
         var store = new InMemoryDurableQueueStore
@@ -1493,6 +1534,8 @@ public sealed class DurableQueueTests
 
         public List<WorkerId> RetainedFailedWorkers { get; } = [];
 
+        public List<WorkQueueDurabilityFailedEntry> FailedEntries { get; } = [];
+
         public int EnqueueAttempts { get; private set; }
 
         public int IdempotencyAttempts { get; private set; }
@@ -1673,6 +1716,7 @@ public sealed class DurableQueueTests
             WorkQueueDurabilityClaimRequest request,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            WorkQueueDurabilityFailedEntry[] entries;
             lock (this.sync)
             {
                 this.ClaimFailedAttempts++;
@@ -1681,10 +1725,21 @@ public sealed class DurableQueueTests
                     this.ClaimFailedFailuresRemaining--;
                     throw new InvalidOperationException("Transient durable failed-recovery claim failure.");
                 }
+
+                entries = [.. this.FailedEntries];
+                this.FailedEntries.Clear();
+            }
+
+            foreach (var entry in entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return entry with
+                {
+                    Lease = entry.Lease with { OwnerId = request.OwnerId },
+                };
             }
 
             await Task.CompletedTask;
-            yield break;
         }
 
         public Task RenewLeases(IReadOnlyList<WorkQueueDurabilityLease> leases, TimeSpan leaseDuration, CancellationToken cancellationToken = default)

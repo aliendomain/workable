@@ -21,7 +21,7 @@ const connection: WorkableConnection = {
   systemName: "Ops",
 };
 
-test("catalog renders persistent execution diagnostics before definitions and refreshes both", async () => {
+test("catalog renders diagnostic capture controls before definitions and refreshes them", async () => {
   const fetchMock = installQueueFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/definitions") {
       return Response.json([definition()]);
@@ -29,6 +29,10 @@ test("catalog renders persistent execution diagnostics before definitions and re
 
     if (call.input === "/api/workable/systems/Ops/execution-diagnostics/capture-rules") {
       return Response.json({ persistenceAvailable: true, rules: [] });
+    }
+
+    if (call.input === "/api/workable/systems/Ops/profiling/capture-rules") {
+      return Response.json({ maximumAutomaticInstrumentationNodes: 500, rules: [] });
     }
 
     return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
@@ -49,9 +53,18 @@ test("catalog renders persistent execution diagnostics before definitions and re
 
   try {
     await result.waitFor(() => result.getByText("Persistent execution diagnostics"));
+    await result.waitFor(() => result.getByText("Full profile capture"));
     await result.waitFor(() => result.getByText("Catalog"));
     const diagnosticsHeading = result.getByText("Persistent execution diagnostics");
+    const profileCaptureHeading = result.getByText("Full profile capture");
     const catalogHeading = result.getByText("Catalog");
+    assert.equal(
+      Boolean(
+        profileCaptureHeading.compareDocumentPosition(catalogHeading) &
+        result.dom.window.Node.DOCUMENT_POSITION_FOLLOWING
+      ),
+      true
+    );
     assert.equal(
       Boolean(
         diagnosticsHeading.compareDocumentPosition(catalogHeading) &
@@ -75,6 +88,12 @@ test("catalog renders persistent execution diagnostics before definitions and re
       />
     );
     await result.waitFor(() => {
+      assert.equal(
+        fetchMock.calls.filter((call) =>
+          call.input === "/api/workable/systems/Ops/profiling/capture-rules"
+        ).length,
+        2
+      );
       assert.equal(
         fetchMock.calls.filter((call) =>
           call.input === "/api/workable/systems/Ops/execution-diagnostics/capture-rules"
@@ -364,6 +383,8 @@ test("worker console exposes a view workflow action when the overview carries a 
           identifiers: [{ type: "workflow-run", value: "forged-run" }],
           isFinal: false,
           nextRunAt: null,
+          profilingCaptureMode: "Bounded",
+          profilingEnabled: false,
           retryAttempt: null,
           revision: 3,
           state: "Running",
@@ -481,6 +502,8 @@ function workerOverview(
       identifiers: [],
       isFinal: false,
       nextRunAt: null,
+      profilingCaptureMode: "Bounded",
+      profilingEnabled: false,
       retryAttempt: null,
       revision: 1,
       state: "Queued",

@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
 
@@ -85,11 +86,56 @@ public sealed class WorkIterationStatusStreamTests
         stream.Publish(iteration, "status.private", WorkIterationStatusUpdate.FromValue("progress", 1));
         var authorized = new AuthorizedWorkIterationStatusStream(
             stream,
-            new HashSet<string>(["status.public"], StringComparer.OrdinalIgnoreCase));
+            new HashSet<string>(["status.public"], StringComparer.OrdinalIgnoreCase),
+            canViewDiagnostics: false);
 
         var items = await ReadAll(authorized.Subscribe(iteration, afterSequence: long.MaxValue));
+        var missing = await ReadAll(authorized.Subscribe(
+            new WorkerIterationReference(WorkerId.New(), 1),
+            afterSequence: long.MaxValue));
 
         Assert.Empty(items);
+        Assert.Empty(missing);
+    }
+
+    [Fact]
+    public async Task AuthorizedStreamRequiresDiagnosticsPermissionForCompletionProfiles()
+    {
+        await using var stream = new WorkIterationStatusStream(WorkSystemId.New(), workSystemName: null);
+        var iteration = new WorkerIterationReference(WorkerId.New(), 1);
+        var now = DateTimeOffset.UtcNow;
+        var retainedIteration = new WorkerIterationSnapshot(
+            Sequence: iteration.Sequence,
+            StartedAt: now,
+            CompletedAt: now,
+            ExecutionDuration: TimeSpan.Zero,
+            Status: WorkCompletionStatus.Completed,
+            AttemptCount: 1,
+            Output: null,
+            Messages: [])
+        {
+            Profile = new WorkProfile("sensitive profile").ToSnapshot(),
+        };
+        stream.Begin(iteration, "status.visible");
+        stream.Complete(new WorkIterationStatusCompletion(
+            iteration.WorkerId,
+            WorkerRevision: 2,
+            WorkerState.Completed,
+            retainedIteration,
+            CancellationOrigin: null));
+
+        var readable = new HashSet<string>(["status.visible"], StringComparer.OrdinalIgnoreCase);
+        await using var ordinary = new AuthorizedWorkIterationStatusStream(
+            stream,
+            readable,
+            canViewDiagnostics: false).Subscribe(iteration);
+        await using var diagnostics = new AuthorizedWorkIterationStatusStream(
+            stream,
+            readable,
+            canViewDiagnostics: true).Subscribe(iteration);
+
+        Assert.Null(ordinary.Completion?.Iteration.Profile);
+        Assert.NotNull(diagnostics.Completion?.Iteration.Profile);
     }
 
     [Fact]
@@ -142,13 +188,13 @@ public sealed class WorkIterationStatusStreamTests
 
         await using var stream = new WorkIterationStatusStream(WorkSystemId.New(), workSystemName: null);
         var iteration = new WorkerIterationReference(WorkerId.New(), 1);
-        Assert.Throws<ArgumentOutOfRangeException>(() => stream.Subscribe(iteration, afterSequence: -1));
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => stream.Subscribe(iteration, afterSequence: -1));
         Assert.Throws<KeyNotFoundException>(() => stream.Subscribe(iteration));
 
         stream.Begin(iteration, "status.validation");
         stream.Begin(iteration, "STATUS.VALIDATION");
         Assert.Throws<InvalidOperationException>(() => stream.Begin(iteration, "status.other"));
-        Assert.Throws<ArgumentOutOfRangeException>(() => stream.Subscribe(iteration, afterSequence: 1));
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => stream.Subscribe(iteration, afterSequence: 1));
 
         stream.Complete(iteration);
         Assert.Throws<InvalidOperationException>(() => stream.Publish(
@@ -775,6 +821,44 @@ public sealed class WorkIterationStatusStreamTests
                 _ = item;
             }
         });
+    }
+
+    [Fact]
+    public async Task PreserveCanonicalTypesRejectNonFinalCompletionAndIgnoreRepeatedCompletionRemoval()
+    {
+        await using var stream = new WorkIterationStatusStream(WorkSystemId.New(), workSystemName: null);
+        var iteration = new WorkerIterationReference(WorkerId.New(), 1);
+        var now = DateTimeOffset.UtcNow;
+        stream.Begin(iteration, "status.boundaries");
+        stream.Publish(iteration, "status.boundaries", WorkIterationStatusUpdate.FromValue("canonical", 1));
+        stream.Publish(iteration, "status.boundaries", WorkIterationStatusUpdate.FromValue(" trimmed ", 2));
+
+        var executing = new WorkerIterationSnapshot(
+            iteration.Sequence,
+            now,
+            now,
+            TimeSpan.Zero,
+            WorkCompletionStatus.Executing,
+            1,
+            null,
+            []);
+        Assert.Throws<ArgumentException>(() => stream.Complete(new WorkIterationStatusCompletion(
+            iteration.WorkerId,
+            1,
+            WorkerState.Running,
+            executing,
+            null)));
+
+        var subscription = stream.Subscribe(iteration);
+        stream.Complete(iteration);
+        stream.Complete(iteration);
+        Assert.Equal(["canonical", "trimmed"], (await ReadAll(subscription)).Select(item => item.Type));
+
+        var remove = typeof(WorkIterationStatusStream).GetMethod(
+            "Remove",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        remove.Invoke(stream, [subscription]);
+        remove.Invoke(stream, [subscription]);
     }
 
     [Fact]

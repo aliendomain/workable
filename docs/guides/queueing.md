@@ -239,7 +239,7 @@ IWorkerHandle handle = await session.Queue.Enqueue(
 
 The `description` argument is optional. Use it when the caller wants to preserve additional human-readable context on the worker origin.
 
-Trusted direct in-process callers can also set `isAuthenticated: true` when the request should count as an authenticated caller for authorization rules such as `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, or `AllowOperationsToKnownAuthenticatedUsers(...)`.
+Trusted direct in-process callers can also set `isAuthenticated: true` when the request should count as an authenticated caller for authorization rules such as `AllowDiscoverToKnownAuthenticatedUsers()`, `AllowReadToKnownAuthenticatedUsers()`, `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, or `AllowOperationsToKnownAuthenticatedUsers(...)`.
 
 ```csharp
 var requestContext = WorkRequestContext.Create(
@@ -249,7 +249,7 @@ var requestContext = WorkRequestContext.Create(
     isAuthenticated: true);
 ```
 
-Only set that flag when the host has already authenticated the caller and the supplied actor is a real known identity. ASP.NET Core hosts that use `IWorkRequestContextFactory` do not need to set it manually.
+Only set that flag when the host has already authenticated the caller and the supplied actor is a real known identity. ASP.NET Core hosts do not set it manually: the HTTP-context dispatchers initialize the configured Workable principal automatically, while lower-level direct `IWorkRequestContextFactory` callers initialize an explicit transport scheme through `WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(...)` before creating the context.
 
 ASP.NET Core hosts can use `Workable.AspNetCore` to create authenticated request contexts from `HttpContext` inside their own controllers or minimal API routes. This does not expose Workable's built-in HTTP API endpoints.
 
@@ -283,10 +283,12 @@ Queue outcome statuses are:
 
 - `Accepted`: a worker was created.
 - `Invalid`: validation rejected the request.
-- `Unauthorized`: the caller cannot operate the target work definition.
-- `NotFound`: no matching work definition was found.
+- `Unauthorized`: the caller can discover the target definition but cannot queue it.
+- `NotFound`: no matching discoverable work definition was found. Hidden definitions deliberately use the same result as unknown names.
 
 Validation failures are returned as structured `WorkMessage` values. If the system is stopping, queueing returns `Invalid` with message code `workable.system.stopping`.
+
+Queue-only callers receive stable generic text for persistence-store availability and duplicate failures. Provider exception text and metadata require Read or diagnostics access; the unfiltered rejection remains available through system diagnostics for authorized operators.
 
 ## Await Completion
 
@@ -302,7 +304,7 @@ if (completion.IsCompletedSuccessfully)
 }
 ```
 
-`WorkCompletion` includes completion status, the final worker snapshot when one exists, output, and messages.
+`WorkCompletion` includes completion status, output, messages, and the final worker snapshot when one exists. Through an authorized session, retained output and the final worker snapshot require Read permission. Queue-only callers receive `Output = null` and `Worker = null`; raw unhandled-exception text and metadata also require Read or diagnostics access.
 
 When the queued worker is recurring, `WaitForCompletion(...)` can remain pending indefinitely. A recurring worker does not complete after a successful iteration; it completes only when recurrence stops and the worker leaves the recurring lifecycle.
 
@@ -325,7 +327,7 @@ if (completion.IsCompletedSuccessfully)
 }
 ```
 
-Typed completions preserve the raw serialized `WorkOutput` on `RawOutput`, along with status, messages, and the final worker snapshot.
+Typed completions preserve the raw serialized `WorkOutput` on `RawOutput`, along with status, messages, and the final worker snapshot. Authorized queue-only callers receive neither typed `Output` nor `RawOutput`; both require Read permission. Workable applies that authorization boundary before typed deserialization, so malformed or provider-controlled retained output is never parsed on behalf of a caller who cannot read it.
 
 ## Fire And Forget
 

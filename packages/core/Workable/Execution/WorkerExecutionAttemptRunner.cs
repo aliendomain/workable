@@ -57,12 +57,12 @@ internal sealed class WorkerExecutionAttemptRunner(
     }
 
     private static Exception GetExecutionException(Task execution)
-        => execution.Exception switch
-        {
-            { InnerExceptions.Count: 1 } exception => exception.InnerException!,
-            { } exception => exception,
-            _ => new InvalidOperationException("Worker execution task faulted without an exception."),
-        };
+    {
+        var exception = execution.Exception!;
+        return exception.InnerExceptions.Count == 1
+            ? exception.InnerException!
+            : exception;
+    }
 
     private readonly record struct ExecutionCapture(
         WorkerExecutionInvocationResult? InvocationResult,

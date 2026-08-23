@@ -11,6 +11,10 @@ internal sealed class TestExecutionDiagnosticsRepository : IWorkExecutionDiagnos
 
     public WorkExecutionDiagnosticArtifact? Artifact { get; set; }
 
+    public Exception? QueryException { get; set; }
+
+    public Exception? UpsertCaptureRuleException { get; set; }
+
     public WorkExecutionDiagnosticCriteria? LastCriteria { get; private set; }
 
     public WorkExecutionDiagnosticGetRequest? LastGetRequest { get; private set; }
@@ -33,6 +37,11 @@ internal sealed class TestExecutionDiagnosticsRepository : IWorkExecutionDiagnos
     public Task<WorkExecutionDiagnosticQueryResult> Query(WorkExecutionDiagnosticCriteria criteria, CancellationToken cancellationToken = default)
     {
         this.LastCriteria = criteria;
+        if (this.QueryException is not null)
+        {
+            throw this.QueryException;
+        }
+
         return Task.FromResult(this.QueryResult);
     }
 
@@ -49,6 +58,17 @@ internal sealed class TestExecutionDiagnosticsRepository : IWorkExecutionDiagnos
 
     public Task UpsertCaptureRule(WorkExecutionDiagnosticCaptureRule rule, int maximumActiveRules, CancellationToken cancellationToken = default)
     {
+        if (this.UpsertCaptureRuleException is not null)
+        {
+            throw this.UpsertCaptureRuleException;
+        }
+
+        foreach (var existing in this.rules.Values.Where(existing =>
+            existing.Id != rule.Id &&
+            StringComparer.OrdinalIgnoreCase.Equals(existing.DefinitionName, rule.DefinitionName)))
+        {
+            this.rules.TryRemove(existing.Id, out _);
+        }
         this.rules[rule.Id] = rule;
         return Task.CompletedTask;
     }

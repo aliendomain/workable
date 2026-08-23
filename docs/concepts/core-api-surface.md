@@ -91,7 +91,7 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 - Worker handles can be awaited as raw `WorkCompletion` or typed `WorkCompletion<TOutput>`.
 - Worker actions return `WorkActionOutcome`.
 - Single-worker actions accept either a concise `WorkAction` or a `WorkerActionRequest` containing the action and an optional human-readable `Reason`.
-- Bulk worker actions return `WorkerBulkActionOutcome` with one `WorkActionOutcome` per matched worker.
+- Bulk worker actions return `WorkerBulkActionOutcome` with one `WorkActionOutcome` per authorized matched worker; candidates that fail retained-state operation requirements are omitted.
 - Worker snapshots expose durable action history for worker actions and reconfiguration attempts that reached an existing worker, including the associated retained iteration sequence when the action was recorded against a tracked iteration.
 - Worker snapshots expose `CurrentIterationSequence` and `LastIterationSequence` so callers can cheaply locate the active or most recently completed iteration.
 - Direct `IWorkSystem.Queue` and `IWorkSystem.Workers` calls use `WorkInvocationChannel.InProcess`, an unknown actor, and an unauthenticated request context unless the caller creates a `WorkRequestContext` and works through `IWorkSystem.CreateSession(...)`.

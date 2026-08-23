@@ -120,6 +120,93 @@ public sealed class WorkflowRunStateShould
     }
 
     [Fact]
+    public void KeepCompositeChildReadabilityIndexSynchronizedWithStepWorkers()
+    {
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.child-readability-index"),
+            new ParallelWorkflowStepDefinition("notify",
+            [
+                Dispatch("email", "sample.email"),
+                Dispatch("invoice", "sample.invoice"),
+            ]));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var originalEmail = WorkerId.New();
+        var replacementEmail = WorkerId.New();
+        var invoice = WorkerId.New();
+        run.MarkStepCompleted("email", [originalEmail]);
+        run.MarkStepCompleted("invoice", [invoice]);
+        run.MarkStepCompleted("notify", [originalEmail, replacementEmail, invoice]);
+
+        var originalPage = run.GetStepWorkerIdsPage(
+            "notify",
+            new HashSet<string>(["email"], StringComparer.Ordinal),
+            skip: 0,
+            take: 10);
+        run.MarkStepCompleted("email", [replacementEmail]);
+        var replacementPage = run.GetStepWorkerIdsPage(
+            "notify",
+            new HashSet<string>(["email"], StringComparer.Ordinal),
+            skip: 0,
+            take: 10);
+        run.RemoveStepWorkerId("email", replacementEmail);
+        run.RemoveStepWorkerId("email", replacementEmail);
+        var removedPage = run.GetStepWorkerIdsPage(
+            "notify",
+            new HashSet<string>(["email"], StringComparer.Ordinal),
+            skip: 0,
+            take: 10);
+
+        Assert.Equal([originalEmail], originalPage.WorkerIds);
+        Assert.Equal(1, originalPage.TotalCount);
+        Assert.Equal([replacementEmail], replacementPage.WorkerIds);
+        Assert.Equal(1, replacementPage.TotalCount);
+        Assert.Empty(removedPage.WorkerIds);
+        Assert.Equal(0, removedPage.TotalCount);
+    }
+
+    [Fact]
+    public void BoundOperatorSnapshotsBeforeCopyingHighFanOutState()
+    {
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.operator-snapshot-bound"),
+            Dispatch("first", "sample.first"),
+            Dispatch("second", "sample.second"));
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var workerIds = Enumerable.Range(0, WorkflowRunViewAdapter.MaximumWorkerReadsPerView + 50)
+            .Select(_ => WorkerId.New())
+            .ToArray();
+        run.MarkStepCompleted("first", workerIds);
+        run.MarkStepCompleted("second", workerIds);
+        foreach (var workerId in workerIds)
+        {
+            Assert.True(run.RecordChildReceipt(new WorkflowChildReceipt(
+                workerId,
+                "first",
+                "sample.first",
+                WorkerState.Completed,
+                DateTimeOffset.UtcNow,
+                [],
+                WorkOutput.Empty)));
+        }
+
+        var bounded = run.ToOperatorSnapshot(WorkflowRunViewAdapter.MaximumWorkerReadsPerView);
+        var empty = run.ToOperatorSnapshot(0);
+
+        Assert.All(
+            bounded.Steps,
+            step => Assert.Equal(WorkflowRunViewAdapter.MaximumWorkerReadsPerView, step.WorkerIds.Count));
+        Assert.Equal(WorkflowRunViewAdapter.MaximumWorkerReadsPerView, bounded.ChildReceipts.Count);
+        Assert.Equal(workerIds.Length, run.ToSnapshot().ChildReceipts.Count);
+        Assert.All(empty.Steps, step => Assert.Empty(step.WorkerIds));
+        Assert.Empty(empty.ChildReceipts);
+        Assert.Throws<ArgumentOutOfRangeException>(() => run.ToOperatorSnapshot(-1));
+    }
+
+    [Fact]
     public void MaintainStepWorkerMembershipAcrossStateChangesAndRehydration()
     {
         var workflow = CreateWorkflow(
@@ -372,6 +459,133 @@ public sealed class WorkflowRunStateShould
         Assert.False(run.RecordChildReceipt(failed));
 
         Assert.Equal(canceled, Assert.Single(run.GetChildReceipts()));
+    }
+
+    [Fact]
+    public void FromPersistenceRecordFiltersOrphanReceiptsAndParsesControlActionForms()
+    {
+        var workerId = WorkerId.New();
+        var orphanId = WorkerId.New();
+        var now = DateTimeOffset.UtcNow;
+        WorkflowRunPersistenceRecord Record(string? pendingControlAction) => new(
+            "workflow-tests",
+            WorkflowRunId.New(),
+            WorkflowDefinition.Create("workflow.persistence.direct").Version,
+            "workflow.persistence.direct",
+            null,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkflowRunStatus.Running,
+            [
+                new WorkflowStepPersistenceRecord(
+                    "dispatch",
+                    WorkflowStepKind.DispatchWork,
+                    WorkflowStepRunStatus.Completed,
+                    [workerId],
+                    now,
+                    now,
+                    []),
+            ],
+            now,
+            now,
+            null,
+            [],
+            [
+                new WorkflowChildReceipt(workerId, "dispatch", "work", WorkerState.Completed, now, [], null),
+                new WorkflowChildReceipt(orphanId, "missing", "work", WorkerState.Completed, now, [], null),
+            ],
+            "fingerprint",
+            pendingControlAction,
+            null);
+
+        var stop = WorkflowRunState.FromPersistenceRecord(Record("Stop"));
+        var cancel = WorkflowRunState.FromPersistenceRecord(Record("Cancel"));
+        var invalid = WorkflowRunState.FromPersistenceRecord(Record("cancel"));
+
+        Assert.Equal(WorkflowAction.Pause, stop.GetPendingControlAction());
+        Assert.Equal(WorkflowAction.Cancel, cancel.GetPendingControlAction());
+        Assert.Null(invalid.GetPendingControlAction());
+        Assert.Equal(workerId, Assert.Single(stop.GetChildReceipts()).WorkerId);
+        Assert.True(stop.TryGetStepWorkerIds("dispatch", out var ids));
+        Assert.Equal([workerId], ids);
+        Assert.False(stop.TryGetStepWorkerIds("missing", out ids));
+        Assert.Empty(ids);
+    }
+
+    [Fact]
+    public void FinalTransitionsAreIdempotentAndRejectFurtherControlActions()
+    {
+        var context = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+        WorkflowRunState Run(string suffix) => WorkflowRunState.Create(
+            CreateWorkflow(WorkflowDefinition.Create($"workflow.final.{suffix}")),
+            context);
+
+        var completed = Run("completed");
+        Assert.Equal(WorkflowRunStatus.Completed, completed.Complete().Status);
+        Assert.Equal(WorkflowRunStatus.Completed, completed.Complete().Status);
+        Assert.False(completed.TryRecordAcceptedControlAction(WorkflowAction.Cancel, context, out _));
+        completed.MarkRunning();
+
+        var failed = Run("failed");
+        Assert.Equal(WorkflowRunStatus.Failed, failed.Fail([WorkMessage.Error("failed", "failed")]).Status);
+        Assert.Equal(WorkflowRunStatus.Failed, failed.Fail([]).Status);
+        Assert.False(failed.TryRecordAcceptedControlAction(WorkflowAction.Cancel, context, out _));
+
+        var canceled = Run("canceled");
+        Assert.Equal(WorkflowRunStatus.Canceled, canceled.Cancel().Status);
+        Assert.Equal(WorkflowRunStatus.Canceled, canceled.Cancel().Status);
+        Assert.False(canceled.TryRecordAcceptedControlAction(WorkflowAction.Cancel, context, out _));
+
+        var paused = Run("paused");
+        Assert.Equal(WorkflowRunStatus.Paused, paused.Pause().Status);
+        Assert.Equal(WorkflowRunStatus.Paused, paused.Pause().Status);
+        Assert.Equal(WorkflowRunStatus.Completed, paused.Complete().Status);
+
+        var blocked = Run("blocked");
+        Assert.Equal(WorkflowRunStatus.Blocked, blocked.Block([WorkMessage.Error("blocked", "blocked")]).Status);
+        Assert.Equal(WorkflowRunStatus.Completed, blocked.Complete().Status);
+    }
+
+    [Fact]
+    public void ChildReceiptValidationRejectsUnknownMembershipDuplicatesAndOlderStates()
+    {
+        var run = WorkflowRunState.Create(
+            CreateWorkflow(
+                WorkflowDefinition.Create("workflow.receipt.validation"),
+                Dispatch("dispatch", "sample.dispatch")),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var workerId = WorkerId.New();
+        var now = DateTimeOffset.UtcNow;
+        run.MarkStepCompleted("dispatch", [workerId]);
+        var receipt = new WorkflowChildReceipt(
+            workerId, "dispatch", "sample.dispatch", WorkerState.Completed, now, [], null);
+
+        Assert.False(run.RecordChildReceipt(receipt with { StepName = "missing" }));
+        Assert.False(run.RecordChildReceipt(receipt with { WorkerId = WorkerId.New() }));
+        Assert.True(run.RecordChildReceipt(receipt));
+        Assert.False(run.RecordChildReceipt(receipt));
+        Assert.True(run.RecordChildReceipt(receipt with
+        {
+            State = WorkerState.Failed,
+            CompletedAt = now.AddSeconds(1),
+        }));
+    }
+
+    [Fact]
+    public void CommitAndPersistenceSupplyCompletionTimeWhenAStagedRunSnapshotIsAbsent()
+    {
+        var run = WorkflowRunState.Create(
+            CreateWorkflow(WorkflowDefinition.Create("workflow.completion.without-run")),
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var final = new WorkflowRunCompletion(
+            WorkflowRunStatus.Completed,
+            Run: null,
+            Messages: []);
+
+        var persisted = run.ToPersistenceRecord("workflow-tests", final);
+        var committed = run.CommitFinalCompletion(final);
+
+        Assert.NotNull(persisted.CompletedAt);
+        Assert.NotNull(committed.Run?.CompletedAt);
     }
 
     private static RegisteredWorkflow CreateWorkflow(

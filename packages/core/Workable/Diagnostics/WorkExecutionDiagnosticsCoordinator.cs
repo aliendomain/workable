@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 
@@ -16,7 +17,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
     private readonly IWorkExecutionDiagnosticsRepository? repository;
     private readonly WorkExecutionDiagnosticsPolicyResolver policies;
     private readonly WorkSystemExecutionDiagnosticsPersistenceConfiguration configuration;
-    private readonly ILogger? logger;
+    private readonly ILogger logger;
     private readonly Channel<PersistenceOperation> channel;
     private readonly ConcurrentDictionary<WorkerIterationReference, CaptureState> captures = [];
     private readonly CancellationTokenSource lifetime = new();
@@ -45,7 +46,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         this.repository = repository;
         this.configuration = configuration;
         this.policies = new WorkExecutionDiagnosticsPolicyResolver(configuration);
-        this.logger = logger;
+        this.logger = logger ?? NullLogger.Instance;
         this.isProduction = isProduction;
         this.instrumentationAvailability = instrumentationAvailability ?? new(false, false);
         this.channel = Channel.CreateBounded<PersistenceOperation>(new BoundedChannelOptions(
@@ -90,9 +91,9 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
     {
         var reference = worker.GetCurrentIterationReference();
         if (this.captures.TryGetValue(reference, out var state) &&
-            this.ShouldEnableProfiling(state.Policy) &&
-            state.Policy.ProfileCaptureMode is { } requestedMode)
+            this.ShouldEnableProfiling(state.Policy))
         {
+            var requestedMode = state.Policy.ProfileCaptureMode!.Value;
             return worker.Options.ProfilingEnabled &&
                 worker.Options.ProfilingCaptureMode == WorkProfileCaptureMode.Full
                     ? WorkProfileCaptureMode.Full
@@ -139,7 +140,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         if (iteration.Status == WorkCompletionStatus.Executing)
         {
             var policy = this.ResolvePolicy(worker.Configuration, worker.Work.Definition.Name);
-            if (policy is null || this.captures.ContainsKey(reference))
+            if (policy is null)
             {
                 return;
             }
@@ -167,7 +168,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
             if (!this.TryWrite(new BeginOperation(start)))
             {
                 this.captures.TryRemove(reference, out _);
-                this.logger?.LogWarning(
+                this.logger.LogWarning(
                     "Persistent execution diagnostics were dropped for worker {WorkerId} iteration {IterationSequence} because the bounded writer queue was full.",
                     worker.Id,
                     iteration.Sequence);
@@ -194,7 +195,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         if (!this.TryWrite(new CompleteOperation(reference, completed, completion)))
         {
             this.captures.TryRemove(reference, out _);
-            this.logger?.LogWarning(
+            this.logger.LogWarning(
                 "Persistent execution diagnostics completion was dropped for worker {WorkerId} iteration {IterationSequence} because the bounded writer queue was full.",
                 worker.Id,
                 iteration.Sequence);
@@ -260,7 +261,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         catch (Exception materializationException) when (materializationException is not (OutOfMemoryException or StackOverflowException))
         {
             state.RecordDrop();
-            this.logger?.LogWarning(materializationException, "A persistent execution diagnostics log could not be bounded and captured.");
+            this.logger.LogWarning(materializationException, "A persistent execution diagnostics log could not be bounded and captured.");
             return;
         }
 
@@ -327,9 +328,18 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
     public Task<WorkExecutionDiagnosticQueryResult> Query(
         WorkExecutionDiagnosticCriteria criteria,
         CancellationToken cancellationToken)
-        => this.repository is null
+    {
+        if (criteria.Take is <= 0 or > WorkExecutionDiagnosticCriteria.MaximumTake)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(criteria),
+                $"Execution diagnostic query take must be between 1 and {WorkExecutionDiagnosticCriteria.MaximumTake}.");
+        }
+
+        return this.repository is null
             ? Task.FromResult(new WorkExecutionDiagnosticQueryResult([]))
             : this.repository.Query(criteria, cancellationToken);
+    }
 
     public Task<WorkExecutionDiagnosticArtifact?> Get(
         WorkExecutionDiagnosticGetRequest request,
@@ -379,7 +389,9 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         try
         {
             var current = Volatile.Read(ref this.captureRules);
-            if (current.GetActive(DateTimeOffset.UtcNow).Count >= this.configuration.MaximumCaptureRules)
+            var active = current.GetActive(DateTimeOffset.UtcNow);
+            var replacedRuleCount = active.Count(rule => SameScope(rule.DefinitionName, normalizedDefinitionName));
+            if (active.Count - replacedRuleCount >= this.configuration.MaximumCaptureRules)
             {
                 throw new InvalidOperationException(
                     $"A work system cannot have more than {this.configuration.MaximumCaptureRules} active execution diagnostic capture rules.");
@@ -397,8 +409,23 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
                 now,
                 now + activeFor,
                 createdBy);
-            await this.repository.UpsertCaptureRule(rule, this.configuration.MaximumCaptureRules, cancellationToken);
-            Volatile.Write(ref this.captureRules, current.WithUpsert(rule));
+            try
+            {
+                await this.repository.UpsertCaptureRule(rule, this.configuration.MaximumCaptureRules, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not (
+                OperationCanceledException or
+                OutOfMemoryException or
+                StackOverflowException))
+            {
+                this.logger.LogError(
+                    exception,
+                    "Failed to persist execution diagnostic capture rule for system '{WorkSystemName}'.",
+                    this.workSystemName);
+                throw new WorkExecutionDiagnosticsRepositoryException(exception);
+            }
+
+            Volatile.Write(ref this.captureRules, current.WithScopeReplacement(rule));
             return rule;
         }
         finally
@@ -544,7 +571,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or StackOverflowException))
         {
-            this.logger?.LogError(exception, "Persistent execution diagnostics writer stopped unexpectedly.");
+            this.logger.LogError(exception, "Persistent execution diagnostics writer stopped unexpectedly.");
         }
         finally
         {
@@ -585,7 +612,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
                     catch (Exception exception) when (exception is not (OutOfMemoryException or StackOverflowException))
                     {
                         profile.State.MarkProfileDropped();
-                        this.logger?.LogWarning(exception, "A persistent execution diagnostics profile could not be materialized.");
+                        this.logger.LogWarning(exception, "A persistent execution diagnostics profile could not be materialized.");
                     }
 
                     break;
@@ -622,11 +649,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or StackOverflowException))
         {
-            this.logger?.LogWarning(exception, "A persistent execution diagnostics operation failed.");
-            if (operation is FlushOperation flush)
-            {
-                flush.Completion.TrySetException(exception);
-            }
+            this.logger.LogWarning(exception, "A persistent execution diagnostics operation failed.");
         }
         finally
         {
@@ -662,7 +685,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
                 log.Capture.RecordMaterializationDrop();
             }
 
-            this.logger?.LogWarning(exception, "A persistent execution diagnostics log batch failed.");
+            this.logger.LogWarning(exception, "A persistent execution diagnostics log batch failed.");
         }
         finally
         {
@@ -719,7 +742,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
                 catch (Exception exception) when (exception is not (OperationCanceledException or OutOfMemoryException or StackOverflowException))
                 {
                     backlogRemaining = false;
-                    this.logger?.LogWarning(exception, "Persistent execution diagnostics cleanup failed; it will be retried.");
+                    this.logger.LogWarning(exception, "Persistent execution diagnostics cleanup failed; it will be retried.");
                 }
             }
         }
@@ -865,7 +888,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         if (value is bool or byte or sbyte or short or ushort or int or uint or long or ulong or
             float or double or decimal or Guid or DateTime or DateTimeOffset or TimeSpan)
         {
-            capturedLength = Math.Min(value.ToString()?.Length ?? 0, maximumLength);
+            capturedLength = Math.Min(value.ToString()!.Length, maximumLength);
             return value;
         }
 
@@ -905,7 +928,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or StackOverflowException))
         {
-            this.logger?.LogWarning(exception, "A persistent execution diagnostics profile could not be size checked.");
+            this.logger.LogWarning(exception, "A persistent execution diagnostics profile could not be size checked.");
             return false;
         }
     }
@@ -999,7 +1022,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
              (this.Record.ExceptionMessage?.Length ?? 0) +
              (this.Record.ExceptionStackTrace?.Length ?? 0) +
              this.Properties.Sum(property =>
-                 property.Key.Length + (property.Value?.ToString()?.Length ?? 0))) * sizeof(char);
+                 property.Key.Length + (property.Value is null ? 0 : property.Value.ToString()!.Length))) * sizeof(char);
 
         public WorkExecutionDiagnosticLogRecord Materialize()
         {
@@ -1212,8 +1235,8 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         public IReadOnlyList<WorkExecutionDiagnosticCaptureRule> GetActive(DateTimeOffset now)
             => [.. this.all.Where(rule => rule.ActiveUntil > now)];
 
-        public CaptureRuleIndex WithUpsert(WorkExecutionDiagnosticCaptureRule rule)
-            => Create(this.all.Where(existing => existing.Id != rule.Id).Append(rule));
+        public CaptureRuleIndex WithScopeReplacement(WorkExecutionDiagnosticCaptureRule rule)
+            => Create(this.all.Where(existing => !SameScope(existing.DefinitionName, rule.DefinitionName)).Append(rule));
 
         public CaptureRuleIndex WithDelete(Guid id)
             => Create(this.all.Where(rule => rule.Id != id));
@@ -1222,6 +1245,9 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
             WorkExecutionDiagnosticCaptureRule? Rule,
             DateTimeOffset ValidUntil);
     }
+
+    private static bool SameScope(string? left, string? right)
+        => StringComparer.OrdinalIgnoreCase.Equals(left, right);
 
     private sealed class PayloadSizeLimitExceededException : Exception
     {
@@ -1270,3 +1296,6 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         }
     }
 }
+
+internal sealed class WorkExecutionDiagnosticsRepositoryException(Exception innerException)
+    : Exception("The execution diagnostics repository operation failed.", innerException);

@@ -91,6 +91,29 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
             CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(WorkExecutionDiagnosticCriteria.MaximumTake + 1)]
+    public async Task RejectsOutOfRangeDiagnosticQueryCountsBeforeCallingTheRepository(int take)
+    {
+        var repository = new TestExecutionDiagnosticsRepository();
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkExecutionDiagnosticsRepository>(repository);
+        services.AddWorkableSystem(builder => builder.AddWork<SuccessfulExecutor>(
+            WorkDefinition.Create("bounded-diagnostic-query")));
+        await using var provider = services.BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var diagnostics = Assert.IsAssignableFrom<IWorkExecutionDiagnosticsSystem>(system);
+
+        var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            diagnostics.QueryExecutionDiagnostics(
+                new WorkExecutionDiagnosticCriteria(system.Id, Take: take),
+                CancellationToken.None));
+
+        Assert.Equal("criteria", exception.ParamName);
+        Assert.Null(repository.LastCriteria);
+    }
+
     [Fact]
     public async Task ReportsRepositoryBatchFailuresAsDroppedRatherThanPersisted()
     {
@@ -353,7 +376,7 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
             TimeSpan.FromHours(1),
             new WorkActor("test-user"),
             CancellationToken.None));
-        await diagnostics.CreateExecutionDiagnosticCaptureRule(
+        var original = await diagnostics.CreateExecutionDiagnosticCaptureRule(
             definitionName: null,
             LogLevel.Information,
             profileCaptureMode: null,
@@ -361,6 +384,21 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
             TimeSpan.FromHours(1),
             new WorkActor("test-user"),
             CancellationToken.None);
+        var replacement = await diagnostics.CreateExecutionDiagnosticCaptureRule(
+            definitionName: null,
+            LogLevel.Warning,
+            WorkProfileCaptureMode.Full,
+            TimeSpan.FromMinutes(10),
+            TimeSpan.FromHours(2),
+            new WorkActor("replacement-user"),
+            CancellationToken.None);
+
+        var active = Assert.Single(diagnostics.GetExecutionDiagnosticCaptureRules());
+        Assert.Equal(replacement.Id, active.Id);
+        Assert.NotEqual(original.Id, active.Id);
+        Assert.Equal(LogLevel.Warning, active.MinimumLogLevel);
+        Assert.Equal(WorkProfileCaptureMode.Full, active.ProfileCaptureMode);
+        Assert.False(await diagnostics.DeleteExecutionDiagnosticCaptureRule(original.Id, CancellationToken.None));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => diagnostics.CreateExecutionDiagnosticCaptureRule(
             "bounded-capture-rules",
@@ -722,6 +760,7 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
         Reject(new() { MaximumPendingLogBytes = 0 });
         Reject(new() { MaximumPendingProfiles = 0 });
         Reject(new() { MaximumCaptureRules = 0 });
+        Reject(new() { LogBatchSize = 0 });
         Reject(new() { ChannelCapacity = 1, LogBatchSize = 2 });
         Reject(new() { CleanupInterval = TimeSpan.Zero });
         Reject(new() { CleanupBatchSize = 0 });
@@ -976,6 +1015,12 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
 
         public Task UpsertCaptureRule(WorkExecutionDiagnosticCaptureRule rule, int maximumActiveRules, CancellationToken cancellationToken = default)
         {
+            foreach (var existing in this.rules.Values.Where(existing =>
+                existing.Id != rule.Id &&
+                StringComparer.OrdinalIgnoreCase.Equals(existing.DefinitionName, rule.DefinitionName)))
+            {
+                this.rules.TryRemove(existing.Id, out _);
+            }
             this.rules[rule.Id] = rule;
             return Task.CompletedTask;
         }

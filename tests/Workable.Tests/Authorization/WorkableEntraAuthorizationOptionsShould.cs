@@ -1,8 +1,11 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System.Reflection;
 using Workable;
 
 namespace Workable.Tests;
@@ -11,133 +14,300 @@ namespace Workable.Tests;
 public sealed class WorkableEntraAuthorizationOptionsShould
 {
     [Fact]
-    public async Task BindSecuritySettingsFromConfigurationAtThePublicRegistrationBoundary()
+    public async Task BindOnlyWorkableIntegrationSettingsFromConfiguration()
     {
         using var configuration = new ConfigurationManager
         {
-            ["TenantId"] = "tenant-id",
-            ["Audience"] = "api://primary-audience",
-            ["AuthorityHost"] = "https://login.example.test/",
-            ["AuthenticationScheme"] = "WorkableBearer",
+            ["AuthenticationScheme"] = "HostEntra",
             ["MapScopesToWorkableGroups"] = "false",
             ["MapAppRolesToWorkableGroups"] = "false",
             ["MapGroupsToWorkableGroups"] = "false",
-            ["AllowSignalRAccessTokensFromQueryString"] = "false",
-            ["SignalRAccessTokenQueryStringName"] = "workable_token",
-            ["AdditionalAudiences:0"] = " api://secondary-audience ",
-            ["AdditionalAudiences:1"] = " ",
-            ["SignalRAccessTokenQueryStringPaths:0"] = " /custom/realtime ",
-            ["SignalRAccessTokenQueryStringPaths:1"] = "",
         };
         var services = new ServiceCollection();
 
         services.AddWorkableEntraAuthorization(configuration);
 
         await using var provider = services.BuildServiceProvider();
-        var jwt = provider.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>().Get("WorkableBearer");
         var workable = provider.GetRequiredService<IOptions<WorkableAspNetCoreAuthorizationOptions>>().Value;
-        Assert.Equal("https://login.example.test/tenant-id/v2.0", jwt.Authority);
-        Assert.Equal("api://primary-audience", jwt.Audience);
+        Assert.Equal("HostEntra", workable.TransportAuthenticationScheme);
         Assert.Equal(
-            ["api://primary-audience", "api://secondary-audience"],
-            jwt.TokenValidationParameters.ValidAudiences);
-        Assert.Equal("WorkableBearer", workable.TransportAuthenticationScheme);
-        Assert.DoesNotContain(WorkableEntraAuthorizationDefaults.ScopeClaimType, workable.GroupClaimTypes);
-        Assert.DoesNotContain(WorkableEntraAuthorizationDefaults.RolesClaimType, workable.GroupClaimTypes);
-        Assert.DoesNotContain(WorkableEntraAuthorizationDefaults.GroupsClaimType, workable.GroupClaimTypes);
-
-        var context = EntraTestContext.CreateMessageReceivedContext(
-            jwt,
-            "WorkableBearer",
-            "/custom/realtime",
-            "workable_token=signalr-token");
-        await jwt.Events.MessageReceived(context);
-        Assert.Null(context.Token);
+            new WorkableAspNetCoreAuthorizationOptions().ActorIdClaimTypes,
+            workable.ActorIdClaimTypes);
+        Assert.Equal(new WorkableAspNetCoreAuthorizationOptions().GroupClaimTypes, workable.GroupClaimTypes);
+        Assert.Equal(1000, Assert.Single(provider.GetServices<IWorkActorClaimsMapper>()).Order);
+        Assert.Single(provider.GetServices<IWorkAuthorizationGroupClaimMapper>());
+        Assert.Empty(provider.GetServices<IStartupFilter>());
     }
 
     [Fact]
-    public async Task FallBackToSecureDefaultsForInvalidBooleanConfiguration()
+    public async Task UseTheHostPrincipalAndDocumentedMappingsByDefault()
     {
-        using var configuration = new ConfigurationManager
-        {
-            ["TenantId"] = "tenant-id",
-            ["Audience"] = "api://primary-audience",
-            ["MapScopesToWorkableGroups"] = "not-a-boolean",
-            ["MapAppRolesToWorkableGroups"] = "not-a-boolean",
-            ["MapGroupsToWorkableGroups"] = "not-a-boolean",
-            ["AllowSignalRAccessTokensFromQueryString"] = "not-a-boolean",
-        };
         var services = new ServiceCollection();
-        services.AddWorkableEntraAuthorization(configuration);
+
+        services.AddWorkableEntraAuthorization();
 
         await using var provider = services.BuildServiceProvider();
-        var jwt = provider.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>().Get(JwtBearerDefaults.AuthenticationScheme);
         var workable = provider.GetRequiredService<IOptions<WorkableAspNetCoreAuthorizationOptions>>().Value;
-        Assert.Equal($"{WorkableEntraAuthorizationDefaults.AuthorityHost}/tenant-id/v2.0", jwt.Authority);
-        Assert.Contains(WorkableEntraAuthorizationDefaults.ScopeClaimType, workable.GroupClaimTypes);
-        Assert.Contains(WorkableEntraAuthorizationDefaults.RolesClaimType, workable.GroupClaimTypes);
-        Assert.Contains(WorkableEntraAuthorizationDefaults.GroupsClaimType, workable.GroupClaimTypes);
-
-        var context = EntraTestContext.CreateMessageReceivedContext(
-            jwt,
-            JwtBearerDefaults.AuthenticationScheme,
-            WorkableEntraAuthorizationDefaults.SignalRHubPath,
-            $"{WorkableEntraAuthorizationDefaults.SignalRAccessTokenQueryStringName}=signalr-token");
-        await jwt.Events.MessageReceived(context);
-        Assert.Equal("signalr-token", context.Token);
+        Assert.Null(workable.TransportAuthenticationScheme);
+        Assert.Equal(new WorkableAspNetCoreAuthorizationOptions().GroupClaimTypes, workable.GroupClaimTypes);
+        Assert.Empty(workable.GroupClaimValueSeparatorsByClaimType);
+        Assert.Equal([','], workable.GroupClaimValueSeparators);
+        Assert.Single(provider.GetServices<IWorkActorClaimsMapper>());
+        Assert.Single(provider.GetServices<IWorkAuthorizationGroupClaimMapper>());
+        Assert.Empty(provider.GetServices<IStartupFilter>());
     }
 
     [Theory]
-    [InlineData("tenant", " ", "https://login.example.test", "Bearer", true, "access_token", "/workable/realtime", "TenantId")]
-    [InlineData("audience", "tenant", "https://login.example.test", "Bearer", true, "access_token", "/workable/realtime", "Audience")]
-    [InlineData("authority", "tenant", "http://login.example.test", "Bearer", true, "access_token", "/workable/realtime", "https AuthorityHost")]
-    [InlineData("scheme", "tenant", "https://login.example.test", " ", true, "access_token", "/workable/realtime", "authentication scheme")]
-    [InlineData("query", "tenant", "https://login.example.test", "Bearer", true, " ", "/workable/realtime", "query string name")]
-    [InlineData("path", "tenant", "https://login.example.test", "Bearer", true, "access_token", "relative/realtime", "absolute application paths")]
-    public void RejectUnsafeOrIncompleteSecurityConfiguration(
-        string caseName,
-        string tenant,
-        string authority,
-        string scheme,
-        bool allowQueryTokens,
-        string queryName,
-        string path,
-        string expectedMessage)
+    [InlineData("MapScopesToWorkableGroups")]
+    [InlineData("MapAppRolesToWorkableGroups")]
+    [InlineData("MapGroupsToWorkableGroups")]
+    public void RejectMalformedBooleanConfiguration(string key)
     {
-        var services = new ServiceCollection();
-
-        var exception = Assert.Throws<InvalidOperationException>(() => services.AddWorkableEntraAuthorization(options =>
+        using var configuration = new ConfigurationManager
         {
-            options.TenantId = tenant;
-            options.Audience = caseName == "audience" ? null : "api://target-audience";
-            options.AuthorityHost = authority;
-            options.AuthenticationScheme = scheme;
-            options.AllowSignalRAccessTokensFromQueryString = allowQueryTokens;
-            options.SignalRAccessTokenQueryStringName = queryName;
-            options.SignalRAccessTokenQueryStringPaths.Clear();
-            options.SignalRAccessTokenQueryStringPaths.Add(path);
-        }));
+            [key] = "not-a-boolean",
+        };
 
-        Assert.Contains(expectedMessage, exception.Message, StringComparison.OrdinalIgnoreCase);
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new ServiceCollection().AddWorkableEntraAuthorization(configuration));
+
+        Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'true' or 'false'", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("AuthenticationScheme", "HostEntra")]
+    [InlineData("MapScopesToWorkableGroups", "true")]
+    [InlineData("MapAppRolesToWorkableGroups", "false")]
+    [InlineData("MapGroupsToWorkableGroups", "true")]
+    public void DetectEachSupportedConfigurationSettingIndependently(string key, string value)
+    {
+        using var configuration = new ConfigurationManager { [key] = value };
+
+        var method = typeof(WorkableEntraAuthorizationOptions).GetMethod(
+            "HasConfiguredValues",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected configuration detection helper.");
+        Assert.True((bool)method.Invoke(null, [configuration])!);
+        Assert.False((bool)method.Invoke(null, [new ConfigurationManager()])!);
     }
 
     [Fact]
-    public void PermitAnEmptySignalRQueryNameWhenQueryTokensAreDisabled()
+    public async Task LeaveTheHostOwnedBearerSchemeUnchanged()
+    {
+        var onAuthenticationFailed = new Func<AuthenticationFailedContext, Task>(_ => Task.CompletedTask);
+        var services = new ServiceCollection();
+        services.AddSingleton<HostJwtBearerEvents>();
+        services
+            .AddAuthentication("HostEntra")
+            .AddJwtBearer("HostEntra", jwt =>
+            {
+                jwt.Authority = "https://login.example.test/host/v2.0";
+                jwt.Audience = "host-audience";
+                jwt.MapInboundClaims = false;
+                jwt.EventsType = typeof(HostJwtBearerEvents);
+                jwt.Events.OnAuthenticationFailed = onAuthenticationFailed;
+                jwt.TokenValidationParameters.ClockSkew = TimeSpan.FromSeconds(17);
+                jwt.TokenValidationParameters.NameClaimType = "host-name";
+                jwt.TokenValidationParameters.RoleClaimType = "host-role";
+                jwt.TokenValidationParameters.ValidAudiences = ["host-audience", "host-v1-audience"];
+            });
+        services.AddWorkableEntraAuthorization(options =>
+            options.AuthenticationScheme = "HostEntra");
+
+        await using var provider = services.BuildServiceProvider();
+        var jwt = provider.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>().Get("HostEntra");
+        var schemes = await provider.GetRequiredService<IAuthenticationSchemeProvider>().GetAllSchemesAsync();
+        Assert.Equal("https://login.example.test/host/v2.0", jwt.Authority);
+        Assert.Equal("host-audience", jwt.Audience);
+        Assert.False(jwt.MapInboundClaims);
+        Assert.Equal(typeof(HostJwtBearerEvents), jwt.EventsType);
+        Assert.Same(onAuthenticationFailed, jwt.Events.OnAuthenticationFailed);
+        Assert.Equal(TimeSpan.FromSeconds(17), jwt.TokenValidationParameters.ClockSkew);
+        Assert.Equal("host-name", jwt.TokenValidationParameters.NameClaimType);
+        Assert.Equal("host-role", jwt.TokenValidationParameters.RoleClaimType);
+        Assert.Equal(
+            ["host-audience", "host-v1-audience"],
+            jwt.TokenValidationParameters.ValidAudiences);
+        Assert.Equal("HostEntra", Assert.Single(schemes).Name);
+    }
+
+    [Fact]
+    public async Task LeaveHostAuthenticationRegisteredAfterWorkableUntouched()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableEntraAuthorization();
+        services
+            .AddAuthentication("HostCookies")
+            .AddJwtBearer("HostEntra", jwt =>
+            {
+                jwt.Authority = "https://login.example.test/late-host/v2.0";
+                jwt.Audience = "late-host-audience";
+                jwt.MapInboundClaims = false;
+                jwt.TokenValidationParameters.ValidAudiences =
+                    ["late-host-audience", "late-host-v1-audience"];
+            });
+
+        await using var provider = services.BuildServiceProvider();
+        var authentication = provider.GetRequiredService<IOptions<AuthenticationOptions>>().Value;
+        var jwt = provider.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>().Get("HostEntra");
+
+        Assert.Equal("HostCookies", authentication.DefaultScheme);
+        Assert.Equal("https://login.example.test/late-host/v2.0", jwt.Authority);
+        Assert.Equal("late-host-audience", jwt.Audience);
+        Assert.False(jwt.MapInboundClaims);
+        Assert.Equal(
+            ["late-host-audience", "late-host-v1-audience"],
+            jwt.TokenValidationParameters.ValidAudiences);
+    }
+
+    [Fact]
+    public async Task LetLateHostWorkableTransportConfigurationRemainAuthoritative()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableEntraAuthorization(options =>
+            options.AuthenticationScheme = "IntegrationSelection");
+        services.Configure<WorkableAspNetCoreAuthorizationOptions>(options =>
+            options.TransportAuthenticationScheme = "LateHostSelection");
+
+        await using var provider = services.BuildServiceProvider();
+
+        Assert.Equal(
+            "LateHostSelection",
+            provider.GetRequiredService<IOptions<WorkableAspNetCoreAuthorizationOptions>>()
+                .Value
+                .TransportAuthenticationScheme);
+    }
+
+    [Fact]
+    public async Task PreserveAHostConfiguredWorkableTransportSchemeWhenNoSchemeIsSelected()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableAspNetCoreAuthorization(options =>
+            options.TransportAuthenticationScheme = "HostSelectedEntra");
+
+        services.AddWorkableEntraAuthorization();
+
+        await using var provider = services.BuildServiceProvider();
+        var workable = provider.GetRequiredService<IOptions<WorkableAspNetCoreAuthorizationOptions>>().Value;
+        Assert.Equal("HostSelectedEntra", workable.TransportAuthenticationScheme);
+    }
+
+    [Fact]
+    public async Task UseOneFinalOptionSetAcrossRepeatedRegistration()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableEntraAuthorization(options =>
+        {
+            options.AuthenticationScheme = "FirstScheme";
+            options.MapScopesToWorkableGroups = true;
+            options.MapAppRolesToWorkableGroups = true;
+            options.MapGroupsToWorkableGroups = true;
+        });
+        services.AddWorkableEntraAuthorization(options =>
+        {
+            options.AuthenticationScheme = "FinalScheme";
+            options.MapScopesToWorkableGroups = false;
+            options.MapAppRolesToWorkableGroups = false;
+            options.MapGroupsToWorkableGroups = false;
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var workable = provider.GetRequiredService<IOptions<WorkableAspNetCoreAuthorizationOptions>>().Value;
+        Assert.Equal("FinalScheme", workable.TransportAuthenticationScheme);
+        Assert.Equal(new WorkableAspNetCoreAuthorizationOptions().GroupClaimTypes, workable.GroupClaimTypes);
+        Assert.Single(provider.GetServices<IWorkActorClaimsMapper>());
+        Assert.Single(provider.GetServices<IWorkAuthorizationGroupClaimMapper>());
+        Assert.Empty(provider.GetServices<IStartupFilter>());
+    }
+
+    [Fact]
+    public async Task TreatARepeatedNoArgumentRegistrationAsEnsureOnly()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableEntraAuthorization(options =>
+        {
+            options.AuthenticationScheme = "HostEntra";
+            options.MapScopesToWorkableGroups = false;
+            options.MapAppRolesToWorkableGroups = false;
+            options.MapGroupsToWorkableGroups = false;
+        });
+
+        services.AddWorkableEntraAuthorization();
+
+        await using var provider = services.BuildServiceProvider();
+        var workable = provider.GetRequiredService<IOptions<WorkableAspNetCoreAuthorizationOptions>>().Value;
+        Assert.Equal("HostEntra", workable.TransportAuthenticationScheme);
+        var mapper = Assert.Single(provider.GetServices<IWorkAuthorizationGroupClaimMapper>());
+        var identity = new ClaimsIdentity(
+            [new Claim("oid", "entra-user")],
+            authenticationType: "Test");
+        foreach (var claimType in new[]
+        {
+            WorkableEntraAuthorizationDefaults.ScopeClaimType,
+            WorkableEntraAuthorizationDefaults.RolesClaimType,
+            WorkableEntraAuthorizationDefaults.GroupsClaimType,
+        })
+        {
+            Assert.True(mapper.TryMap(identity, new Claim(claimType, "value"), out var groups));
+            Assert.Empty(groups);
+        }
+    }
+
+    [Fact]
+    public async Task TreatARepeatedMissingConfigurationSectionAsEnsureOnly()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableEntraAuthorization(options =>
+        {
+            options.AuthenticationScheme = "HostEntra";
+            options.MapScopesToWorkableGroups = false;
+            options.MapAppRolesToWorkableGroups = false;
+            options.MapGroupsToWorkableGroups = false;
+        });
+        using var configuration = new ConfigurationManager();
+
+        services.AddWorkableEntraAuthorization(
+            configuration.GetSection(WorkableEntraAuthorizationDefaults.ConfigurationSectionName));
+
+        await using var provider = services.BuildServiceProvider();
+        var workable = provider.GetRequiredService<IOptions<WorkableAspNetCoreAuthorizationOptions>>().Value;
+        Assert.Equal("HostEntra", workable.TransportAuthenticationScheme);
+        var mapper = Assert.Single(provider.GetServices<IWorkAuthorizationGroupClaimMapper>());
+        var identity = new ClaimsIdentity(
+            [new Claim("oid", "entra-user")],
+            authenticationType: "Test");
+        foreach (var claimType in new[]
+        {
+            WorkableEntraAuthorizationDefaults.ScopeClaimType,
+            WorkableEntraAuthorizationDefaults.RolesClaimType,
+            WorkableEntraAuthorizationDefaults.GroupsClaimType,
+        })
+        {
+            Assert.True(mapper.TryMap(identity, new Claim(claimType, "value"), out var groups));
+            Assert.Empty(groups);
+        }
+    }
+
+    [Fact]
+    public void RejectAnEmptyExplicitAuthenticationScheme()
     {
         var services = new ServiceCollection();
 
-        services.AddWorkableEntraAuthorization(options =>
-        {
-            options.TenantId = "tenant-id";
-            options.Audience = "api://target-audience";
-            options.AllowSignalRAccessTokensFromQueryString = false;
-            options.SignalRAccessTokenQueryStringName = " ";
-        });
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            services.AddWorkableEntraAuthorization(options =>
+            {
+                options.AuthenticationScheme = " ";
+            }));
+
+        Assert.Contains("authentication scheme", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public void GuardPublicRegistrationInputs()
     {
+        Assert.Throws<ArgumentNullException>(() =>
+            WorkableEntraServiceCollectionExtensions.AddWorkableEntraAuthorization((IServiceCollection)null!));
         Assert.Throws<ArgumentNullException>(() =>
             WorkableEntraServiceCollectionExtensions.AddWorkableEntraAuthorization(null!, _ => { }));
         Assert.Throws<ArgumentNullException>(() =>
@@ -146,22 +316,5 @@ public sealed class WorkableEntraAuthorizationOptionsShould
             new ServiceCollection().AddWorkableEntraAuthorization((IConfiguration)null!));
     }
 
-    private static class EntraTestContext
-    {
-        public static Microsoft.AspNetCore.Authentication.JwtBearer.MessageReceivedContext CreateMessageReceivedContext(
-            JwtBearerOptions options,
-            string schemeName,
-            string path,
-            string query)
-        {
-            var httpContext = new DefaultHttpContext();
-            httpContext.Request.Path = path;
-            httpContext.Request.QueryString = new QueryString($"?{query}");
-            var scheme = new Microsoft.AspNetCore.Authentication.AuthenticationScheme(
-                schemeName,
-                displayName: null,
-                typeof(JwtBearerHandler));
-            return new(httpContext, scheme, options);
-        }
-    }
+    private sealed class HostJwtBearerEvents : JwtBearerEvents;
 }

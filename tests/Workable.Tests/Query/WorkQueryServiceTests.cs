@@ -7,6 +7,32 @@ namespace Workable.Tests;
 public sealed class WorkQueryServiceTests
 {
     [Fact]
+    public async Task DefaultQueriesReturnCompleteUnfilteredShapes()
+    {
+        var definition = WorkDefinition.Create("query.defaults", category: "Defaults");
+        await using var system = CreateSystem(definition, SuccessfulWork);
+        await system.Start();
+        var handle = await system.Queue.Enqueue(
+            definition.Name,
+            WorkInput.Empty
+                .WithSubject(new WorkSubjectId("query", "defaults"))
+                .WithIdentifier(new WorkIdentifier("query", "defaults")));
+        Assert.True((await handle.WaitForCompletion()).IsCompletedSuccessfully);
+        await WaitForReadModel(system);
+
+        Assert.Single((await system.Query.Workers()).Workers);
+        Assert.Single((await system.Query.WorkerIterations()).Iterations);
+        Assert.Single((await system.Query.WorkDefinitions()).Definitions);
+        Assert.NotNull(await system.Query.WorkInfo(definition.Name));
+        Assert.Null(await system.Query.WorkInfo("query.defaults.missing"));
+        Assert.NotEmpty((await system.Query.WorkerKeys()).Keys);
+        Assert.NotEmpty((await system.Query.WorkerKeyTypes()).Types);
+        Assert.NotEmpty((await system.Query.WorkIterationKeys()).Keys);
+        Assert.NotEmpty((await system.Query.WorkIterationKeyTypes()).Types);
+        Assert.Equal(1, (await system.Query.WorkerStatusSummary()).Total);
+    }
+
+    [Fact]
     public async Task WorkerQueryReturnsFullSnapshot()
     {
         await using var system = CreateSystem(

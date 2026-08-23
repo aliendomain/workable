@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Workable;
 
 internal sealed class WorkflowRunState
@@ -5,6 +7,7 @@ internal sealed class WorkflowRunState
     private readonly Lock sync = new();
     private readonly List<WorkflowStepRunState> steps;
     private readonly Dictionary<WorkerId, WorkflowChildReceipt> childReceipts = [];
+    private readonly Dictionary<WorkerId, HashSet<string>> workerStepNames = [];
     private readonly Action? onChanged;
     private readonly TaskCompletionSource<WorkflowRunCompletion> completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -35,6 +38,7 @@ internal sealed class WorkflowRunState
         this.RequestContext = requestContext;
         this.CreatedAt = createdAt;
         this.steps = steps;
+        this.RebuildWorkerStepIndexLocked();
         this.onChanged = onChanged;
         this.status = WorkflowRunStatus.Running;
     }
@@ -284,7 +288,16 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
-            this.steps.Single(step => step.Name == name).MarkRunning(workerIds);
+            var step = this.steps.Single(step => step.Name == name);
+            if (workerIds is not null)
+            {
+                this.RemoveStepFromWorkerIndexLocked(step);
+            }
+            step.MarkRunning(workerIds);
+            if (workerIds is not null)
+            {
+                this.AddStepToWorkerIndexLocked(step);
+            }
             this.onChanged?.Invoke();
         }
     }
@@ -293,7 +306,16 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
-            this.steps.Single(step => step.Name == name).MarkCompleted(workerIds);
+            var step = this.steps.Single(step => step.Name == name);
+            if (workerIds is not null)
+            {
+                this.RemoveStepFromWorkerIndexLocked(step);
+            }
+            step.MarkCompleted(workerIds);
+            if (workerIds is not null)
+            {
+                this.AddStepToWorkerIndexLocked(step);
+            }
             this.onChanged?.Invoke();
         }
     }
@@ -322,6 +344,128 @@ internal sealed class WorkflowRunState
         }
     }
 
+    public WorkflowWorkerIdPage GetStepWorkerIdsPage(
+        string selectedStepName,
+        IReadOnlySet<string> readableDispatchStepNames,
+        int skip,
+        int take)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(selectedStepName);
+        ArgumentNullException.ThrowIfNull(readableDispatchStepNames);
+        ArgumentOutOfRangeException.ThrowIfNegative(skip);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
+
+        lock (this.sync)
+        {
+            var selected = this.steps.SingleOrDefault(
+                step => string.Equals(step.Name, selectedStepName, StringComparison.Ordinal));
+            if (selected is null)
+            {
+                return new WorkflowWorkerIdPage([], 0);
+            }
+
+            var page = new List<WorkerId>(take);
+            var totalCount = 0;
+            bool IsReadable(WorkerId workerId)
+                => this.workerStepNames.TryGetValue(workerId, out var stepNames) &&
+                    stepNames.Any(readableDispatchStepNames.Contains);
+
+            void Include(
+                IReadOnlyList<WorkerId> workerIds,
+                bool omitResolved,
+                bool requireReadable = false)
+            {
+                if (!omitResolved && !requireReadable)
+                {
+                    var firstIndex = Math.Max(0, skip - totalCount);
+                    var remainingPageCapacity = take - page.Count;
+                    var availableCount = Math.Max(0, workerIds.Count - firstIndex);
+                    var copyCount = Math.Min(remainingPageCapacity, availableCount);
+                    for (var index = 0; index < copyCount; index++)
+                    {
+                        page.Add(workerIds[firstIndex + index]);
+                    }
+
+                    totalCount += workerIds.Count;
+                    return;
+                }
+
+                foreach (var workerId in workerIds)
+                {
+                    if ((omitResolved && this.childReceipts.ContainsKey(workerId)) ||
+                        (requireReadable && !IsReadable(workerId)))
+                    {
+                        continue;
+                    }
+
+                    if (totalCount >= skip && page.Count < take)
+                    {
+                        page.Add(workerId);
+                    }
+                    totalCount++;
+                }
+            }
+
+            if (selected.Kind is WorkflowStepKind.DispatchWork or WorkflowStepKind.DispatchEach)
+            {
+                if (readableDispatchStepNames.Contains(selected.Name))
+                {
+                    Include(selected.WorkerIds, omitResolved: false);
+                }
+                return new WorkflowWorkerIdPage(page, totalCount);
+            }
+
+            if (selected.Kind is WorkflowStepKind.Parallel or WorkflowStepKind.Branch)
+            {
+                if (selected.WorkerIds.Count > 0)
+                {
+                    Include(selected.WorkerIds, omitResolved: false, requireReadable: true);
+                    return new WorkflowWorkerIdPage(page, totalCount);
+                }
+
+                foreach (var step in this.steps)
+                {
+                    if (readableDispatchStepNames.Contains(step.Name))
+                    {
+                        Include(step.WorkerIds, omitResolved: false);
+                    }
+                }
+                return new WorkflowWorkerIdPage(page, totalCount);
+            }
+
+            if (selected.Kind == WorkflowStepKind.Join)
+            {
+                if (selected.WorkerIds.Count > 0)
+                {
+                    Include(selected.WorkerIds, omitResolved: false, requireReadable: true);
+                    return new WorkflowWorkerIdPage(page, totalCount);
+                }
+
+                foreach (var step in this.steps)
+                {
+                    if (string.Equals(step.Name, selected.Name, StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+
+                    if (step.Kind == WorkflowStepKind.Join &&
+                        step.Status == WorkflowStepRunStatus.Completed)
+                    {
+                        page.Clear();
+                        totalCount = 0;
+                    }
+                    else if (step.Status == WorkflowStepRunStatus.Completed &&
+                        readableDispatchStepNames.Contains(step.Name))
+                    {
+                        Include(step.WorkerIds, omitResolved: true);
+                    }
+                }
+            }
+
+            return new WorkflowWorkerIdPage(page, totalCount);
+        }
+    }
+
     public bool StepContainsWorker(string name, WorkerId workerId)
     {
         lock (this.sync)
@@ -338,7 +482,9 @@ internal sealed class WorkflowRunState
         }
     }
 
-    public bool TryGetChildReceipt(WorkerId workerId, out WorkflowChildReceipt? receipt)
+    public bool TryGetChildReceipt(
+        WorkerId workerId,
+        [NotNullWhen(true)] out WorkflowChildReceipt? receipt)
     {
         lock (this.sync)
         {
@@ -390,8 +536,55 @@ internal sealed class WorkflowRunState
     {
         lock (this.sync)
         {
-            this.steps.Single(step => step.Name == name).RemoveWorkerId(workerId);
+            var step = this.steps.Single(step => step.Name == name);
+            step.RemoveWorkerId(workerId);
+            this.RemoveWorkerStepIndexEntryLocked(workerId, step.Name);
             this.onChanged?.Invoke();
+        }
+    }
+
+    private void RebuildWorkerStepIndexLocked()
+    {
+        this.workerStepNames.Clear();
+        foreach (var step in this.steps)
+        {
+            this.AddStepToWorkerIndexLocked(step);
+        }
+    }
+
+    private void AddStepToWorkerIndexLocked(WorkflowStepRunState step)
+    {
+        foreach (var workerId in step.WorkerIds)
+        {
+            if (!this.workerStepNames.TryGetValue(workerId, out var stepNames))
+            {
+                stepNames = new HashSet<string>(StringComparer.Ordinal);
+                this.workerStepNames[workerId] = stepNames;
+            }
+
+            stepNames.Add(step.Name);
+        }
+    }
+
+    private void RemoveStepFromWorkerIndexLocked(WorkflowStepRunState step)
+    {
+        foreach (var workerId in step.WorkerIds)
+        {
+            this.RemoveWorkerStepIndexEntryLocked(workerId, step.Name);
+        }
+    }
+
+    private void RemoveWorkerStepIndexEntryLocked(WorkerId workerId, string stepName)
+    {
+        if (!this.workerStepNames.TryGetValue(workerId, out var stepNames))
+        {
+            return;
+        }
+
+        stepNames.Remove(stepName);
+        if (stepNames.Count == 0)
+        {
+            this.workerStepNames.Remove(workerId);
         }
     }
 
@@ -564,6 +757,37 @@ internal sealed class WorkflowRunState
         lock (this.sync)
         {
             return this.ToSnapshotLocked();
+        }
+    }
+
+    internal WorkflowRunSnapshot ToOperatorSnapshot(int maximumWorkerIds)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(maximumWorkerIds);
+
+        lock (this.sync)
+        {
+            var retainedWorkerIds = new HashSet<WorkerId>();
+            var stepSnapshots = this.steps
+                .Select(step => step.ToOperatorSnapshot(retainedWorkerIds, maximumWorkerIds))
+                .ToArray();
+            var retainedReceipts = retainedWorkerIds
+                .Select(workerId => this.childReceipts.TryGetValue(workerId, out var receipt) ? receipt : null)
+                .OfType<WorkflowChildReceipt>()
+                .ToArray();
+            return new WorkflowRunSnapshot(
+                this.Id,
+                this.DefinitionName,
+                this.status,
+                this.Input,
+                stepSnapshots,
+                this.CreatedAt,
+                this.startedAt,
+                this.completedAt,
+                this.messages,
+                retainedReceipts)
+            {
+                DefinitionId = this.DefinitionVersion.DefinitionId,
+            };
         }
     }
 
@@ -838,6 +1062,38 @@ internal sealed class WorkflowRunState
                 this.CompletedAt,
                 this.messages);
 
+        public WorkflowStepRunSnapshot ToOperatorSnapshot(
+            HashSet<WorkerId> retainedWorkerIds,
+            int maximumWorkerIds)
+        {
+            var boundedWorkerIds = new List<WorkerId>(Math.Min(this.workerIds.Count, maximumWorkerIds));
+            foreach (var workerId in this.workerIds)
+            {
+                if (retainedWorkerIds.Contains(workerId))
+                {
+                    boundedWorkerIds.Add(workerId);
+                    continue;
+                }
+
+                if (retainedWorkerIds.Count >= maximumWorkerIds)
+                {
+                    break;
+                }
+
+                retainedWorkerIds.Add(workerId);
+                boundedWorkerIds.Add(workerId);
+            }
+
+            return new WorkflowStepRunSnapshot(
+                this.Name,
+                this.Kind,
+                this.Status,
+                boundedWorkerIds,
+                this.StartedAt,
+                this.CompletedAt,
+                this.messages);
+        }
+
         public WorkflowStepPersistenceRecord ToPersistenceRecord()
             => new(
                 this.Name,
@@ -849,3 +1105,7 @@ internal sealed class WorkflowRunState
                 this.messages);
     }
 }
+
+internal sealed record WorkflowWorkerIdPage(
+    IReadOnlyList<WorkerId> WorkerIds,
+    int TotalCount);

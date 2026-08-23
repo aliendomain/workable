@@ -27,5 +27,7 @@ test("logout route clears admin session cookies for same-origin requests", async
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual(await response.json(), { ok: true });
   assert.match(response.headers.get("set-cookie") ?? "", /workable_admin_session=;/);
+  assert.match(response.headers.get("set-cookie") ?? "", /__Host-workable_admin_logout=/);
+  assert.match(response.headers.get("set-cookie") ?? "", /__Host-workable_admin_entra_state=;/);
   assert.match(response.headers.get("set-cookie") ?? "", /Max-Age=0/);
 });

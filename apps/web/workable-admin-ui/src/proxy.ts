@@ -35,10 +35,16 @@ export function proxy(request: NextRequest) {
   );
   const response = NextResponse.redirect(loginUrl);
   const headers = failureHeaders(authentication);
-  if (headers["set-cookie"]) {
-    response.headers.append("set-cookie", headers["set-cookie"]);
+  for (const cookie of getSetCookies(headers)) {
+    response.headers.append("set-cookie", cookie);
   }
   return response;
+}
+
+function getSetCookies(headers: Headers) {
+  const extended = headers as Headers & { getSetCookie?: () => string[] };
+  return extended.getSetCookie?.() ??
+    (headers.get("set-cookie") ? [headers.get("set-cookie") as string] : []);
 }
 
 function isPublicAdminRoute(pathname: string) {

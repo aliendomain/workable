@@ -100,7 +100,7 @@ await foreach (var item in subscription.Read(cancellationToken))
 
 The read completes after the iteration reaches a final status and all retained items have been delivered. Disposing the subscription or canceling `Read(...)` stops the live reader.
 
-After a normal read completes, `subscription.Completion` contains the authoritative final iteration snapshot, worker revision/state, and accepted cancellation origin. Workable attaches this value atomically while closing the stream; clients do not need a separate query that could race retention or purge. It is null while the iteration is live and for manually completed custom stream implementations that do not supply terminal state.
+After a normal read completes, `subscription.Completion` contains the authoritative final iteration snapshot, worker revision/state, and accepted cancellation origin. Workable attaches this value atomically while closing the stream; clients do not need a separate query that could race retention or purge. On an authorized session, the retained iteration profile is included only when the caller has diagnostics permission; ordinary Read access still receives the status, output, messages, timing, and attempt count. Completion is null while the iteration is live and for manually completed custom stream implementations that do not supply terminal state.
 
 ## Stream Through SignalR
 

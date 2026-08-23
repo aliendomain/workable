@@ -1,5 +1,7 @@
 import {
   createExpiredAdminSessionCookie,
+  createAdminLogoutTombstoneCookie,
+  createExpiredEntraTransactionCookies,
   createExpiredEntraTargetTokenCookies,
   failureHeaders,
   validateUnsafeRequestOrigin,
@@ -24,7 +26,11 @@ export async function POST(request: Request) {
 
   const headers = new Headers(noStoreHeaders);
   headers.append("set-cookie", createExpiredAdminSessionCookie());
-  for (const cookie of createExpiredEntraTargetTokenCookies()) {
+  headers.append("set-cookie", createAdminLogoutTombstoneCookie(request));
+  for (const cookie of createExpiredEntraTransactionCookies()) {
+    headers.append("set-cookie", cookie);
+  }
+  for (const cookie of createExpiredEntraTargetTokenCookies(request.headers)) {
     headers.append("set-cookie", cookie);
   }
 
@@ -36,9 +42,10 @@ export async function POST(request: Request) {
   );
 }
 
-function secureJsonHeaders(headers: Record<string, string> = {}) {
-  return {
-    ...headers,
-    ...noStoreHeaders,
-  };
+function secureJsonHeaders(headers: HeadersInit = {}) {
+  const result = new Headers(headers);
+  for (const [name, value] of Object.entries(noStoreHeaders)) {
+    result.set(name, value);
+  }
+  return result;
 }

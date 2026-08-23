@@ -10,6 +10,8 @@ Invocation-channel rules matter for work invocation, not for general system/quer
 
 HTTP queueing, worker actions, and worker reconfiguration record a `WorkRequestContext` from the request. Its nested `Origin` carries the durable actor/channel provenance, and the request context also captures the HTTP path as `RequestContext.Url`. Built-in queue, action, bulk-action, and reconfiguration request bodies can also supply an optional `description` value. For a single-worker action, the adapter maps that wire-level value to `WorkerActionRequest.Reason`, and Workable records it on the action context as `RequestContext.Description`.
 
+Query strings are never retained in `RequestContext.Url`. Hosts should still redact them from proxy and server logs because they can contain credentials or other sensitive caller-controlled values.
+
 `Workable.HttpApi` is an authenticated transport. Anonymous callers are rejected before Workable routes run or request bodies are bound, and mapped systems must be authorization-enabled.
 
 Each request creates a `WorkRequestContext` and an `IWorkSystemSession` for the selected system. Work-definition read access filters catalog, query, event, and view results. Work-definition operate access answers the broad "can this caller operate this definition at all" question, and the runtime then enforces the specific queue, action, or reconfiguration permission required by the current HTTP request.
@@ -23,14 +25,29 @@ If your host also exposes custom controllers or minimal APIs that need to queue 
 Map the default Workable API endpoints from the host application.
 
 ```csharp
+// Register host-owned authentication before building the application.
 builder.Services.AddWorkableHttpApi();
 
+app.UseAuthentication();
+app.UseAuthorization();
 app.MapWorkableApi();
 ```
 
 The default prefix is `/workable`.
 
-`MapWorkableApi` always requires authenticated callers. When `WorkableAspNetCoreAuthorizationOptions.TransportAuthenticationScheme` is also set, `MapWorkableApi` adds matching authorization metadata to the mapped endpoints so ASP.NET Core evaluates that specific scheme.
+`MapWorkableApi` always requires authenticated callers. When `WorkableAspNetCoreAuthorizationOptions.TransportAuthenticationScheme` is also set, Workable explicitly authenticates that existing scheme for its own actor and group resolution without replacing the host's ambient `HttpContext.User`. Failed authentication invokes the selected host handler's challenge behavior. Once invoked, that handler owns the complete response, including its status, headers, events, redirect, and body; Workable writes its JSON authentication error only when no challenge scheme is available.
+
+By default, `MapWorkableApi` adds ordinary ASP.NET Core authorization metadata, so the host's `DefaultPolicy` owns endpoint authorization and its challenge or forbid response. A named `authorizationPolicy` or `useHostFallbackPolicy: true` selects the corresponding host-owned behavior:
+
+| Mapping | Endpoint metadata | Host policy |
+| --- | --- | --- |
+| `MapWorkableApi()` | Ordinary authorization metadata | `DefaultPolicy` |
+| `MapWorkableApi(authorizationPolicy: "HostPolicy")` | Named authorization metadata | `HostPolicy` only; the default policy is not implicitly added |
+| `MapWorkableApi(useHostFallbackPolicy: true)` | No Workable authorization metadata | `FallbackPolicy`, when the host configured one and runs authorization middleware |
+
+Workable only references policies already registered by the host; it does not create requirements, select policy authentication schemes, or configure authentication. When an explicitly selected Workable transport scheme differs from the scheme authenticated by the default policy, register a host policy for the intended scheme and pass its name through `authorizationPolicy`. Selecting both a named policy and fallback-policy mode is rejected.
+
+API clients should handle the host's actual challenge contract rather than assuming every failed authentication is a Workable JSON `401`; for example, a cookie or OIDC challenge can redirect.
 
 Beyond authentication, the built-in `/workable` routes are system-scoped admin surfaces. A caller must be recognized as either a `SystemAdministrator` or `WorkAdministrator` for the target system before those built-in routes run for that system. That applies to both the default-system routes under `/workable/...` and the named-system routes under `/workable/systems/{systemName}/...`.
 
@@ -38,6 +55,10 @@ The built-in adapter has two authorization gates after transport authentication:
 
 - outer gate: optional host-wide `SurfaceAccessGroups` that control whether the caller may enter the built-in `/workable` surface at all
 - inner gate: required system-scoped built-in surface access, granted by `SystemAdministrator`, `WorkAdministrator`, or any groups configured with `AllowBuiltInHttpApiToGroups(...)` for the target system
+
+Both gates use the same authenticated identity selected through `IWorkClaimsIdentitySelector`. Composite principals
+therefore do not have to place the Workable identity first, and actor fields and surface groups cannot come from
+different identities.
 
 If the entire built-in `/workable` path should also require one more top-level group before any system-specific surface access is considered, configure `SurfaceAccessGroups` as an outer gate:
 
@@ -53,22 +74,29 @@ Once `SurfaceAccessGroups` contains at least one group, every caller to every bu
 
 The gate order is:
 
-1. transport authentication
-2. optional outer gate via `SurfaceAccessGroups`
-3. inner gate for built-in surface access on the target system
-4. normal Workable system and work-definition authorization inside the created session
+1. the selected host endpoint policy
+2. Workable transport authentication and identity selection
+3. optional outer gate via `SurfaceAccessGroups`
+4. inner gate for built-in surface access on the target system
+5. normal Workable system and work-definition authorization inside the created session
 
 That means the built-in `/workable` routes are intentionally stricter than host-defined HTTP endpoints that dispatch into Workable. A host-defined endpoint can still choose its own authorization model and then call `IHttpContextWorkCommandDispatcher`, `IWorkRequestContextFactory`, or `IWorkSystem.CreateSession(...)` directly.
 
-That transport scheme is not automatic. `AddWorkableHttpApi()` by itself does not choose one. It is commonly set by [Workable.Entra](../guides/entra-authentication.md), or by host code that wants Workable HTTP requests to authenticate with one specific ASP.NET Core scheme instead of inheriting the ambient default.
+`IHttpContextWorkCommandDispatcher` and `IHttpContextWorkflowCommandDispatcher` initialize an explicitly selected
+Workable transport scheme before creating their request context. The scheme must already be registered by the host;
+the dispatchers invoke it without configuring it or replacing the ambient host principal.
 
-When a transport scheme is configured, the host pipeline must run authentication and authorization middleware before those endpoints execute. If your host already runs `app.UseAuthentication()` and `app.UseAuthorization()`, no extra step is needed.
+That transport scheme is optional. `AddWorkableHttpApi()` and [Workable.Entra](../guides/entra-authentication.md) use the host-produced principal by default. Set it through host code or `WorkableEntraAuthorizationOptions.AuthenticationScheme` only when Workable HTTP requests must explicitly authenticate one existing ASP.NET Core scheme instead of using the ambient principal.
+
+The host must run authentication and authorization before these endpoints. Fallback-policy mode still requires authorization middleware so the host's fallback policy can execute. If your host already runs `app.UseAuthentication()` and `app.UseAuthorization()`, no extra step is needed.
 
 ```csharp
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapWorkableApi("/internal/work");
 ```
+
+An explicit Workable transport scheme does not bypass the selected host endpoint authorization. Callers must satisfy the default policy, the selected named policy, or—when explicitly requested—the host fallback policy, as well as Workable's own authentication and authorization gates.
 
 The default routes target `IWorkSystemRegistry.Default`. The same endpoints are also available for named systems under `/systems/{systemName}`.
 
@@ -84,6 +112,11 @@ POST /workable/systems/email/workers/22222222-2222-2222-2222-222222222222/action
 Route matching is case-insensitive. Worker action route values are also parsed case-insensitively, so `/actions/cancel`, `/actions/Cancel`, and `/actions/CANCEL` all target `WorkAction.Cancel`.
 
 `AddWorkableHttpApi` configures HTTP JSON enum handling so enum strings in request bodies can also be supplied without matching .NET enum casing exactly.
+
+Definition and worker reconfiguration routes reject missing or empty `changes`, unknown members, and case-insensitive duplicate members at any nesting depth. This validation is local to Workable's request contracts and does not alter the host's global ASP.NET Core JSON settings.
+Queue-time options and definition or worker reconfiguration also reject undefined numeric enum values instead of allowing them to fall through to an implicit runtime behavior.
+
+Worker and workflow action route values must resolve to a defined action. Undefined numeric values return `400 Bad Request`; they are never interpreted as another action. The workflow `stop` compatibility alias remains equivalent to `pause`.
 
 ## Queue Work From Your Own HTTP Endpoints
 
@@ -121,7 +154,7 @@ That gives custom HTTP code the same behavior the built-in adapter already needs
 - optionally wait for completion
 - return a standardized `WorkDispatchResult<T>`
 
-Use `WorkDispatchCompletion.WaitForCompletion` when the endpoint should return the worker's final output instead of returning after acceptance.
+Use `WorkDispatchCompletion.WaitForCompletion` when the endpoint should wait for the final result instead of returning after acceptance. The final output is included only when the caller has Read permission for that definition.
 
 Drop down to `IWorkRequestContextFactory` and `IWorkSystem.CreateSession(...)` only when the endpoint needs broader session work such as direct query, worker action, catalog, or lifecycle access.
 
@@ -162,7 +195,9 @@ The response includes host capabilities plus each visible system's id, optional 
         "canControlSystem": false,
         "canReadAllWork": false,
         "canOperateAllWork": false,
+        "canDiscoverAllWork": false,
         "totalDefinitionCount": 12,
+        "discoverableDefinitionCount": 12,
         "readableDefinitionCount": 8,
         "operableDefinitionCount": 4
       }
@@ -171,11 +206,12 @@ The response includes host capabilities plus each visible system's id, optional 
 }
 ```
 
-The host-level `capabilities` object lets clients discover optional transport features exposed by the host. `realtime` reports whether `Workable.SignalR` is registered and, when it is, advertises the hub transport details clients should use.
+The host-level `capabilities` object lets clients discover optional transport features exposed by the host. `realtime` is enabled only after a Workable SignalR endpoint is mapped for advertisement; registering its services without mapping a hub does not advertise a route clients cannot use.
 
 The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination. `sqlProfilingAvailable` and `httpClientProfilingAvailable` report whether the corresponding automatic profiling instrumentation is registered for captured worker profiles.
 
 The systems list is filtered to systems where the caller has actual access. Read access, operate access, diagnostics access, control access, or administrator roles are all enough to make a system visible.
+For callers that cannot discover every definition, the HTTP projection sets `totalDefinitionCount` to the caller's discoverable count so hidden definition cardinality is not exposed. `canDiscoverAllWork` remains the authoritative indication that the count covers the complete system.
 For the built-in HTTP API specifically, `/workable/host` lists only systems where the caller has both:
 
 - built-in surface access for that system (`SystemAdministrator`, `WorkAdministrator`, or a group granted through `AllowBuiltInHttpApiToGroups(...)`)
@@ -186,9 +222,9 @@ For named built-in routes such as `/workable/systems/{systemName}/...`, Workable
 - inner built-in surface access for that system
 - some real Workable access in that system
 
-When the caller lacks real system access on a named built-in route, Workable returns the normal system-level authorization failure. When the caller lacks built-in surface access, Workable returns the built-in surface denial.
+Named built-in routes do not reveal whether the requested system exists. If the caller lacks either real system access or built-in surface access for that named system, Workable returns the same structured `workable.http.system.not_found` response used for an unknown system name. Default-system routes retain their explicit built-in-surface denial because the default system is not a caller-selectable name.
 
-When realtime is not registered, `enabled` is `false`.
+When realtime is not registered or no advertised realtime endpoint is mapped, `enabled` is `false`.
 
 ## Request Concurrency
 
@@ -233,7 +269,7 @@ DELETE /workable/profiling/capture-rules/{ruleId}
 
 Named-system variants are available under `/workable/systems/{systemName}/profiling/capture-rules`.
 
-Create a rule for a work definition, stable actor id, or both:
+Create a rule for a work definition, stable actor id, both selectors, or neither selector for a system-wide fallback:
 
 ```json
 {
@@ -245,13 +281,13 @@ Create a rule for a work definition, stable actor id, or both:
 }
 ```
 
-At least one of `definitionName` or `actorId` is required. Each selector is limited to 512 characters. `maximumMatches` defaults to `1` and must be between `1` and `1000`. `expiresAfterMinutes` defaults to `30` and must be between `1` and `1440`. A system can have at most 1,000 active rules; creating another returns a validation error. Definition matching is case-insensitive, while actor ids use exact ordinal matching. If several rules match, combined definition-and-actor rules take precedence over single-selector rules; equally specific rules are selected oldest first.
+Omitting both `definitionName` and `actorId` creates a global rule that can match any future worker. Each selector is limited to 512 characters. `maximumMatches` defaults to `1` and must be between `1` and `1000`. `expiresAfterMinutes` defaults to `30` and must be between `1` and `1440`. A system can have at most 1,000 active rules; creating another returns a validation error. Definition matching is case-insensitive, while actor ids use exact ordinal matching. If several rules match, combined definition-and-actor rules take precedence over single-selector rules, and global rules are considered only after selector-based rules are unavailable; equally specific rules are selected oldest first.
 
 Matching happens transactionally during queue acceptance. Steady-state queue requests read a preordered immutable rule snapshot and atomically reserve a match without taking the rule-administration lock; administration and one-time terminal rule cleanup use the lock. A rejected queue attempt returns its reserved match to the rule. An accepted worker has profiling enabled and retains `profilingCaptureMode: "Full"` in its effective options, including when it is placed in a durable queue. Rules themselves are temporary in-memory operational state. They remain through a system stop/start in the same host but are cleared by a host restart.
 
 `Full` means that automatic SQL, HTTP, and extension nodes do not consume the system's bounded automatic-instrumentation allowance for that worker iteration. It does not bypass queue authorization, invocation-channel restrictions, profile retention, HTTP privacy exclusions, or SQL parameter redaction.
 
-Listing, creating, and deleting rules require diagnostics access. `SystemAdministrator` has diagnostics permission by default, but it does not receive work queue permission merely by creating a rule. The matching worker must still be queued by a caller authorized for that definition and invocation channel.
+Listing rules requires diagnostics access. Creating or deleting a rule requires `ControlSystem`. `SystemAdministrator` has both permissions by default, but it does not receive work queue permission merely by creating a rule. The matching worker must still be queued by a caller authorized for that definition and invocation channel.
 
 An authorized definition-reconfiguration request that explicitly sets `profilingCaptureMode` to `Full` also requires diagnostics access in addition to the definition's normal reconfiguration permission. This prevents work-operation permission alone from bypassing the bounded automatic-instrumentation limit. Trusted host startup configuration is unaffected.
 
@@ -283,11 +319,11 @@ For example, an outbound HTTP timing is serialized with both its generic metric 
 
 The Workable admin UI exposes the same operations:
 
-- For a work type, select the system, open **Catalog**, select the definition, and use **Full profile capture**.
-- For a user, open **Workers**, select a retained worker for that actor, expand **Worker controls**, and use **Capture by user**.
-- Use **Capture this user + work type** from the same worker card when both selectors should match.
+- For a global rule, select the system, open **Catalog**, and use **Capture all work** in the top **Full profile capture** card.
+- For a work type, select the system, open **Catalog**, select the definition, and use **Capture this definition**.
+- For one existing worker, open **Workers**, select the worker, expand **Worker controls**, and use **Capture this worker**. This reconfigures that worker for its next execution and toggles back to bounded profiling when disabled.
 
-The selected existing worker supplies an actor id; it is not changed or reprofiled. Capture rules apply only to future accepted workers.
+The admin UI does not expose actor-id rule creation because it cannot enumerate or validate host-application actor ids. API clients with a trusted stable actor id can still create actor-only or combined actor/definition rules directly. Global and definition rules apply only to future accepted workers; the worker control changes only the selected existing worker.
 
 ## Diagnostics Response Example
 
@@ -385,7 +421,7 @@ Starting a system runs the normal system startup behavior. Work definition sourc
 
 Lifecycle routes require the system-level `ControlSystem` permission or `SystemAdministrator`.
 
-Stopping a system stops accepting new work, interrupts active workers, waits for the configured shutdown grace period, and then force-completes workers that did not finish cooperatively as `Interrupted`. After shutdown work completes, Workable clears in-memory worker and iteration records for that system. The stop response includes the shutdown grace period, summaries for workers asked to stop, and the names and summaries of workers that were force-interrupted after the grace period elapsed.
+Stopping a system stops accepting new work, interrupts active workers, waits for the configured shutdown grace period, and then force-completes workers that did not finish cooperatively as `Interrupted`. After shutdown work completes, Workable clears in-memory worker and iteration records for that system. The stop response includes the shutdown grace period and retained worker rows, names, and summaries only for definitions the caller may read. `ControlSystem` authorizes the lifecycle transition but does not grant read access to hidden worker inputs, outputs, actors, identifiers, messages, or shutdown metadata.
 
 ```json
 {
@@ -453,7 +489,9 @@ Content-Type: application/json
 }
 ```
 
-The definition reconfiguration route requires the current definition revision. Accepted changes advance the definition revision and affect workers queued afterward. Stale revisions return `409 Conflict`; invalid configuration returns `400 Bad Request`; unknown definitions return `404 Not Found`.
+The definition reconfiguration route requires the current definition revision. Accepted changes advance the definition revision and affect workers queued afterward. Stale revisions return `409 Conflict`; invalid configuration returns `400 Bad Request`; unknown definitions return `404 Not Found`. Workable-authored shape-validation messages identify malformed request members, while failures from host-provided JSON converters use a generic invalid-values message so server exception details do not cross the HTTP boundary.
+
+Operate permission is sufficient to apply the change, but it does not disclose the complete definition. Without Read, accepted and conflict responses retain the authoritative `revision` and return `definition: null`.
 
 ## Work Info
 
@@ -498,7 +536,7 @@ Queue requests can also include an optional `description` when the caller wants 
 
 Use `GET /workable/queue-request/schema` when a client wants to discover the accepted HTTP queue request shape for the selected system at runtime, including the optional `description` field.
 
-Request completion when the caller needs the final worker output in the HTTP response.
+Request completion when the caller needs the terminal result in the HTTP response. The response includes final worker output only when the caller has Read permission for the definition.
 
 ```json
 {
@@ -581,7 +619,7 @@ Content-Type: application/json
 }
 ```
 
-Component and view requests accept an optional `scope`. Scopes can target `definitionName` or `category`. When `category` is supplied, `includeSubcategories` defaults to `true`. Requests can also supply component `shape` and component-specific `options`.
+Component and view requests accept an optional `scope`. Scopes can target `definitionName` or `category`. When `category` is supplied, `includeSubcategories` defaults to `true`. Requests can also supply component `shape` and component-specific `options`. A request may contain at most 32 components; ids must be non-empty and unique case-insensitively. Invalid component lists return `400` before any component query executes.
 
 Use these routes when the caller wants the shared transport-oriented view contract over HTTP. See [Views](../concepts/views.md) for canonical view names, component names, default compositions, shapes, scope behavior, and the efficiency model behind the contract.
 
@@ -697,27 +735,6 @@ The iteration-messages route accepts:
 
 Retained `WorkMessage` payloads include `occurredAt` in addition to `code`, `severity`, `text`, optional `target`, and optional `metadata`.
 
-## Local Realtime Debug
-
-When the HTTP API is hosted in `Development`, or when the configured listener URLs are all loopback-only (`localhost`, `127.0.0.1`, or `::1`), the adapter also registers local realtime debug routes:
-
-```http
-GET /workable/debug/realtime
-GET /workable/debug/realtime?connectionId=abc123
-GET /workable/systems/fulfillment/debug/realtime
-```
-
-These routes are intended for local troubleshooting. In non-development environments, Workable registers them only for loopback-only listener configurations, and each request must also come from a loopback address. Other callers receive `404 Not Found`.
-
-The debug payload includes:
-
-- active raw event subscriptions
-- active named-view subscriptions
-- active worker-overview subscriptions
-- current criteria, group name, and logical subscription ids
-- worker-overview queue diagnostics such as `queuedCount`, `peakQueuedCount`, `acceptedEventCount`, `deliveredEventCount`, and `droppedEventCount`
-- worker-overview lifecycle fields such as `isStreaming`, `streamingStartedAt`, `streamingStoppedAt`, `lastActivityAt`, and `lastError`
-
 Worker and iteration collections can also be read through the shared views/component routes when a caller wants the transport-oriented `Workable.Views` contract instead of the narrower point routes shown here. The canonical component names and option shapes live in [Views](../concepts/views.md).
 
 Get system activity counts by worker status.
@@ -807,7 +824,7 @@ The start request also accepts optional `subjectId`, `concurrencyKey`, and `iden
 List visible active workflow runs, optionally including final runs or filtering by workflow definition name.
 
 ```http
-GET /workable/workflow-runs?includeFinal=true&definitionName=orders.fulfillment&childSampleSize=3
+GET /workable/workflow-runs?includeFinal=true&definitionName=orders.fulfillment&childSampleSize=3&skip=0&take=50
 ```
 
 Read one workflow run and its operator-oriented step graph.
@@ -816,11 +833,23 @@ Read one workflow run and its operator-oriented step graph.
 GET /workable/workflow-runs/33333333-3333-3333-3333-333333333333?childSampleSize=3
 ```
 
+`childSampleSize` defaults to `3` and must be between `0` and `25`, inclusive. Child-worker ids,
+samples, summaries, and paged totals include only definitions the caller may Read; invalid sample sizes
+return `400 Bad Request`.
+
+Workflow-run lists are paged before child snapshots are resolved. `skip` defaults to `0` and accepts
+`0` through `10000`; `take` defaults to `50` and accepts `1` through `100`. The response reports
+`totalCount`, `skip`, and `take`; invalid paging values return `400 Bad Request`.
+Each selected run's compact operator projection retains at most 256 distinct child-worker ids and matching receipts. Use the paged child-worker route below to traverse larger fan-outs.
+
 Page through the child workers associated with one selected workflow node. The node can be a dispatch, fan-out, parallel, or branch structure node.
 
 ```http
 GET /workable/workflow-runs/33333333-3333-3333-3333-333333333333/steps/release-streams/children?skip=0&take=25
 ```
+
+Child pages accept `skip` from `0` through `100000` and `take` from `1` through `100`; invalid values
+return `400 Bad Request`. Only the selected slice and its readable receipt fallbacks are projected.
 
 Operate an existing workflow run with `start`, `pause`, or `cancel`:
 
@@ -834,6 +863,8 @@ Content-Type: application/json
 ```
 
 `stop` remains a compatibility alias for `pause`. Workflow action route values are parsed case-insensitively. The named-system forms place the same paths under `/workable/systems/{systemName}`.
+
+Workflow start and action responses include the retained run projection only when the caller also has Read permission. Operate-only callers still receive the command status and run id, with `run: null`. Read-authorized run projections expose only lifecycle-valid actions that the same caller is currently authorized to execute.
 
 ## Worker Operations
 
@@ -860,7 +891,7 @@ Content-Type: application/json
 {}
 ```
 
-Bulk worker actions use the current server-side worker revision for each matched worker. The response contains one `WorkActionOutcome` per matched worker, so invalid states and conflicts are reported per worker.
+Bulk worker actions use the current server-side worker revision for each authorized matched worker. The response contains one `WorkActionOutcome` per target that passes authoritative operation requirements, so execution-state conflicts are reported per worker without revealing candidates rejected by retained-state authorization constraints.
 
 ```json
 {
@@ -893,6 +924,8 @@ Content-Type: application/json
 ```
 
 Bulk action requests also accept an optional top-level `description`.
+
+Worker action and bulk-action responses include a worker snapshot only when the caller also has Read permission for that definition. Operate-only callers receive ids and per-action statuses with `worker: null`.
 
 Runtime reconfiguration uses the same revision rule.
 

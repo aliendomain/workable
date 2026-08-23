@@ -54,12 +54,36 @@ test("proxy passes authenticated Basic requests through to the app", () => {
   });
 });
 
+test("proxy clears the session and delegated tokens for an invalid Entra session", () => {
+  withProxyEnv(() => {
+    process.env.WORKABLE_ADMIN_UI_AUTH_PROVIDER = "entra";
+    process.env.WORKABLE_ADMIN_ENTRA_TENANT_ID = "tenant-id";
+    process.env.WORKABLE_ADMIN_ENTRA_CLIENT_ID = "client-id";
+    const response = proxy(
+      new NextRequest("https://admin.example.com/workers", {
+        headers: { cookie: "workable_admin_session=invalid" },
+      })
+    );
+    const cookies = getSetCookies(response.headers);
+
+    assert.equal(response.status, 307);
+    assert.equal(cookies.length, 35);
+    assert.ok(cookies.every((cookie) => /Max-Age=0/i.test(cookie)));
+  });
+});
+
+function getSetCookies(headers: Headers) {
+  const extended = headers as Headers & { getSetCookie?: () => string[] };
+  return extended.getSetCookie?.() ?? [headers.get("set-cookie") ?? ""];
+}
+
 function withProxyEnv<T>(callback: () => T): T {
   const previous = snapshotEnv();
   process.env.WORKABLE_ADMIN_CONFIG_DISABLED = "true";
   process.env.WORKABLE_ADMIN_UI_USERNAME = "admin";
   process.env.WORKABLE_ADMIN_UI_PASSWORD = "secret";
-  process.env.WORKABLE_ADMIN_UI_SESSION_SECRET = "proxy-test-session-secret";
+  process.env.WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED = "true";
+  process.env.WORKABLE_ADMIN_UI_SESSION_SECRET = "proxy-test-session-secret-at-least-32-bytes";
   delete process.env.WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS;
   delete process.env.WORKABLE_ADMIN_UI_AUTH_PROVIDER;
 
@@ -75,6 +99,9 @@ function snapshotEnv() {
     WORKABLE_ADMIN_CONFIG_DISABLED: process.env.WORKABLE_ADMIN_CONFIG_DISABLED,
     WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS: process.env.WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS,
     WORKABLE_ADMIN_UI_AUTH_PROVIDER: process.env.WORKABLE_ADMIN_UI_AUTH_PROVIDER,
+    WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED: process.env.WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED,
+    WORKABLE_ADMIN_ENTRA_CLIENT_ID: process.env.WORKABLE_ADMIN_ENTRA_CLIENT_ID,
+    WORKABLE_ADMIN_ENTRA_TENANT_ID: process.env.WORKABLE_ADMIN_ENTRA_TENANT_ID,
     WORKABLE_ADMIN_UI_PASSWORD: process.env.WORKABLE_ADMIN_UI_PASSWORD,
     WORKABLE_ADMIN_UI_SESSION_SECRET: process.env.WORKABLE_ADMIN_UI_SESSION_SECRET,
     WORKABLE_ADMIN_UI_USERNAME: process.env.WORKABLE_ADMIN_UI_USERNAME,

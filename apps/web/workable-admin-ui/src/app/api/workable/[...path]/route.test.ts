@@ -95,6 +95,7 @@ async function withWorkableRouteEnv<T>(callback: () => Promise<T> | T): Promise<
   process.env.WORKABLE_API_URL = "https://workable.example.com/workable";
   process.env.WORKABLE_ADMIN_UI_USERNAME = "admin";
   process.env.WORKABLE_ADMIN_UI_PASSWORD = "secret";
+  process.env.WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED = "true";
   process.env.WORKABLE_ADMIN_UI_SESSION_SECRET = "workable-route-test-session-secret";
   delete process.env.WORKABLE_ALLOWED_API_URLS;
   delete process.env.WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS;
@@ -115,6 +116,7 @@ function snapshotEnv() {
     WORKABLE_API_URL: process.env.WORKABLE_API_URL,
     WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS: process.env.WORKABLE_ADMIN_UI_ALLOW_ANONYMOUS,
     WORKABLE_ADMIN_UI_AUTH_PROVIDER: process.env.WORKABLE_ADMIN_UI_AUTH_PROVIDER,
+    WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED: process.env.WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED,
     WORKABLE_ADMIN_UI_PASSWORD: process.env.WORKABLE_ADMIN_UI_PASSWORD,
     WORKABLE_ADMIN_UI_SESSION_SECRET: process.env.WORKABLE_ADMIN_UI_SESSION_SECRET,
     WORKABLE_ADMIN_UI_USERNAME: process.env.WORKABLE_ADMIN_UI_USERNAME,

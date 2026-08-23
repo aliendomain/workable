@@ -74,6 +74,9 @@ public sealed record WorkDefinition
     /// <summary>
     /// Gets optional descriptive metadata for catalog and tool-oriented experiences.
     /// </summary>
+    /// <remarks>
+    /// Workable snapshots metadata collections when the definition enters a runtime catalog.
+    /// </remarks>
     public WorkDefinitionMetadata? Metadata { get; init; }
 
     /// <summary>
@@ -132,4 +135,24 @@ public sealed record WorkDefinition
             metadata,
             authorization);
     }
+
+    internal WorkDefinition SnapshotMetadata()
+    {
+        if (this.Metadata is null)
+        {
+            return this;
+        }
+
+        return this with
+        {
+            Metadata = this.Metadata with
+            {
+                ExamplePrompts = Snapshot(this.Metadata.ExamplePrompts),
+                Capabilities = Snapshot(this.Metadata.Capabilities),
+            },
+        };
+    }
+
+    private static IReadOnlyList<string>? Snapshot(IReadOnlyList<string>? values)
+        => values is null ? null : Array.AsReadOnly(values.ToArray());
 }

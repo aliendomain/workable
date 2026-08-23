@@ -122,7 +122,10 @@ import {
   type FeedbackTone,
 } from "@/components/workable/console/feedback-panel";
 import { WorkProfilePanel } from "@/components/workable/console/work-profile-panel";
-import { ProfilingCaptureRulesCard } from "@/components/workable/console/profiling-capture-rules-card";
+import {
+  ProfilingCaptureRulesCard,
+  WorkerProfilingCaptureCard,
+} from "@/components/workable/console/profiling-capture-rules-card";
 import { ExecutionDiagnosticsCaptureCard } from "@/components/workable/console/execution-diagnostics-capture-card";
 import {
   formatRelativeTime,
@@ -458,6 +461,12 @@ export function DefinitionsView({
         settingsDescription="Checked panels are shown on the catalog page."
         settingsTitle="Catalog panels"
       >
+        <ProfilingCaptureRulesCard
+          canControlSystem={canControlSystem}
+          canViewDiagnostics={canViewDiagnostics}
+          connection={connection}
+          refreshToken={refreshToken}
+        />
         <ExecutionDiagnosticsCaptureCard
           canControlSystem={canControlSystem}
           canViewDiagnostics={canViewDiagnostics}
@@ -735,9 +744,11 @@ export function DefinitionView({
             </CardContent>
           </Card>
           <ProfilingCaptureRulesCard
+            canControlSystem={canControlSystem}
             canViewDiagnostics={canViewDiagnostics}
             connection={connection}
             definitionName={definition.name}
+            refreshToken={refreshToken}
           />
           <ExecutionDiagnosticsCaptureCard
             canControlSystem={canControlSystem}
@@ -2277,11 +2288,16 @@ export function WorkerConsoleView({
                     label={primaryIteration ? `Latest output (iteration #${primaryIteration.sequence})` : "Latest output"}
                   />
                 </div>
-                <ProfilingCaptureRulesCard
-                  actorId={worker.origin.actor?.id}
+                <WorkerProfilingCaptureCard
+                  canReconfigure={landing?.worker.canToggleFullProfileCapture === true}
                   canViewDiagnostics={canViewDiagnostics}
                   connection={connection}
-                  definitionName={worker.definitionName}
+                  fullCaptureEnabled={worker.options?.profilingEnabled === true &&
+                    worker.options.profilingCaptureMode === "Full"}
+                  isFinal={worker.isFinal}
+                  onUpdated={refreshWorkerSnapshot}
+                  revision={worker.revision}
+                  workerId={worker.id.value}
                 />
               </PanelShell>
             ) : null}
@@ -7334,6 +7350,10 @@ function createWorkerSnapshotFromLanding(landing: WorkWorkerOverviewComponent): 
     origin: createRealtimeOriginFromLandingOrigin(landing.worker.createdOrigin),
     state: landing.worker.state,
     isFinal: landing.worker.isFinal,
+    options: {
+      profilingEnabled: landing.worker.profilingEnabled,
+      profilingCaptureMode: landing.worker.profilingCaptureMode,
+    },
     input: landing.input,
     output: landing.latestIteration?.output ?? null,
     messages: [],

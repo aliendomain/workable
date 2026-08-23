@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using System.Reflection;
 using Workable;
 
 namespace Workable.Tests;
@@ -6,6 +7,79 @@ namespace Workable.Tests;
 [Trait("Category", "Systems")]
 public sealed class WorkCommandDispatcherShould
 {
+    [Fact]
+    public void MapEveryCompletionStatusToItsDispatchStatus()
+    {
+        var method = typeof(WorkCommandDispatcher).GetMethod(
+            "ToDispatchStatus",
+            BindingFlags.Static | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(WorkCompletionStatus)],
+            modifiers: null);
+        Assert.NotNull(method);
+
+        foreach (var status in Enum.GetValues<WorkCompletionStatus>())
+        {
+            var expected = status switch
+            {
+                WorkCompletionStatus.Executing => WorkDispatchStatus.Executing,
+                WorkCompletionStatus.Completed => WorkDispatchStatus.Completed,
+                WorkCompletionStatus.Failed => WorkDispatchStatus.Failed,
+                WorkCompletionStatus.Paused => WorkDispatchStatus.Paused,
+                WorkCompletionStatus.Interrupted => WorkDispatchStatus.Interrupted,
+                WorkCompletionStatus.Canceled => WorkDispatchStatus.Canceled,
+                WorkCompletionStatus.NotFound => WorkDispatchStatus.NotFound,
+                _ => WorkDispatchStatus.Invalid,
+            };
+            Assert.Equal(expected, method.Invoke(null, [status]));
+        }
+
+        Assert.Equal(WorkDispatchStatus.Invalid, method.Invoke(null, [(WorkCompletionStatus)int.MaxValue]));
+    }
+
+    [Fact]
+    public void MapEveryQueueStatusAndPreserveBlankErrorCodesWithoutInventingMessages()
+    {
+        var map = typeof(WorkCommandDispatcher).GetMethod(
+            "ToDispatchStatus",
+            BindingFlags.Static | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(WorkQueueStatus)],
+            modifiers: null)!;
+        foreach (var status in Enum.GetValues<WorkQueueStatus>())
+        {
+            var expected = status switch
+            {
+                WorkQueueStatus.Accepted => WorkDispatchStatus.Accepted,
+                WorkQueueStatus.Invalid => WorkDispatchStatus.Invalid,
+                WorkQueueStatus.Unauthorized => WorkDispatchStatus.Unauthorized,
+                WorkQueueStatus.NotFound => WorkDispatchStatus.NotFound,
+                _ => WorkDispatchStatus.Invalid,
+            };
+            Assert.Equal(expected, map.Invoke(null, [status]));
+        }
+
+        Assert.Equal(WorkDispatchStatus.Invalid, map.Invoke(null, [(WorkQueueStatus)int.MaxValue]));
+
+        var createNotFound = typeof(WorkCommandDispatcher).GetMethod(
+            "CreateSystemNotFoundResult",
+            BindingFlags.Static | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(string));
+        var missingDefault = Assert.IsType<WorkDispatchResult<string>>(createNotFound.Invoke(null, [null]));
+        Assert.Equal("The default Workable system is not registered.", missingDefault.ErrorMessage);
+
+        var createResult = typeof(WorkCommandDispatcher).GetMethod(
+            "CreateResult",
+            BindingFlags.Static | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(string));
+        var blankError = WorkMessage.Error("blank.error", " ");
+        var result = Assert.IsType<WorkDispatchResult<string>>(createResult.Invoke(
+            null,
+            [WorkDispatchStatus.Invalid, null, null, new[] { blankError }, null, null]));
+        Assert.Equal("blank.error", result.ErrorCode);
+        Assert.Null(result.ErrorMessage);
+    }
+
     [Fact]
     public async Task DispatchTypedWorkAndPreserveRequestContext()
     {

@@ -28,7 +28,7 @@ public sealed class AuthorizedWorkerOperationsShould
     }
 
     [Fact]
-    public async Task ReturnUnauthorizedWithoutCallingInnerForWorkersOutsideOperateScope()
+    public async Task ReturnNotFoundWithoutCallingInnerForHiddenWorkersOutsideOperateScope()
     {
         var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
         var hidden = CreateRegisteredWork("hidden.work", authorize => authorize.AllowOperateToGroups("hidden.operate"));
@@ -42,12 +42,81 @@ public sealed class AuthorizedWorkerOperationsShould
         query.WorkersById[workerId] = CreateWorkerSnapshot(workerId, hidden.Definition);
 
         var outcome = await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
+        var missing = await operations.Execute(
+            new WorkerVersion(WorkerId.New(), Revision: 7),
+            WorkAction.Cancel);
+
+        Assert.Equal(WorkActionStatus.NotFound, outcome.Status);
+        Assert.Equal(missing.Status, outcome.Status);
+        Assert.Equal(missing.Messages.Select(message => message.Code), outcome.Messages.Select(message => message.Code));
+        Assert.Equal(WorkAction.Cancel, outcome.Action);
+        Assert.Equal(workerId, outcome.WorkerId);
+        Assert.Equal(2, query.WorkerCallCount);
+        Assert.Empty(inner.Executed);
+    }
+
+    [Fact]
+    public async Task ReturnUnauthorizedWithoutCallingInnerForVisibleWorkersOutsideOperateScope()
+    {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
+        var restricted = CreateRegisteredWork(
+            "restricted.work",
+            authorize => authorize
+                .AllowReadToGroups("visible.read")
+                .AllowOperateToGroups("restricted.operate"));
+        var operations = CreateOperations(
+            groups: ["visible.operate", "visible.read"],
+            works: [visible, restricted],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(workerId, restricted.Definition);
+
+        var outcome = await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
 
         Assert.Equal(WorkActionStatus.Unauthorized, outcome.Status);
         Assert.Equal(WorkAction.Cancel, outcome.Action);
         Assert.Equal(workerId, outcome.WorkerId);
         Assert.Equal(1, query.WorkerCallCount);
         Assert.Empty(inner.Executed);
+    }
+
+    [Fact]
+    public async Task ReturnNotFoundWithoutCallingInnerForHiddenWorkerReconfiguration()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperationsToGroups(
+                ["visible.reconfigure"],
+                WorkOperationPermissions.ReconfigureWorker));
+        var hidden = CreateRegisteredWork(
+            "hidden.work",
+            authorize => authorize.AllowOperationsToGroups(
+                ["hidden.reconfigure"],
+                WorkOperationPermissions.ReconfigureWorker));
+        var operations = CreateOperations(
+            groups: ["visible.reconfigure"],
+            works: [visible, hidden],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        query.WorkersById[workerId] = CreateWorkerSnapshot(workerId, hidden.Definition);
+
+        var outcome = await operations.Reconfigure(
+            new WorkerVersion(workerId, Revision: 7),
+            new WorkerReconfiguration(ProfilingEnabled: true));
+        var missing = await operations.Reconfigure(
+            new WorkerVersion(WorkerId.New(), Revision: 7),
+            new WorkerReconfiguration(ProfilingEnabled: true));
+
+        Assert.Equal(WorkActionStatus.NotFound, outcome.Status);
+        Assert.Equal(missing.Status, outcome.Status);
+        Assert.Equal(missing.Messages.Select(message => message.Code), outcome.Messages.Select(message => message.Code));
+        Assert.Equal(workerId, outcome.WorkerId);
+        Assert.Equal(2, query.WorkerCallCount);
+        Assert.Empty(inner.Reconfigured);
     }
 
     [Fact]
@@ -127,6 +196,64 @@ public sealed class AuthorizedWorkerOperationsShould
             new RecordedAction(new WorkerVersion(first, Revision: 3), WorkAction.Cancel),
             new RecordedAction(new WorkerVersion(second, Revision: 5), WorkAction.Cancel),
         ], inner.Executed);
+    }
+
+    [Fact]
+    public async Task RedactAcceptedSingleAndBulkWorkerSnapshotsWithoutReadPermission()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups("visible.operate"));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        var snapshot = CreateWorkerSnapshot(
+            workerId,
+            visible.Definition,
+            revision: 7,
+            input: WorkInput.FromJson("""{"secret":"retained"}"""));
+        query.WorkersById[workerId] = snapshot;
+        inner.BulkCandidates.Add(snapshot);
+        inner.ExecuteOutcome = (_, action) => WorkActionOutcome.Accepted(action, snapshot);
+
+        var single = await operations.Execute(snapshot.Version, WorkAction.Cancel);
+        var bulk = await operations.ExecuteAll(WorkAction.Cancel);
+
+        Assert.Equal(WorkActionStatus.Accepted, single.Status);
+        Assert.Equal(workerId, single.WorkerId);
+        Assert.Null(single.Worker);
+        var bulkOutcome = Assert.Single(bulk.Outcomes);
+        Assert.Equal(WorkActionStatus.Accepted, bulkOutcome.Status);
+        Assert.Equal(workerId, bulkOutcome.WorkerId);
+        Assert.Null(bulkOutcome.Worker);
+    }
+
+    [Fact]
+    public async Task PreserveAcceptedWorkerSnapshotWhenCallerCanReadAndOperate()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize
+                .AllowReadToGroups("visible.read")
+                .AllowOperateToGroups("visible.operate"));
+        var operations = CreateOperations(
+            groups: ["visible.read", "visible.operate"],
+            works: [visible],
+            out _,
+            out var query,
+            out var inner);
+        var workerId = WorkerId.New();
+        var snapshot = CreateWorkerSnapshot(workerId, visible.Definition, revision: 7);
+        query.WorkersById[workerId] = snapshot;
+        inner.ExecuteOutcome = (_, action) => WorkActionOutcome.Accepted(action, snapshot);
+
+        var outcome = await operations.Execute(snapshot.Version, WorkAction.Cancel);
+
+        Assert.Same(snapshot, outcome.Worker);
     }
 
     [Theory]
@@ -303,12 +430,13 @@ public sealed class AuthorizedWorkerOperationsShould
         var outcome = await operations.Execute(new WorkerVersion(workerId, Revision: 7), WorkAction.Cancel);
 
         Assert.Equal(WorkActionStatus.Invalid, outcome.Status);
+        Assert.Null(outcome.Worker);
         Assert.Contains(outcome.Messages, message => message.Code == "workable.authorization.operate_requirement_input_invalid");
         Assert.Empty(inner.Executed);
     }
 
     [Fact]
-    public async Task ReturnUnauthorizedBulkOutcomesForConstrainedWorkers()
+    public async Task HideBulkCandidatesThatFailConstrainedAuthorization()
     {
         var visible = CreateRegisteredWork(
             "visible.work",
@@ -330,10 +458,45 @@ public sealed class AuthorizedWorkerOperationsShould
 
         var outcome = await operations.ExecuteAll(WorkAction.Cancel);
 
-        Assert.Equal(1, outcome.MatchedWorkerCount);
-        Assert.Single(outcome.Outcomes);
-        Assert.Equal(WorkActionStatus.Unauthorized, outcome.Outcomes[0].Status);
+        Assert.Equal(0, outcome.MatchedWorkerCount);
+        Assert.Empty(outcome.Outcomes);
         Assert.Empty(inner.Executed);
+    }
+
+    [Fact]
+    public async Task BulkOutcomeCountsAndReturnsOnlyCandidatesPassingConstrainedAuthorization()
+    {
+        var visible = CreateRegisteredWork(
+            "visible.work",
+            authorize => authorize.AllowOperateToGroups(
+                ["visible.operate"],
+                operate => operate.WhenWorkerActionsRequire<QueueInput>(
+                    context => context.Input?.Value == "allowed")));
+        var operations = CreateOperations(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out _,
+            out var inner);
+        var allowed = WorkerId.New();
+        var denied = WorkerId.New();
+        inner.BulkCandidates.AddRange([
+            CreateWorkerSnapshot(
+                allowed,
+                visible.Definition,
+                input: WorkInput.FromValue(new QueueInput("allowed"), WorkData.DefaultJsonOptions)),
+            CreateWorkerSnapshot(
+                denied,
+                visible.Definition,
+                input: WorkInput.FromValue(new QueueInput("denied"), WorkData.DefaultJsonOptions)),
+        ]);
+
+        var outcome = await operations.ExecuteAll(WorkAction.Cancel);
+
+        Assert.Equal(1, outcome.MatchedWorkerCount);
+        Assert.Equal(allowed, Assert.Single(outcome.Outcomes).WorkerId);
+        Assert.DoesNotContain(outcome.Outcomes, item => item.WorkerId == denied);
+        Assert.Equal(allowed, Assert.Single(inner.Executed).Worker.WorkerId);
     }
 
     [Fact]
@@ -458,6 +621,7 @@ public sealed class AuthorizedWorkerOperationsShould
             new WorkerReconfiguration(ProfilingEnabled: true));
 
         Assert.Equal(WorkActionStatus.Invalid, outcome.Status);
+        Assert.Null(outcome.Worker);
         Assert.Contains(outcome.Messages, message => message.Code == "workable.authorization.operate_requirement_input_invalid");
         Assert.Empty(inner.Reconfigured);
     }
@@ -576,6 +740,8 @@ public sealed class AuthorizedWorkerOperationsShould
 
         public IReadOnlySet<WorkDefinitionId>? LastBulkCandidateDefinitionIds { get; private set; }
 
+        public Func<WorkerVersion, WorkAction, WorkActionOutcome>? ExecuteOutcome { get; set; }
+
         public IReadOnlyList<WorkerSnapshot> GetBulkActionCandidates(
             WorkerBulkActionFilter filter,
             IReadOnlySet<WorkDefinitionId>? definitionIds,
@@ -594,7 +760,8 @@ public sealed class AuthorizedWorkerOperationsShould
             CancellationToken cancellationToken = default)
         {
             this.Executed.Add(new RecordedAction(worker, action));
-            return Task.FromResult(WorkActionOutcome.NotFound(action, worker.WorkerId));
+            return Task.FromResult(this.ExecuteOutcome?.Invoke(worker, action) ??
+                WorkActionOutcome.NotFound(action, worker.WorkerId));
         }
 
         public Task<WorkActionOutcome> Execute(

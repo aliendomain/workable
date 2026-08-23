@@ -1,6 +1,9 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
+using System.Text.Json;
+using HttpJsonOptions = Microsoft.AspNetCore.Http.Json.JsonOptions;
 
 namespace Workable;
 
@@ -66,15 +69,47 @@ internal static class WorkableHttpCatalogRoutes
         group.MapPost("/definitions/{name}/reconfigure", async (
             HttpContext httpContext,
             string name,
-            WorkableHttpDefinitionReconfigurationRequest request,
+            JsonElement requestBody,
             WorkableHttpTopologyResolver topology,
             WorkableHttpCatalogAdapter catalog,
             IWorkRequestContextFactory requestContexts,
+            IOptions<HttpJsonOptions> jsonOptions,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
+            }
+
+            WorkableHttpDefinitionReconfigurationRequest request;
+            try
+            {
+                request = WorkableHttpReconfigurationJson.ParseDefinition(
+                    requestBody,
+                    jsonOptions.Value.SerializerOptions);
+            }
+            catch (WorkableHttpReconfigurationValidationException exception)
+            {
+                return Results.BadRequest(new
+                {
+                    Messages = new[]
+                    {
+                        WorkMessage.Error("workable.http.reconfiguration.invalid", exception.Message, "request"),
+                    },
+                });
+            }
+            catch (JsonException)
+            {
+                return Results.BadRequest(new
+                {
+                    Messages = new[]
+                    {
+                        WorkMessage.Error(
+                            "workable.http.reconfiguration.invalid",
+                            "The definition reconfiguration request contains invalid JSON values.",
+                            "request"),
+                    },
+                });
             }
 
             var session = await WorkableHttpRequestContext.CreateSession(

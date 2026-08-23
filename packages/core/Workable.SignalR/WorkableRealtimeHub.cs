@@ -15,6 +15,7 @@ public sealed class WorkableRealtimeHub(
     IWorkAuthorizationGroupResolver groupResolver,
     IWorkRequestContextFactory requestContexts,
     WorkableViewQueryAdapter views,
+    IWorkableSignalRPayloadSerializer payloads,
     WorkableRealtimeEventSubscriptions eventSubscriptions,
     WorkableRealtimeViewSubscriptions viewSubscriptions,
     WorkableRealtimeWorkerOverviewSubscriptions workerOverviewSubscriptions) : Hub
@@ -94,6 +95,25 @@ public sealed class WorkableRealtimeHub(
             {
                 throw new HubException(exception.Message);
             }
+
+            var validationResult = await QueryView(
+                system,
+                session,
+                authorization,
+                viewName,
+                normalizedCriteria);
+            var invalidComponent = validationResult.Components.Values.FirstOrDefault(
+                component => string.Equals(component.Status, "error", StringComparison.OrdinalIgnoreCase));
+            if (invalidComponent is not null)
+            {
+                throw new HubException(invalidComponent.Error ?? "The requested view configuration is invalid.");
+            }
+
+            if (!await CanProduceAuthorizedView(session, viewName, normalizedCriteria))
+            {
+                throw new HubException("The requested view does not have an authorized realtime data source.");
+            }
+
             subscription = await viewSubscriptions.WatchView(
                 this.Context.ConnectionId,
                 this.Groups,
@@ -193,6 +213,11 @@ public sealed class WorkableRealtimeHub(
         try
         {
             var (authorization, session) = await CreateAuthorization(system, systemName);
+            if (!await HasAuthorizedChangeStream(session))
+            {
+                throw new HubException("The requested worker overview does not have an authorized realtime data source.");
+            }
+
             subscription = await workerOverviewSubscriptions.Watch(
                 this.Context.ConnectionId,
                 this.Groups,
@@ -203,6 +228,18 @@ public sealed class WorkableRealtimeHub(
                 authorization,
                 this.Context.ConnectionAborted);
             var hasPublishedState = await SendWorkerOverview(subscription, session, this.Clients.Caller);
+            if (!hasPublishedState)
+            {
+                await workerOverviewSubscriptions.Unwatch(
+                    this.Context.ConnectionId,
+                    this.Groups,
+                    system,
+                    subscription.SubscriptionId,
+                    CancellationToken.None);
+                subscription = null;
+                return;
+            }
+
             workerOverviewSubscriptions.SetSeeded(subscription.GroupName, hasPublishedState);
         }
         catch (OperationCanceledException) when (this.Context.ConnectionAborted.IsCancellationRequested)
@@ -265,12 +302,26 @@ public sealed class WorkableRealtimeHub(
         try
         {
             var (authorization, session) = await CreateAuthorization(system, systemName);
+            WorkEventFilter? filter;
+            try
+            {
+                filter = eventSubscriptions.CreateFilter(session.Catalog, criteria);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new HubException(exception.Message);
+            }
+
+            if (!await HasAuthorizedEventStream(session, filter))
+            {
+                throw new HubException("The requested event subscription does not have an authorized realtime data source.");
+            }
+
             await eventSubscriptions.WatchEvents(
                 this.Context.ConnectionId,
                 this.Groups,
                 system,
-                session.Catalog,
-                criteria,
+                filter,
                 authorization,
                 this.Context.ConnectionAborted);
         }
@@ -316,6 +367,7 @@ public sealed class WorkableRealtimeHub(
         string? systemName = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        using var authentication = WorkableSignalRAuthenticationFilter.UseConnectionSnapshot(this.Context);
         ValidateIterationStatusArguments(iterationSequence, afterSequence);
         var system = ResolveSystem(systemName);
         var (_, session) = await CreateAuthorization(system, systemName);
@@ -348,6 +400,7 @@ public sealed class WorkableRealtimeHub(
         string? systemName = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        using var authentication = WorkableSignalRAuthenticationFilter.UseConnectionSnapshot(this.Context);
         ValidateIterationStatusArguments(iterationSequence, afterSequence);
         var system = ResolveSystem(systemName);
         var (authorization, session) = await CreateAuthorization(system, systemName);
@@ -370,13 +423,22 @@ public sealed class WorkableRealtimeHub(
         long afterSequence)
     {
         ArgumentNullException.ThrowIfNull(stream);
+        if (afterSequence < 0)
+        {
+            throw new HubException("The status sequence cursor cannot be negative.");
+        }
+
         try
         {
             return stream.Subscribe(iteration, afterSequence);
         }
-        catch (ArgumentOutOfRangeException exception)
+        catch (WorkIterationStatusCursorOutOfRangeException exception)
         {
             throw new HubException(exception.Message);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            throw new HubException("The iteration status stream could not be opened.");
         }
         catch (KeyNotFoundException)
         {
@@ -393,12 +455,12 @@ public sealed class WorkableRealtimeHub(
     /// Removes all active subscriptions for the connection that is disconnecting.
     /// </summary>
     /// <param name="exception">The disconnect exception, if one caused the disconnect.</param>
-    public override async Task OnDisconnectedAsync(Exception? exception)
+    public override Task OnDisconnectedAsync(Exception? exception)
     {
-        await eventSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
-        await viewSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
-        await workerOverviewSubscriptions.RemoveConnection(this.Context.ConnectionId, this.Groups, this.Context.ConnectionAborted);
-        await base.OnDisconnectedAsync(exception);
+        eventSubscriptions.RemoveConnection(this.Context.ConnectionId);
+        viewSubscriptions.RemoveConnection(this.Context.ConnectionId);
+        workerOverviewSubscriptions.RemoveConnection(this.Context.ConnectionId);
+        return base.OnDisconnectedAsync(exception);
     }
 
     private async Task SendView(
@@ -406,26 +468,39 @@ public sealed class WorkableRealtimeHub(
         IWorkSystemSession session,
         IClientProxy client)
     {
-        var result = WorkableRealtimeWorkflowViews.IsWorkflowView(subscription.ViewName)
-            ? await WorkableRealtimeWorkflowViews.Query(
-                ResolveSystem(session.SystemName),
-                subscription.Authorization,
-                subscription.ViewName,
-                subscription.Criteria,
-                this.Context.ConnectionAborted)
-            : await views.View(
-                session,
-                subscription.ViewName,
-                subscription.Criteria,
-                cancellationToken: this.Context.ConnectionAborted);
+        var result = await QueryView(
+            ResolveSystem(session.SystemName),
+            session,
+            subscription.Authorization,
+            subscription.ViewName,
+            subscription.Criteria);
         await client.SendAsync(
             WorkableRealtimeClientMethods.ViewUpdated,
-            new WorkableRealtimeViewEnvelope<WorkComponentQueryResult>(
+            payloads.Serialize(new WorkableRealtimeViewEnvelope<WorkComponentQueryResult>(
                 subscription.SubscriptionId,
                 subscription.ViewName,
-                result),
+                result)),
             this.Context.ConnectionAborted);
     }
+
+    private Task<WorkComponentQueryResult> QueryView(
+        IWorkSystem system,
+        IWorkSystemSession session,
+        WorkAuthorizationSnapshot authorization,
+        string viewName,
+        WorkViewCriteria criteria)
+        => WorkableRealtimeWorkflowViews.IsWorkflowView(viewName)
+            ? WorkableRealtimeWorkflowViews.Query(
+                system,
+                authorization,
+                viewName,
+                criteria,
+                this.Context.ConnectionAborted)
+            : views.View(
+                session,
+                viewName,
+                criteria,
+                cancellationToken: this.Context.ConnectionAborted);
 
     internal static async IAsyncEnumerable<WorkableRealtimeIterationStatusMessage> ReadIterationStatus(
         IWorkIterationStatusStream stream,
@@ -600,12 +675,112 @@ public sealed class WorkableRealtimeHub(
 
         await client.SendAsync(
             WorkableRealtimeClientMethods.WorkerOverviewUpdated,
-            new WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>(
+            payloads.Serialize(new WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>(
                 subscription.SubscriptionId,
                 "worker-overview",
-                WorkableRealtimeWorkerOverviewUpdateFactory.CreateSnapshot(result)),
+                WorkableRealtimeWorkerOverviewUpdateFactory.CreateSnapshot(result))),
             this.Context.ConnectionAborted);
         return true;
+    }
+
+    private static ValueTask<bool> CanProduceAuthorizedView(
+        IWorkSystemSession session,
+        string viewName,
+        WorkViewCriteria criteria)
+        => WorkableRealtimeWorkflowViews.IsWorkflowView(viewName)
+            ? HasAuthorizedEventStream(
+                session,
+                WorkableRealtimeWorkflowViews.CreateEventFilter(criteria))
+            : HasAuthorizedChangeStreamForView(session, criteria);
+
+    private static async ValueTask<bool> HasAuthorizedChangeStreamForView(
+        IWorkSystemSession session,
+        WorkViewCriteria criteria)
+    {
+        if (AllComponentsRequireReadableWorkScope(criteria.Components) &&
+            !HasReadableWorkScope(session.Catalog, criteria.Scope))
+        {
+            return false;
+        }
+
+        return await HasAuthorizedChangeStream(session);
+    }
+
+    private static bool AllComponentsRequireReadableWorkScope(IReadOnlyList<WorkComponentRequest>? components)
+        => components is { Count: > 0 } && components.All(request =>
+            request.Type.Trim().ToLowerInvariant() is not (
+                "system" or
+                "systemdiagnostics" or
+                "queuediagnostics" or
+                "readmodeldiagnostics" or
+                "retentiondiagnostics" or
+                "concurrencydiagnostics" or
+                "durabilitydiagnostics" or
+                "idempotencydiagnostics"));
+
+    internal static bool HasReadableWorkScope(IWorkCatalog catalog, WorkSystemCriteria? scope)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        if (scope is null)
+        {
+            return catalog.Definitions.Count > 0;
+        }
+
+        HashSet<string>? readableNames = null;
+        if (scope.DefinitionNames is not null)
+        {
+            readableNames = scope.DefinitionNames
+                .Where(name => !string.IsNullOrWhiteSpace(name) && catalog.TryGet(name, out _))
+                .Select(name => name.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (!string.IsNullOrWhiteSpace(scope.DefinitionName))
+        {
+            var exactName = catalog.TryGet(scope.DefinitionName, out var definition)
+                ? new HashSet<string>([definition.Name], StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            readableNames = IntersectReadableNames(readableNames, exactName);
+        }
+
+        if (!string.IsNullOrWhiteSpace(scope.Category))
+        {
+            var categoryNames = catalog
+                .ListByCategory(scope.Category, scope.IncludeSubcategories)
+                .Select(definition => definition.Name);
+            readableNames = IntersectReadableNames(readableNames, categoryNames);
+        }
+
+        return readableNames?.Count > 0 ||
+            readableNames is null && catalog.Definitions.Count > 0;
+    }
+
+    private static HashSet<string> IntersectReadableNames(
+        HashSet<string>? current,
+        IEnumerable<string> requested)
+    {
+        var requestedSet = requested.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (current is null)
+        {
+            return requestedSet;
+        }
+
+        current.IntersectWith(requestedSet);
+        return current;
+    }
+
+    private static async ValueTask<bool> HasAuthorizedChangeStream(IWorkSystemSession session)
+    {
+        await using var subscription = session.Changes.Subscribe();
+        return !ReferenceEquals(subscription, EmptyWorkChangeSubscription.Instance);
+    }
+
+    private static async ValueTask<bool> HasAuthorizedEventStream(
+        IWorkSystemSession session,
+        WorkEventFilter? filter)
+    {
+        await using var subscription = session.Events.Subscribe(filter);
+        return !ReferenceEquals(subscription, EmptyWorkEventSubscription.Instance);
     }
 
     private async ValueTask<(WorkAuthorizationSnapshot Authorization, IWorkSystemSession Session)> CreateAuthorization(
@@ -680,23 +855,32 @@ public sealed class WorkableRealtimeHub(
             return;
         }
 
-        throw new WorkSystemAccessDeniedException(
-            WorkSystemPermission.AccessSystem,
-            system.Id,
-            system.Name);
+        throw SystemNotFound(systemName);
     }
 
     private IWorkSystem ResolveSystem(string? systemName)
     {
-        if (string.IsNullOrWhiteSpace(systemName))
+        var system = string.IsNullOrWhiteSpace(systemName)
+            ? registry.Default
+            : registry.TryGet(systemName, out var namedSystem)
+                ? namedSystem
+                : throw SystemNotFound(systemName);
+        if (!system.RequiresAuthorization)
         {
-            return registry.Default;
+            if (!string.IsNullOrWhiteSpace(systemName))
+            {
+                throw SystemNotFound(systemName);
+            }
+
+            throw new HubException(
+                $"Workable system '{system.Name ?? "<default>"}' is not available through SignalR because it does not require authorization.");
         }
 
-        return registry.TryGet(systemName, out var system)
-            ? system
-            : throw new HubException($"Workable system '{systemName}' was not found.");
+        return system;
     }
+
+    private static HubException SystemNotFound(string? systemName)
+        => new($"Workable system '{systemName}' was not found.");
 
     private static WorkerId ParseWorkerId(string workerId)
         => Guid.TryParse(workerId, out var parsed)

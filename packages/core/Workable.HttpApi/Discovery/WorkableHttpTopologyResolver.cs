@@ -70,13 +70,21 @@ public sealed class WorkableHttpTopologyResolver(
                 result.System.State,
                 ReferenceEquals(result.System, defaultSystem),
                 CreateSystemCapabilities(result.System),
-                result.Access))
+                CreateTransportAccessSummary(result.Access)))
             .ToList();
 
         return new WorkableHttpHostDescriptor(
             this.CreateHostCapabilities(),
             systems);
     }
+
+    private static WorkSystemAccessSummary CreateTransportAccessSummary(WorkSystemAccessSummary access)
+        => access.CanDiscoverAllWork
+            ? access
+            : access with
+            {
+                TotalDefinitionCount = access.DiscoverableDefinitionCount,
+            };
 
     internal static async Task<WorkableHttpSystemLifecycleResult> Start(
         IWorkSystem system,
@@ -132,7 +140,7 @@ public sealed class WorkableHttpTopologyResolver(
 
     private WorkableHttpHostCapabilities CreateHostCapabilities()
     {
-        var realtime = realtimeCapabilityProviders.FirstOrDefault()?.GetCapability()
+        var realtime = realtimeCapabilityProviders.LastOrDefault()?.GetCapability()
             ?? WorkRealtimeCapability.Disabled;
 
         return new WorkableHttpHostCapabilities(realtime);

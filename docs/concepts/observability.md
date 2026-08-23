@@ -24,7 +24,7 @@ That keeps the event stream cheap while still letting richer UIs stay accurate.
 
 Use raw events when the consumer needs the event envelope, payload, event type, or exact sequence of worker activity. Good fits include event viewers, diagnostic tools, log-style timelines, and low-level integrations.
 
-Use `IWorkChangeStream` when the consumer only needs to know that state changed and should be queried again. Each `IWorkSystem` exposes it through `workSystem.Changes`, and authorized sessions expose the caller-scoped equivalent through `session.Changes`. The change stream publishes compact keys such as worker, definition, subject, concurrency, identifier, originating actor, diagnostics, and system changes. Repeated changes for the same key coalesce while a reader is behind, which makes it the preferred primitive for UI refresh, worker overview updates, and view invalidation.
+Use `IWorkChangeStream` when the consumer only needs to know that state changed and should be queried again. Each `IWorkSystem` exposes it through `workSystem.Changes`, and authorized sessions expose the caller-scoped equivalent through `session.Changes`. The change stream publishes compact keys such as worker, definition, subject, concurrency, identifier, originating actor, diagnostics, and system changes. Worker-derived keys retain their producing definition scope internally, so a session with partial Read access receives no identifiers or invalidation signals from hidden definitions. Repeated changes for the same key coalesce while a reader is behind, which makes it the preferred primitive for UI refresh, worker overview updates, and view invalidation.
 
 SignalR follows the same split: `WatchMyWorkers`, `WatchWorkers`, `WatchWorkerOverview`, and generic view subscriptions use change-stream semantics, while `WatchEvents` is the raw-event surface for diagnostics and low-level consumers. Prefer `WatchMyWorkers` for the authenticated user's live collection, `WatchWorkers` for an operator-selected actor, and `WatchView` for advanced component and workflow views.
 
@@ -672,3 +672,4 @@ For example, a dashboard can subscribe to `worker.completed`, `worker.failed`, a
 - Disposing a subscription completes its reader.
 - Disposing the reader or subscription removes the subscription.
 - Detail UIs should treat events as change notifications and query detail when they need full input, output, messages, logs, action history, iterations, or profile data.
+- Workflow events omit child-worker cardinalities and sanitize raw child exception details so workflow Read does not bypass the child definition's Read boundary.

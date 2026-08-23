@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 internal sealed class WorkerOperations :
@@ -39,7 +40,7 @@ internal sealed class WorkerOperations :
     private readonly WorkSystemCapacityConfiguration capacity;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics;
     private readonly WorkProfileCaptureRuleStore profileCaptureRules;
-    private readonly ILogger? logger;
+    private readonly ILogger logger;
     private readonly bool persistenceStoreAvailable;
     private readonly WorkExecutionDiagnosticsCoordinator? executionDiagnostics;
     private CancellationTokenSource systemExecutionLifetime = new();
@@ -104,7 +105,8 @@ internal sealed class WorkerOperations :
             persistenceLogger,
             durabilityOptions);
         this.workerEvents = new WorkerEventPublisher(workSystemId, workSystemName, events, this.SynchronizeWorkerIfTracked, readModel);
-        this.logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution");
+        this.logger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.WorkerExecution")
+            ?? NullLogger.Instance;
         var invoker = new WorkerExecutionInvoker(
             workSystemId,
             workSystemName,
@@ -1257,7 +1259,7 @@ internal sealed class WorkerOperations :
                 }
                 catch (Exception exception) when (IsNonCriticalRetentionFailure(exception))
                 {
-                    this.logger?.LogWarning(
+                    this.logger.LogWarning(
                         exception,
                         "Workflow child finalization failed for worker {WorkerId}; retention will be retried.",
                         worker.Id);

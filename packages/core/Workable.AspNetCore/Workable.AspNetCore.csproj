@@ -8,6 +8,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Workable.Entra" />
+    <InternalsVisibleTo Include="Workable.HttpApi" />
+    <InternalsVisibleTo Include="Workable.Mcp" />
+    <InternalsVisibleTo Include="Workable.SignalR" />
+    <InternalsVisibleTo Include="Workable.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 

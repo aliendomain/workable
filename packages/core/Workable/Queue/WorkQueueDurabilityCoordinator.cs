@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 
@@ -25,6 +26,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     Func<WorkQueueDurabilityFailedEntry, CancellationToken, Task>? acceptPersistedFailedEntry = null,
     TimeSpan? cleanupRetryDelay = null)
 {
+    private readonly ILogger effectiveLogger = logger ?? NullLogger.Instance;
     private readonly ConcurrentDictionary<WorkerId, WorkQueueDurabilityLease> leases = [];
     private readonly ConcurrentDictionary<WorkerId, byte> idempotencyReservations = [];
     private readonly ConcurrentDictionary<WorkerId, byte> retainedFailures = [];
@@ -571,9 +573,9 @@ internal sealed class WorkQueueDurabilityCoordinator(
                     }
                 }
 
-                var outcome = await this.ProcessCleanupBatch(pending, cancellationToken);
+                await this.ProcessCleanupBatch(pending, cancellationToken);
                 pending.Clear();
-                this.RecordCleanupSuccess(outcome);
+                this.RecordCleanupSuccess();
                 foreach (var flushed in flushes)
                 {
                     flushed.TrySetResult();
@@ -633,13 +635,13 @@ internal sealed class WorkQueueDurabilityCoordinator(
         return true;
     }
 
-    private async Task<DateTimeOffset?> ProcessCleanupBatch(
+    private async Task ProcessCleanupBatch(
         List<WorkQueueDurabilityCleanupItem> pending,
         CancellationToken cancellationToken)
     {
         if (this.activeStore is null || pending.Count == 0)
         {
-            return null;
+            return;
         }
 
         var latestByWorker = new Dictionary<WorkerId, WorkQueueDurabilityCleanupItem>();
@@ -680,7 +682,6 @@ internal sealed class WorkQueueDurabilityCoordinator(
             },
             cancellationToken);
 
-        return DateTimeOffset.UtcNow;
     }
 
     private List<WorkQueueDurabilityCleanupRequest> CreateCleanupRequests(
@@ -811,13 +812,12 @@ internal sealed class WorkQueueDurabilityCoordinator(
                 var activeLeases = this.leases.Values.ToList();
                 if (activeLeases.Count > 0 && this.activeStore is not null)
                 {
-                    var startedAt = DateTimeOffset.UtcNow;
                     await this.activeStore.RenewLeases(activeLeases, this.leaseDuration, cancellationToken);
-                    this.RecordLeaseRenewalSuccess(startedAt);
+                    this.RecordLeaseRenewalSuccess();
                 }
                 else
                 {
-                    this.RecordLeaseRenewalSuccess(startedAt: null);
+                    this.RecordLeaseRenewalSuccess();
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1053,22 +1053,13 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private void RecordReaderFailure(Exception exception)
         => this.diagnostics.RecordReaderFailure(exception);
 
-    private void RecordLeaseRenewalSuccess(
-        DateTimeOffset? startedAt)
-    {
-        if (startedAt is not null)
-        {
-            this.diagnostics.RecordLeaseRenewalSuccess();
-            return;
-        }
-
-        this.diagnostics.RecordLeaseRenewalSuccess();
-    }
+    private void RecordLeaseRenewalSuccess()
+        => this.diagnostics.RecordLeaseRenewalSuccess();
 
     private void RecordLeaseRenewalFailure(Exception exception)
         => this.diagnostics.RecordLeaseRenewalFailure(exception);
 
-    private void RecordCleanupSuccess(DateTimeOffset? completedAt)
+    private void RecordCleanupSuccess()
         => this.diagnostics.RecordCleanupSuccess();
 
     private void RecordCleanupFailure(Exception exception)
@@ -1077,7 +1068,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     private void LogInitializationStarting()
     {
         var systemName = string.IsNullOrWhiteSpace(workSystemName) ? "default" : workSystemName;
-        logger?.LogInformation(
+        this.effectiveLogger.LogInformation(
             "Workable is initializing the persistence store for system '{WorkSystemName}'.",
             systemName);
     }
@@ -1086,7 +1077,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     {
         var systemName = string.IsNullOrWhiteSpace(workSystemName) ? "default" : workSystemName;
         var detail = exception.Message;
-        logger?.LogWarning(
+        this.effectiveLogger.LogWarning(
             "Workable persistence store initialization failed for system '{WorkSystemName}': {PersistenceProblem}. Work definitions that require durable queueing, persistence-backed idempotency, or persistence-backed concurrency may reject queue requests while the store remains unreachable.",
             systemName,
             detail);
@@ -1096,7 +1087,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
     {
         var systemName = string.IsNullOrWhiteSpace(workSystemName) ? "default" : workSystemName;
         var detail = exception.Message;
-        logger?.LogWarning(
+        this.effectiveLogger.LogWarning(
             "Workable startup drain could not reach the persistence store for system '{WorkSystemName}': {PersistenceProblem}. Startup will continue and background durability processing will retry after the host starts.",
             systemName,
             detail);
@@ -1108,7 +1099,7 @@ internal sealed class WorkQueueDurabilityCoordinator(
         TimeSpan retryAfter)
     {
         var systemName = string.IsNullOrWhiteSpace(workSystemName) ? "default" : workSystemName;
-        logger?.LogWarning(
+        this.effectiveLogger.LogWarning(
             exception,
             "Workable {DurabilityOperation} failed for system '{WorkSystemName}'. Retrying in {RetryDelay}.",
             operation,

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 
 namespace Workable;
@@ -10,10 +11,14 @@ public sealed record WorkWorkerOverviewRealtimeCriteria(
     string WorkerLogs = WorkComponentShapes.Compact,
     string WorkerDuration = WorkComponentShapes.Compact,
     string WorkerTimeline = WorkComponentShapes.Compact,
+    [property: JsonConverter(typeof(JsonStringEnumConverter))]
     WorkWorkerOverviewSortDirection LogSortDirection = WorkWorkerOverviewSortDirection.Desc,
+    [property: JsonConverter(typeof(WorkableStringEnumListJsonConverter<LogLevel>))]
     IReadOnlyList<LogLevel>? LogLevels = null,
     long? LogIterationSequence = null,
+    [property: JsonConverter(typeof(JsonStringEnumConverter))]
     WorkWorkerOverviewSortDirection TimelineSortDirection = WorkWorkerOverviewSortDirection.Desc,
+    [property: JsonConverter(typeof(WorkableStringEnumListJsonConverter<WorkWorkerOverviewTimelineCategory>))]
     IReadOnlyList<WorkWorkerOverviewTimelineCategory>? TimelineCategories = null);
 
 /// <summary>

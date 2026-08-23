@@ -6,8 +6,28 @@ internal sealed class WorkAuthorizationEvaluator(
     bool isKnownAuthenticatedUser,
     WorkSystemAuthorizationEvaluator? systemAuthorization = null)
 {
+    private readonly bool hasSystemReadAllWorkAccess =
+        systemAuthorization?.HasReadAllWorkAccess() == true;
+    private readonly bool hasSystemOperateAllWorkAccess =
+        systemAuthorization?.HasOperateAllWorkAccess() == true;
+
+    public bool CanDiscover(WorkDefinition definition)
+        => this.hasSystemReadAllWorkAccess ||
+            this.hasSystemOperateAllWorkAccess ||
+            definition.Authorization.CanDiscover(groups, isKnownAuthenticatedUser);
+
+    public bool CanDiscover(WorkDefinitionId definitionId)
+    {
+        if (!this.TryGet(definitionId, out var definition))
+        {
+            return false;
+        }
+
+        return this.CanDiscover(definition);
+    }
+
     public bool CanRead(WorkDefinition definition)
-        => systemAuthorization?.HasReadAllWorkAccess() == true
+        => this.hasSystemReadAllWorkAccess
             || definition.Authorization.CanRead(groups, isKnownAuthenticatedUser);
 
     public bool CanRead(WorkDefinitionId definitionId)
@@ -21,7 +41,7 @@ internal sealed class WorkAuthorizationEvaluator(
     }
 
     public bool CanOperate(WorkDefinition definition)
-        => systemAuthorization?.HasOperateAllWorkAccess() == true
+        => this.hasSystemOperateAllWorkAccess
             || definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser);
 
     public bool CanOperate(WorkDefinitionId definitionId)
@@ -35,18 +55,29 @@ internal sealed class WorkAuthorizationEvaluator(
     }
 
     public bool HasReadAllWorkAccess()
-        => systemAuthorization?.HasReadAllWorkAccess() == true ||
+        => this.hasSystemReadAllWorkAccess ||
             this.ReadableDefinitionIds().Count == catalog.Definitions.Count;
 
+    public bool HasDiscoverAllWorkAccess()
+        => this.hasSystemReadAllWorkAccess ||
+            this.hasSystemOperateAllWorkAccess ||
+            (catalog.Definitions.Count > 0 &&
+                this.DiscoverableDefinitionIds().Count == catalog.Definitions.Count);
+
     public bool HasOperateAllWorkAccess()
-        => systemAuthorization?.HasOperateAllWorkAccess() == true ||
+        => this.hasSystemOperateAllWorkAccess ||
             this.OperableDefinitionIds().Count == catalog.Definitions.Count;
 
     public bool HasSystemOperateAllWorkAccess()
-        => systemAuthorization?.HasOperateAllWorkAccess() == true;
+        => this.hasSystemOperateAllWorkAccess;
 
     public IReadOnlySet<WorkDefinitionId> ReadableDefinitionIds()
         => this.ReadableDefinitions()
+            .Select(definition => definition.Id)
+            .ToHashSet();
+
+    public IReadOnlySet<WorkDefinitionId> DiscoverableDefinitionIds()
+        => this.DiscoverableDefinitions()
             .Select(definition => definition.Id)
             .ToHashSet();
 
@@ -58,16 +89,24 @@ internal sealed class WorkAuthorizationEvaluator(
     public IReadOnlyList<WorkDefinition> ReadableDefinitions()
         => [.. catalog.Definitions.Where(this.CanRead)];
 
+    public IReadOnlyList<WorkDefinition> DiscoverableDefinitions()
+        => [.. catalog.Definitions.Where(this.CanDiscover)];
+
     public IReadOnlyList<WorkDefinition> OperableDefinitions()
         => [.. catalog.Definitions.Where(this.CanOperate)];
 
     public IReadOnlySet<WorkDefinitionId> OperableDefinitionIdsFor(WorkAction action)
-        => systemAuthorization?.HasOperateAllWorkAccess() == true
+        => this.hasSystemOperateAllWorkAccess
             ? new HashSet<WorkDefinitionId>()
             : catalog.RegisteredWork
                 .Where(registeredWork => this.CanAttempt(registeredWork, ToPermission(action)))
                 .Select(registeredWork => registeredWork.Definition.Id)
                 .ToHashSet();
+
+    public bool HasOperationAccess(WorkOperationPermissions permission)
+        => this.hasSystemOperateAllWorkAccess
+            ? catalog.Definitions.Count > 0
+            : catalog.RegisteredWork.Any(registeredWork => this.CanAttempt(registeredWork, permission));
 
     public WorkOperateAuthorizationDecision AuthorizeQueue(
         RegisteredWork registeredWork,
@@ -78,12 +117,13 @@ internal sealed class WorkAuthorizationEvaluator(
         ArgumentNullException.ThrowIfNull(registeredWork);
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        if (RequestsFullProfileCapture(options) && systemAuthorization?.CanViewDiagnostics() != true)
+        if (UsesFullProfileCapture(registeredWork.Definition.DefaultOptions.Merge(options)) &&
+            systemAuthorization?.CanViewDiagnostics() != true)
         {
             return WorkOperateAuthorizationDecision.Deny();
         }
 
-        if (systemAuthorization?.HasOperateAllWorkAccess() == true)
+        if (this.hasSystemOperateAllWorkAccess)
         {
             return WorkOperateAuthorizationDecision.Allow();
         }
@@ -109,7 +149,7 @@ internal sealed class WorkAuthorizationEvaluator(
         ArgumentNullException.ThrowIfNull(worker);
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        if (systemAuthorization?.HasOperateAllWorkAccess() == true)
+        if (this.hasSystemOperateAllWorkAccess)
         {
             return WorkOperateAuthorizationDecision.Allow();
         }
@@ -137,7 +177,13 @@ internal sealed class WorkAuthorizationEvaluator(
         ArgumentNullException.ThrowIfNull(changes);
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        if (systemAuthorization?.HasOperateAllWorkAccess() == true)
+        if (EnablesFullProfileCapture(worker.Options, changes) &&
+            systemAuthorization?.CanViewDiagnostics() != true)
+        {
+            return WorkOperateAuthorizationDecision.Deny();
+        }
+
+        if (this.hasSystemOperateAllWorkAccess)
         {
             return WorkOperateAuthorizationDecision.Allow();
         }
@@ -163,7 +209,8 @@ internal sealed class WorkAuthorizationEvaluator(
         ArgumentNullException.ThrowIfNull(changes);
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        if (RequestsFullProfileCapture(changes.DefaultOptions) && systemAuthorization?.CanViewDiagnostics() != true)
+        if (EnablesFullProfileCapture(registeredWork.Definition.DefaultOptions, changes.DefaultOptions) &&
+            systemAuthorization?.CanViewDiagnostics() != true)
         {
             return WorkOperateAuthorizationDecision.Deny();
         }
@@ -174,7 +221,7 @@ internal sealed class WorkAuthorizationEvaluator(
             return WorkOperateAuthorizationDecision.Deny();
         }
 
-        if (systemAuthorization?.HasOperateAllWorkAccess() == true)
+        if (this.hasSystemOperateAllWorkAccess)
         {
             return WorkOperateAuthorizationDecision.Allow();
         }
@@ -220,19 +267,33 @@ internal sealed class WorkAuthorizationEvaluator(
             changes.TransientRetry,
             changes.FailedWorker,
             changes.Logging,
-            changes.Retention);
+            changes.Retention)
+        {
+            ProfilingCaptureMode = changes.ProfilingCaptureMode,
+        };
 
     private static WorkDefinitionReconfigurationChanges ToDefinitionChanges(WorkDefinitionReconfiguration changes)
         => new(
             changes.DefaultOptions,
             changes.Configuration);
 
-    private static bool RequestsFullProfileCapture(WorkerOptions? options)
-        => options is
-        {
-            HasExplicitProfilingCaptureMode: true,
-            ProfilingCaptureMode: WorkProfileCaptureMode.Full,
-        };
+    private static bool UsesFullProfileCapture(WorkerOptions options)
+        => options.ProfilingEnabled &&
+            options.ProfilingCaptureMode == WorkProfileCaptureMode.Full;
+
+    private static bool EnablesFullProfileCapture(
+        WorkerOptions current,
+        WorkerReconfiguration changes)
+        => !UsesFullProfileCapture(current) &&
+            (changes.ProfilingEnabled ?? current.ProfilingEnabled) &&
+            (changes.ProfilingCaptureMode ?? current.ProfilingCaptureMode) == WorkProfileCaptureMode.Full;
+
+    private static bool EnablesFullProfileCapture(
+        WorkerOptions current,
+        WorkerOptions? replacement)
+        => replacement is not null &&
+            !UsesFullProfileCapture(current) &&
+            UsesFullProfileCapture(replacement);
 
     private static bool ChangesExecutionDiagnostics(
         WorkDefinition definition,

@@ -19,6 +19,7 @@ internal static class WorkConfigurationValidator
         ArgumentNullException.ThrowIfNull(configuration);
 
         var messages = new List<WorkMessage>();
+        ValidateStart(configuration.Start, messages);
         ValidateRecurrence(configuration.Recurrence, messages);
         ValidateTransientRetry(configuration.TransientRetry, messages);
         ValidateFailedWorker(configuration.FailedWorker, configuration.Recurrence, messages);
@@ -29,6 +30,24 @@ internal static class WorkConfigurationValidator
         ValidateInvocation(configuration.Invocation, messages);
         ValidateChildExecution(configuration.ChildExecution, messages);
         return messages;
+    }
+
+    public static IReadOnlyList<WorkMessage> ValidateWorkerOptions(
+        WorkerOptions options,
+        string targetPrefix = "options")
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetPrefix);
+
+        return Enum.IsDefined(options.ProfilingCaptureMode)
+            ? []
+            :
+            [
+                InvalidEnum(
+                    "workable.options.profiling_capture_mode.invalid",
+                    $"Profiling capture mode '{options.ProfilingCaptureMode}' is not supported.",
+                    $"{targetPrefix}.profilingCaptureMode"),
+            ];
     }
 
     public static IReadOnlyList<WorkMessage> ValidatePersistenceStore(
@@ -78,6 +97,17 @@ internal static class WorkConfigurationValidator
             return [];
         }
 
+        if (!Enum.IsDefined(coordination.Concurrency.Scope))
+        {
+            return
+            [
+                InvalidEnum(
+                    "workable.configuration.concurrency.scope.invalid",
+                    $"Concurrency scope '{coordination.Concurrency.Scope}' is not supported.",
+                    "configuration.coordination.concurrency.scope"),
+            ];
+        }
+
         return coordination.Concurrency.Scope switch
         {
             WorkConcurrencyScope.PerSubject when input?.SubjectId is null =>
@@ -92,6 +122,19 @@ internal static class WorkConfigurationValidator
                     "input.concurrencyKey")],
             _ => [],
         };
+    }
+
+    private static void ValidateStart(
+        WorkStartConfiguration start,
+        List<WorkMessage> messages)
+    {
+        if (!Enum.IsDefined(start.Policy))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.start.policy.invalid",
+                $"Start policy '{start.Policy}' is not supported.",
+                "configuration.start.policy"));
+        }
     }
 
     private static void ValidateRecurrence(WorkRecurrenceConfiguration recurrence, List<WorkMessage> messages)
@@ -123,6 +166,14 @@ internal static class WorkConfigurationValidator
 
     private static void ValidateTransientRetry(WorkTransientRetryConfiguration transientRetry, List<WorkMessage> messages)
     {
+        if (!Enum.IsDefined(transientRetry.Backoff))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.transient_retry.backoff.invalid",
+                $"Transient retry backoff '{transientRetry.Backoff}' is not supported.",
+                "configuration.transientRetry.backoff"));
+        }
+
         if (transientRetry.Count < 0)
         {
             messages.Add(WorkMessage.Error(
@@ -169,6 +220,14 @@ internal static class WorkConfigurationValidator
         WorkRecurrenceConfiguration recurrence,
         List<WorkMessage> messages)
     {
+        if (!Enum.IsDefined(failedWorker.Handling))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.failed_worker.handling.invalid",
+                $"Failed-worker handling '{failedWorker.Handling}' is not supported.",
+                "configuration.failedWorker.handling"));
+        }
+
         if (failedWorker.AutoCancelAfter <= TimeSpan.Zero)
         {
             messages.Add(WorkMessage.Error(
@@ -207,6 +266,14 @@ internal static class WorkConfigurationValidator
 
     private static void ValidateLogging(WorkLoggingConfiguration logging, List<WorkMessage> messages)
     {
+        if (!Enum.IsDefined(logging.Level))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.logging.level.invalid",
+                $"Logging level '{logging.Level}' is not supported.",
+                "configuration.logging.level"));
+        }
+
         if (logging.MaximumBufferedEntries < 0)
         {
             messages.Add(WorkMessage.Error(
@@ -229,8 +296,14 @@ internal static class WorkConfigurationValidator
                 "configuration.executionDiagnostics.retention"));
         }
 
-        if (persistence.IsEnabled == true &&
-            (persistence.MinimumLogLevel == LogLevel.None || !Enum.IsDefined(persistence.MinimumLogLevel)))
+        if (!Enum.IsDefined(persistence.MinimumLogLevel))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.execution_diagnostics.log_level_invalid",
+                $"Execution diagnostics log level '{persistence.MinimumLogLevel}' is not supported.",
+                "configuration.executionDiagnostics.minimumLogLevel"));
+        }
+        else if (persistence.IsEnabled == true && persistence.MinimumLogLevel == LogLevel.None)
         {
             messages.Add(WorkMessage.Error(
                 "workable.configuration.execution_diagnostics.log_level_required",
@@ -238,11 +311,11 @@ internal static class WorkConfigurationValidator
                 "configuration.executionDiagnostics.minimumLogLevel"));
         }
 
-        if (persistence.IsEnabled == true && !Enum.IsDefined(persistence.ProfileCaptureMode))
+        if (!Enum.IsDefined(persistence.ProfileCaptureMode))
         {
             messages.Add(WorkMessage.Error(
                 "workable.configuration.execution_diagnostics.profile_capture_mode_invalid",
-                "Enabled execution diagnostics require a valid profile capture mode.",
+                $"Execution diagnostics profile capture mode '{persistence.ProfileCaptureMode}' is not supported.",
                 "configuration.executionDiagnostics.profileCaptureMode"));
         }
     }
@@ -252,6 +325,22 @@ internal static class WorkConfigurationValidator
         WorkRecurrenceConfiguration recurrence,
         List<WorkMessage> messages)
     {
+        if (!Enum.IsDefined(coordination.Storage))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.coordination.storage.invalid",
+                $"Coordination storage '{coordination.Storage}' is not supported.",
+                "configuration.coordination.storage"));
+        }
+
+        if (!Enum.IsDefined(coordination.Idempotency.ConflictPolicy))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.idempotency.conflict_policy.invalid",
+                $"Idempotency conflict policy '{coordination.Idempotency.ConflictPolicy}' is not supported.",
+                "configuration.coordination.idempotency.conflictPolicy"));
+        }
+
         if (!coordination.IsEnabled)
         {
             if (coordination.Idempotency.IsEnabled ||
@@ -278,6 +367,38 @@ internal static class WorkConfigurationValidator
         List<WorkMessage> messages)
     {
         var concurrency = coordination.Concurrency;
+        if (!Enum.IsDefined(concurrency.Scope))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.concurrency.scope.invalid",
+                $"Concurrency scope '{concurrency.Scope}' is not supported.",
+                "configuration.coordination.concurrency.scope"));
+        }
+
+        if (!Enum.IsDefined(concurrency.BlockingMode))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.concurrency.blocking_mode.invalid",
+                $"Concurrency blocking mode '{concurrency.BlockingMode}' is not supported.",
+                "configuration.coordination.concurrency.blockingMode"));
+        }
+
+        if (!Enum.IsDefined(concurrency.LimitReachedBehavior))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.concurrency.limit_reached_behavior.invalid",
+                $"Concurrency limit-reached behavior '{concurrency.LimitReachedBehavior}' is not supported.",
+                "configuration.coordination.concurrency.limitReachedBehavior"));
+        }
+
+        if (!Enum.IsDefined(concurrency.OverrideBehavior))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.concurrency.override_behavior.invalid",
+                $"Concurrency override behavior '{concurrency.OverrideBehavior}' is not supported.",
+                "configuration.coordination.concurrency.overrideBehavior"));
+        }
+
         if (concurrency.MaximumCapacity < 0)
         {
             messages.Add(WorkMessage.Error(
@@ -386,6 +507,14 @@ internal static class WorkConfigurationValidator
                 "Invocation configuration requires at least one allowed channel.",
                 "configuration.invocation.allowedChannels"));
         }
+
+        foreach (var channel in invocation.AllowedChannels.Where(channel => !Enum.IsDefined(channel)))
+        {
+            messages.Add(InvalidEnum(
+                "workable.configuration.invocation.channel.invalid",
+                $"Invocation channel '{channel}' is not supported.",
+                "configuration.invocation.allowedChannels"));
+        }
     }
 
     private static void ValidateChildExecution(
@@ -406,4 +535,10 @@ internal static class WorkConfigurationValidator
         string message,
         string path)
         => WorkMessage.Error(code, message, path);
+
+    private static WorkMessage InvalidEnum(
+        string code,
+        string message,
+        string target)
+        => WorkMessage.Error(code, message, target);
 }

@@ -32,10 +32,42 @@ public sealed class WorkableSignalRFiltersShould
     }
 
     [Fact]
+    public async Task AbortConnectionWhenAuthenticationRegistrationExpires()
+    {
+        var aborted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = new WorkableSignalRAuthenticationFilter.ExpirationRegistration(
+            DateTimeOffset.UtcNow.AddMilliseconds(50),
+            () => aborted.TrySetResult());
+
+        await aborted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(aborted.Task.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public void IgnoreCallbacksAndRepeatedDisposalAfterDisposal()
+    {
+        var abortCount = 0;
+        var registration = new WorkableSignalRAuthenticationFilter.ExpirationRegistration(
+            DateTimeOffset.UtcNow.AddDays(90),
+            () => Interlocked.Increment(ref abortCount));
+
+        registration.Dispose();
+        registration.ScheduleNext();
+        registration.Dispose();
+
+        Assert.Equal(0, abortCount);
+    }
+
+    [Fact]
     public async Task InvokeAuthenticatedMethodsAndReturnResult()
     {
         var filter = new WorkableSignalRAuthenticationFilter();
-        var invocation = InvocationContext(authenticated: true);
+        var caller = CallerContext(authenticated: true);
+        await filter.OnConnectedAsync(
+            new HubLifetimeContext(caller, Services(), new TestHub()),
+            _ => Task.CompletedTask);
+        var invocation = InvocationContext(caller);
         var continued = false;
 
         var result = await filter.InvokeMethodAsync(invocation, _ =>
@@ -95,8 +127,11 @@ public sealed class WorkableSignalRFiltersShould
     }
 
     private static HubInvocationContext InvocationContext(bool authenticated)
+        => InvocationContext(CallerContext(authenticated));
+
+    private static HubInvocationContext InvocationContext(HubCallerContext caller)
         => new(
-            CallerContext(authenticated),
+            caller,
             Services(),
             new TestHub(),
             typeof(TestHub).GetMethod(nameof(TestHub.TestMethod), BindingFlags.Instance | BindingFlags.Public)
@@ -116,7 +151,9 @@ public sealed class WorkableSignalRFiltersShould
     }
 
     private static IServiceProvider Services()
-        => new ServiceCollection().BuildServiceProvider();
+        => new ServiceCollection()
+            .AddWorkableAspNetCoreAuthorization()
+            .BuildServiceProvider();
 
     private sealed class TestHub : Hub
     {
