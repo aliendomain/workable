@@ -754,9 +754,7 @@ public class WorkableViewQueryAdapter
         {
             this.logger.LogError(
                 exception,
-                "Failed to create Workable view component {ComponentType} with id {ComponentId}.",
-                request.Type,
-                request.Id);
+                "Failed to create a Workable view component.");
             return new WorkComponentResult(
                 "error",
                 Error: "The component query failed.",

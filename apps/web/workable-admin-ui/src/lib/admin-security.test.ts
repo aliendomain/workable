@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +36,7 @@ import {
   fetchCachedEntraJson,
   fetchEntraJson,
   MAXIMUM_ENTRA_JSON_BYTES,
+  refreshCachedEntraJson,
   resetEntraBackchannelCachesForTests,
   validateEntraBackchannelUrl,
 } from "./admin-security/entra-backchannel.ts";
@@ -995,6 +996,103 @@ test("Entra callback cannot redirect through a tampered backslash return cookie"
   ));
 });
 
+test("Entra signing-key rotation performs one coalesced forced refresh", async () => {
+  resetEntraBackchannelCachesForTests();
+  const previous = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const rotated = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  let activeKey = {
+    kid: "previous-key",
+    privateKey: previous.privateKey,
+    publicKey: previous.publicKey,
+  };
+  let jwksCalls = 0;
+  let holdRefresh = false;
+  let markRefreshStarted!: () => void;
+  let releaseRefresh!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => {
+    markRefreshStarted = resolve;
+  });
+  const refreshGate = new Promise<void>((resolve) => {
+    releaseRefresh = resolve;
+  });
+  const fetcher: typeof fetch = async (url) => {
+    const requestedUrl = String(url);
+    if (requestedUrl.includes(".well-known/openid-configuration")) {
+      return Response.json({
+        issuer: "https://login.microsoftonline.com/tenant-id/v2.0",
+        jwks_uri: "https://login.microsoftonline.com/keys",
+        token_endpoint: "https://login.microsoftonline.com/token",
+      });
+    }
+    if (requestedUrl === "https://login.microsoftonline.com/token") {
+      return Response.json({
+        id_token: createTestEntraIdToken(activeKey.privateKey, activeKey.kid),
+      });
+    }
+
+    jwksCalls++;
+    if (holdRefresh) {
+      markRefreshStarted();
+      await refreshGate;
+    }
+    return Response.json({
+      keys: [{
+        ...activeKey.publicKey.export({ format: "jwk" }),
+        alg: "RS256",
+        kid: activeKey.kid,
+        use: "sig",
+      }],
+    });
+  };
+
+  try {
+    const initial = await completeEntraLogin(
+      entraCallbackRequest(signedEntraStateValue("forged-state")),
+      entraEnv(),
+      fetcher
+    );
+    assertSuccessfulEntraCallback(initial);
+    assert.equal(jwksCalls, 1);
+
+    activeKey = {
+      kid: "rotated-key",
+      privateKey: rotated.privateKey,
+      publicKey: rotated.publicKey,
+    };
+    holdRefresh = true;
+    const first = completeEntraLogin(
+      entraCallbackRequest(signedEntraStateValue("forged-state")),
+      entraEnv(),
+      fetcher
+    );
+    const second = completeEntraLogin(
+      entraCallbackRequest(signedEntraStateValue("forged-state")),
+      entraEnv(),
+      fetcher
+    );
+
+    await refreshStarted;
+    assert.equal(jwksCalls, 2);
+    releaseRefresh();
+    for (const response of await Promise.all([first, second])) {
+      assertSuccessfulEntraCallback(response);
+    }
+    assert.equal(jwksCalls, 2);
+
+    holdRefresh = false;
+    const cached = await completeEntraLogin(
+      entraCallbackRequest(signedEntraStateValue("forged-state")),
+      entraEnv(),
+      fetcher
+    );
+    assertSuccessfulEntraCallback(cached);
+    assert.equal(jwksCalls, 2);
+  } finally {
+    releaseRefresh();
+    resetEntraBackchannelCachesForTests();
+  }
+});
+
 test("logout invalidates a pre-logout Entra transaction before backchannel work", async () => {
   const env = entraEnv();
   const logout = createAdminLogoutTombstoneCookie(
@@ -1225,6 +1323,131 @@ test("Entra metadata requests are coalesced and cached per fetch implementation"
     validate
   );
   assert.equal(calls, 1);
+});
+
+test("forced Entra cache refreshes coalesce and throttle repeated misses", async () => {
+  resetEntraBackchannelCachesForTests();
+  let calls = 0;
+  let version = 1;
+  let markRefreshStarted!: () => void;
+  let releaseRefresh!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => {
+    markRefreshStarted = resolve;
+  });
+  const refreshGate = new Promise<void>((resolve) => {
+    releaseRefresh = resolve;
+  });
+  const fetcher: typeof fetch = async () => {
+    calls++;
+    if (calls === 2) {
+      markRefreshStarted();
+      await refreshGate;
+    }
+    return Response.json({ version });
+  };
+  const validate = (value: unknown): value is { version: number } =>
+    typeof (value as { version?: unknown })?.version === "number";
+
+  try {
+    const stale = await fetchCachedEntraJson(
+      fetcher,
+      "jwks:test",
+      "https://login.example.com/keys",
+      validate
+    );
+    version = 2;
+    const first = refreshCachedEntraJson(
+      fetcher,
+      "jwks:test",
+      "https://login.example.com/keys",
+      validate,
+      stale
+    );
+    const second = refreshCachedEntraJson(
+      fetcher,
+      "jwks:test",
+      "https://login.example.com/keys",
+      validate,
+      stale
+    );
+
+    await refreshStarted;
+    assert.equal(calls, 2);
+    releaseRefresh();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.deepEqual(firstResult, { version: 2 });
+    assert.strictEqual(secondResult, firstResult);
+
+    const throttled = await refreshCachedEntraJson(
+      fetcher,
+      "jwks:test",
+      "https://login.example.com/keys",
+      validate,
+      firstResult
+    );
+    assert.strictEqual(throttled, firstResult);
+    assert.equal(calls, 2);
+
+    const current = await refreshCachedEntraJson(
+      fetcher,
+      "jwks:test",
+      "https://login.example.com/keys",
+      validate,
+      stale
+    );
+    assert.strictEqual(current, firstResult);
+    assert.equal(calls, 2);
+  } finally {
+    releaseRefresh();
+    resetEntraBackchannelCachesForTests();
+  }
+});
+
+test("forced Entra cache refresh retains a valid stale value after failure", async () => {
+  resetEntraBackchannelCachesForTests();
+  let fail = false;
+  let calls = 0;
+  const fetcher: typeof fetch = async () => {
+    calls++;
+    return fail
+      ? new Response("{}", { status: 503 })
+      : Response.json({ version: 1 });
+  };
+  const validate = (value: unknown): value is { version: number } =>
+    typeof (value as { version?: unknown })?.version === "number";
+
+  try {
+    const initial = await refreshCachedEntraJson(
+      fetcher,
+      "jwks:test",
+      "https://login.example.com/keys",
+      validate,
+      { version: 0 }
+    );
+    fail = true;
+    await assert.rejects(
+      refreshCachedEntraJson(
+        fetcher,
+        "jwks:test",
+        "https://login.example.com/keys",
+        validate,
+        initial
+      ),
+      /failed \(503\)/
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const retained = await fetchCachedEntraJson(
+      fetcher,
+      "jwks:test",
+      "https://login.example.com/keys",
+      validate
+    );
+    assert.strictEqual(retained, initial);
+    assert.equal(calls, 2);
+  } finally {
+    resetEntraBackchannelCachesForTests();
+  }
 });
 
 test("Entra backchannel requests honor request cancellation", async () => {
@@ -3559,6 +3782,38 @@ function entraCallbackRequest(stateCookie: string) {
       },
     }
   );
+}
+
+function createTestEntraIdToken(privateKey: KeyObject, kid: string) {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid })).toString(
+    "base64url"
+  );
+  const payload = Buffer.from(JSON.stringify({
+    aud: "client-id",
+    exp: Math.floor(Date.now() / 1000) + 300,
+    iss: "https://login.microsoftonline.com/tenant-id/v2.0",
+    name: "Admin",
+    nonce: "forged-nonce",
+    oid: "actor-id",
+    tid: "tenant-id",
+  })).toString("base64url");
+  const signedContent = `${header}.${payload}`;
+  const signature = sign(
+    "RSA-SHA256",
+    Buffer.from(signedContent),
+    privateKey
+  ).toString("base64url");
+  return `${signedContent}.${signature}`;
+}
+
+function assertSuccessfulEntraCallback(response: Response) {
+  assert.equal(response.status, 303);
+  const location = new URL(response.headers.get("location") ?? "https://invalid/");
+  assert.equal(location.searchParams.has("error"), false);
+  assert.ok(getSetCookies(response.headers).some((cookie) =>
+    cookie.startsWith("__Host-workable_admin_session=") &&
+      !/Max-Age=0/i.test(cookie)
+  ));
 }
 
 function assertAuthenticationFailureStatus(

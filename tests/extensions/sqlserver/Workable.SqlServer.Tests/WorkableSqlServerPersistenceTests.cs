@@ -6408,7 +6408,7 @@ WHERE WorkerId = @WorkerId;
 
     private static DataTableReader CreateStringReader(object value)
     {
-        var table = new DataTable();
+        using var table = new DataTable();
         table.Columns.Add("Payload", typeof(string));
         table.Rows.Add(value);
         return table.CreateDataReader();

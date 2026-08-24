@@ -88,8 +88,9 @@ public sealed class WorkableEntraAuthorizationOptionsShould
             "HasConfiguredValues",
             BindingFlags.Static | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Expected configuration detection helper.");
+        using var emptyConfiguration = new ConfigurationManager();
         Assert.True((bool)method.Invoke(null, [configuration])!);
-        Assert.False((bool)method.Invoke(null, [new ConfigurationManager()])!);
+        Assert.False((bool)method.Invoke(null, [emptyConfiguration])!);
     }
 
     [Fact]

@@ -448,7 +448,9 @@ public sealed class WorkableRealtimeEventSubscriptions
 
         var canonical = JsonSerializer.Serialize(new
         {
-            WorkerId = filter.WorkerId?.Value.ToString("N"),
+            WorkerId = filter.WorkerId is { } workerId
+                ? workerId.Value.ToString("N")
+                : null,
             filter.DefinitionName,
             DefinitionNames = filter.DefinitionNames?
                 .Order(StringComparer.OrdinalIgnoreCase)

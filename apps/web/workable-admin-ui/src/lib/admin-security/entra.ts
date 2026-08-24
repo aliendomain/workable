@@ -40,6 +40,7 @@ import {
 import {
   fetchCachedEntraJson,
   fetchEntraJson,
+  refreshCachedEntraJson,
   validateEntraBackchannelUrl,
   type EntraFetchLike,
 } from "./entra-backchannel.ts";
@@ -512,14 +513,26 @@ async function validateEntraIdToken(
     "signing-key endpoint"
   );
 
-  const jwks = await fetchCachedEntraJson(
+  const jwksCacheKey = `jwks:${validatedJwksUri}`;
+  let jwks = await fetchCachedEntraJson(
     fetcher,
-    `jwks:${validatedJwksUri}`,
+    jwksCacheKey,
     validatedJwksUri,
     isJsonWebKeySet,
     signal
   );
-  const jwk = jwks.keys?.find((key) => key.kid === parsed.header.kid);
+  let jwk = jwks.keys?.find((key) => key.kid === parsed.header.kid);
+  if (!jwk) {
+    jwks = await refreshCachedEntraJson(
+      fetcher,
+      jwksCacheKey,
+      validatedJwksUri,
+      isJsonWebKeySet,
+      jwks,
+      signal
+    );
+    jwk = jwks.keys?.find((key) => key.kid === parsed.header.kid);
+  }
   if (!jwk) {
     throw new Error("Microsoft Entra ID signing key was not found.");
   }

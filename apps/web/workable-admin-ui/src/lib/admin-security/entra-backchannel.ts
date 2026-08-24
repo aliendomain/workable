@@ -1,5 +1,6 @@
 const BACKCHANNEL_TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = 5 * 60_000;
+const FORCED_REFRESH_COOLDOWN_MS = 30_000;
 const MAXIMUM_CACHE_ENTRIES_PER_FETCHER = 32;
 export const MAXIMUM_ENTRA_JSON_BYTES = 1024 * 1024;
 
@@ -8,6 +9,8 @@ export type EntraFetchLike = typeof fetch;
 type CacheEntry = {
   expiresAt: number;
   value: Promise<unknown>;
+  forcedRefresh?: Promise<unknown>;
+  lastForcedRefreshAt?: number;
 };
 
 let caches = new WeakMap<EntraFetchLike, Map<string, CacheEntry>>();
@@ -159,6 +162,56 @@ export async function fetchCachedEntraJson<T>(
     }
   });
   return await awaitWithSignal(value, signal);
+}
+
+export async function refreshCachedEntraJson<T>(
+  fetcher: EntraFetchLike,
+  cacheKey: string,
+  input: string | URL,
+  validate: (value: unknown) => value is T,
+  staleValue: T,
+  signal?: AbortSignal
+): Promise<T> {
+  const cache = getCache(fetcher);
+  const cached = cache.get(cacheKey);
+  if (!cached) {
+    return await fetchCachedEntraJson(fetcher, cacheKey, input, validate, signal);
+  }
+
+  const current = await awaitWithSignal(cached.value as Promise<T>, signal);
+  if (current !== staleValue || cache.get(cacheKey) !== cached) {
+    return await fetchCachedEntraJson(fetcher, cacheKey, input, validate, signal);
+  }
+  if (cached.forcedRefresh) {
+    return await awaitWithSignal(cached.forcedRefresh as Promise<T>, signal);
+  }
+
+  const now = Date.now();
+  if (cached.lastForcedRefreshAt !== undefined &&
+    now - cached.lastForcedRefreshAt < FORCED_REFRESH_COOLDOWN_MS) {
+    return current;
+  }
+
+  const refresh = loadAndValidateJson(fetcher, input, validate);
+  cached.lastForcedRefreshAt = now;
+  cached.forcedRefresh = refresh;
+  void refresh.then(
+    (refreshed) => {
+      if (cache.get(cacheKey) === cached && cached.forcedRefresh === refresh) {
+        cache.set(cacheKey, {
+          expiresAt: Date.now() + CACHE_TTL_MS,
+          value: Promise.resolve(refreshed),
+          lastForcedRefreshAt: now,
+        });
+      }
+    },
+    () => {
+      if (cache.get(cacheKey) === cached && cached.forcedRefresh === refresh) {
+        cached.forcedRefresh = undefined;
+      }
+    }
+  );
+  return await awaitWithSignal(refresh, signal);
 }
 
 async function loadAndValidateJson<T>(
