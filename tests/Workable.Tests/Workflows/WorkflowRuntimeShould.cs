@@ -4768,7 +4768,7 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
-    public async Task RetryWorkflowChildRetentionPurgeAfterWorkflowBecomesFinal()
+    public async Task PurgeFinalWorkflowRunAfterChildrenArePurgedByRetention()
     {
         var store = new TestWorkflowPersistenceStore();
         var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -4840,17 +4840,25 @@ public sealed class WorkflowRuntimeShould
             "Expected the fast child worker to complete while the workflow was still waiting on the slow child.",
             timeout: TimeSpan.FromSeconds(10));
 
-        await Task.Delay(200);
+        await TestEventually.Until(
+            async () => await system.Query.Worker(fastWorkerId) is null,
+            "Expected retention to purge the completed fast child while the workflow was still running.",
+            timeout: TimeSpan.FromSeconds(20));
+
         slowRelease.TrySetResult();
 
         var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.NotNull(store.GetWorkflowRun(handle.RunId!.Value));
 
+        var slowWorkerId = completion.Run!.Steps
+            .Single(step => step.Name == "slow")
+            .WorkerIds
+            .Single();
         await TestEventually.Until(
-            async () => await system.Query.Worker(fastWorkerId) is null,
-            "Expected retention to retry the completed child purge after the workflow became final.",
-            timeout: TimeSpan.FromSeconds(10));
+            async () => await system.Query.Worker(slowWorkerId) is null,
+            "Expected retention to purge the final slow child after the workflow completed.",
+            timeout: TimeSpan.FromSeconds(20));
         await TestEventually.Until(
             () => system.WorkflowRuntime.Get(handle.RunId.Value) is null,
             "Expected the final workflow run to disappear after retention purged its last child workers.",

@@ -543,7 +543,9 @@ WITH (WorkerId uniqueidentifier '$') requested
                 command.CommandText = RequiredDmlSetOptions + $"""
 DECLARE @Claimed TABLE
 (
-    WorkerId uniqueidentifier NOT NULL PRIMARY KEY
+    WorkerId uniqueidentifier NOT NULL PRIMARY KEY,
+    DefinitionName nvarchar(450) NOT NULL,
+    CreatedAt datetimeoffset NOT NULL
 );
 
 DECLARE @LockResult int;
@@ -587,7 +589,7 @@ IF @RequiresClaimLock = 0
 	    UPDATE queue
 	    SET LeaseId = @LeaseId,
 	        LeaseExpiresAt = @LeaseExpiresAt
-	    OUTPUT inserted.WorkerId
+	    OUTPUT inserted.WorkerId, inserted.DefinitionName, inserted.CreatedAt
 	    INTO @Claimed
 	    FROM {this.queueTable} queue WITH (UPDLOCK, READPAST, ROWLOCK, INDEX(PK_WorkableWorkQueueEntries))
 	    INNER JOIN @Ready ready
@@ -682,7 +684,7 @@ ready AS
 	        WHEN ready.HasPersistentConcurrency = 1 THEN N'Executing'
 	        ELSE ConcurrencyBucket
 	    END
-	OUTPUT inserted.WorkerId
+	OUTPUT inserted.WorkerId, inserted.DefinitionName, inserted.CreatedAt
 	INTO @Claimed
 	FROM {this.queueTable} queue
 	INNER JOIN ready
@@ -700,17 +702,18 @@ ready AS
     END CATCH;
 END;
 
-	SELECT queue.WorkerId,
-	       queue.DefinitionName,
+	-- Read queue-owned result fields from @Claimed instead of rejoining the queue table.
+	-- Cleanup locks queue rows before entry rows; a queue rejoin here could let the
+	-- result reader take entry locks first and complete the opposite lock-order cycle.
+	SELECT claimed.WorkerId,
+	       claimed.DefinitionName,
 	       entries.InputJson,
 	       entries.OptionsJson,
 	       entries.ConfigurationJson,
 	       entries.OriginJson,
 	       entries.WorkflowProvenanceJson,
-	       queue.CreatedAt
+	       claimed.CreatedAt
 	FROM @Claimed claimed
-	INNER JOIN {this.queueTable} queue
-	    ON queue.WorkerId = claimed.WorkerId
 	INNER JOIN {this.entriesTable} entries
 	    ON entries.WorkerId = claimed.WorkerId;
 """;

@@ -20,6 +20,8 @@ namespace Workable.Tests;
 [Trait("Category", "PersistenceIntegration")]
 public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
 {
+    private const int DatabaseCreationAttempts = 3;
+    private const int TransientFileInitializationErrorNumber = 17053;
     private const string SchemaName = "workable";
     private static readonly JsonSerializerOptions DurableJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -28,7 +30,7 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
 
     private readonly ITestOutputHelper output;
     private readonly SqlServerTestHost sqlServer;
-    private readonly string databaseName = "WorkableTests_" + Guid.NewGuid().ToString("N");
+    private string databaseName = CreateDatabaseName();
 
     public WorkableSqlServerPersistenceTests(
         SqlServerTestHost sqlServer,
@@ -36,32 +38,62 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
     {
         this.sqlServer = sqlServer;
         this.output = output;
-        this.ConnectionString = sqlServer.BuildConnectionString(this.databaseName);
     }
 
-    private string ConnectionString { get; }
+    private string ConnectionString => this.sqlServer.BuildConnectionString(this.databaseName);
 
     public async Task InitializeAsync()
     {
         this.output.WriteLine($"SQL Server test host: {this.sqlServer.Description}");
 
-        await using var connection = new SqlConnection(this.sqlServer.MasterConnectionString);
-        await connection.OpenAsync();
-        await Execute(connection, $"CREATE DATABASE {Quote(this.databaseName)};");
+        for (var attempt = 1; attempt <= DatabaseCreationAttempts; attempt++)
+        {
+            await using var connection = new SqlConnection(this.sqlServer.MasterConnectionString);
+            await connection.OpenAsync();
+
+            try
+            {
+                await Execute(connection, $"CREATE DATABASE {Quote(this.databaseName)};");
+                return;
+            }
+            catch (SqlException exception) when (
+                attempt < DatabaseCreationAttempts &&
+                IsTransientFileInitializationFailure(exception))
+            {
+                this.output.WriteLine(
+                    $"SQL Server transiently failed to initialize database files for '{this.databaseName}' " +
+                    $"(attempt {attempt} of {DatabaseCreationAttempts}); retrying with a fresh database name.");
+                await DropDatabaseIfExists(connection, this.databaseName);
+                this.databaseName = CreateDatabaseName();
+                await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt));
+            }
+        }
+
+        throw new InvalidOperationException("SQL Server database creation retry loop completed unexpectedly.");
     }
 
     public async Task DisposeAsync()
     {
         await using var connection = new SqlConnection(this.sqlServer.MasterConnectionString);
         await connection.OpenAsync();
-        await Execute(connection, $"""
-IF DB_ID(N'{Escape(this.databaseName)}') IS NOT NULL
+        await DropDatabaseIfExists(connection, this.databaseName);
+    }
+
+    private static string CreateDatabaseName()
+        => "WorkableTests_" + Guid.NewGuid().ToString("N");
+
+    private static bool IsTransientFileInitializationFailure(SqlException exception)
+        => exception.Errors.Cast<SqlError>()
+            .Any(error => error.Number == TransientFileInitializationErrorNumber);
+
+    private static Task DropDatabaseIfExists(SqlConnection connection, string databaseName)
+        => Execute(connection, $"""
+IF DB_ID(N'{Escape(databaseName)}') IS NOT NULL
 BEGIN
-    ALTER DATABASE {Quote(this.databaseName)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE {Quote(this.databaseName)};
+    ALTER DATABASE {Quote(databaseName)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE {Quote(databaseName)};
 END
 """);
-    }
 
     [Fact]
     public async Task StartInitializesWorkEntriesSchema()
