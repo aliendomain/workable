@@ -368,7 +368,7 @@ function readLogoutTombstonesForPrefix(
     const tombstone = name.slice(prefix.length);
     const identifier = tombstone.toLowerCase();
     const rawValue = pair.slice(separator + 1).trim();
-    let value = rawValue;
+    let value: string;
     try {
       value = decodeURIComponent(rawValue);
     } catch {
