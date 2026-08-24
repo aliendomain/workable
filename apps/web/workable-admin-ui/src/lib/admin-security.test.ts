@@ -3602,13 +3602,84 @@ test("server-only local config rejects non-boolean Basic enablement", () => {
 });
 
 test("session signing secrets shorter than 32 bytes fail configuration closed", () => {
-  const authentication = authenticateAdminRequest(new Headers(), secureEnv({
-    WORKABLE_ADMIN_UI_SESSION_SECRET: "too-short",
-  }));
+  for (const secret of ["too-short", " "]) {
+    const authentication = authenticateAdminRequest(new Headers(), secureEnv({
+      WORKABLE_ADMIN_UI_SESSION_SECRET: secret,
+    }));
+
+    assert.equal(authentication.ok, false);
+    assert.equal(authentication.status, 503);
+    assert.match(authentication.error, /at least 32 UTF-8 bytes/i);
+  }
+});
+
+test("Basic authentication requires a session secret independent from its password", () => {
+  const password = "a-basic-password-that-is-longer-than-thirty-two-bytes";
+  const env = secureEnv({
+    WORKABLE_ADMIN_UI_PASSWORD: password,
+    WORKABLE_ADMIN_UI_SESSION_SECRET: undefined,
+  });
+  const authentication = authenticateAdminRequest(
+    new Headers({ authorization: basic("admin", password) }),
+    env
+  );
+  const session = createAdminSessionCookie(
+    "admin",
+    new Request("https://admin.example.com/api/auth/login", { method: "POST" }),
+    env
+  );
+  const logout = createAdminLogoutTombstoneCookie(
+    new Request("https://admin.example.com/api/auth/logout", { method: "POST" }),
+    env
+  );
 
   assert.equal(authentication.ok, false);
   assert.equal(authentication.status, 503);
-  assert.match(authentication.error, /at least 32 UTF-8 bytes/i);
+  assert.match(authentication.error, /independent sessionSecret/i);
+  assert.equal(session.ok, false);
+  assert.equal(session.status, 503);
+  assert.match(session.error, /independent sessionSecret/i);
+  assert.match(logout, /^__Host-workable_admin_session=/);
+  assert.match(logout, /Max-Age=0/i);
+  assert.doesNotMatch(logout, /workable_admin_logout=/i);
+
+  const reusedPassword = authenticateAdminRequest(new Headers(), {
+    ...env,
+    WORKABLE_ADMIN_UI_SESSION_SECRET: password,
+  });
+  assert.equal(reusedPassword.ok, false);
+  assert.equal(reusedPassword.status, 503);
+  assert.match(reusedPassword.error, /different from the Basic password/i);
+
+  const disabled = authenticateAdminRequest(
+    new Headers({ authorization: basic("admin", password) }),
+    { ...env, WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED: undefined }
+  );
+  assert.equal(disabled.ok, false);
+  assert.equal(disabled.status, 503);
+  assert.match(disabled.error, /disabled/i);
+  assert.doesNotMatch(disabled.error, /sessionSecret/i);
+});
+
+test("Basic logout state is signed only by the independent session secret", () => {
+  const env = secureEnv();
+  const cookie = createAdminLogoutTombstoneCookie(
+    new Request("https://admin.example.com/api/auth/logout", { method: "POST" }),
+    env
+  );
+  const encodedValue = cookie.slice(cookie.indexOf("=") + 1, cookie.indexOf(";"));
+  const [payload, signature] = decodeURIComponent(encodedValue).split(".");
+
+  assert.ok(payload);
+  assert.ok(signature);
+  assert.equal(
+    signature,
+    signAdminValue(payload, env.WORKABLE_ADMIN_UI_SESSION_SECRET as string)
+  );
+  assert.notEqual(
+    signature,
+    signAdminValue(payload, env.WORKABLE_ADMIN_UI_PASSWORD as string)
+  );
 });
 
 test("production session cookie configuration requires an unambiguous __Host cookie name", () => {

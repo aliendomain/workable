@@ -2,6 +2,7 @@ import {
   base64UrlDecode,
   base64UrlEncode,
   constantTimeEquals,
+  deriveBasicCredentialBinding,
   sign,
 } from "./crypto.ts";
 import {
@@ -375,7 +376,13 @@ function createSessionConfigurationBinding(
   secret: string
 ) {
   const providerConfiguration = identity.provider === "basic"
-    ? [settings.userName ?? "", settings.password ?? ""]
+    ? [
+        settings.userName ?? "",
+        deriveBasicCredentialBinding(
+          settings.password ?? "",
+          secret
+        ),
+      ]
     : [
         settings.entraId.tenantId ?? "",
         settings.entraId.clientId ?? "",
@@ -391,6 +398,5 @@ function createSessionConfigurationBinding(
 }
 
 export function sessionSecret(settings: AdminSecuritySettings) {
-  return settings.sessionSecret ??
-    (settings.authProvider === "basic" ? settings.password : undefined);
+  return settings.sessionSecret;
 }

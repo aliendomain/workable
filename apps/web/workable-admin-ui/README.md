@@ -113,7 +113,7 @@ WORKABLE_ADMIN_UI_PASSWORD=replace-with-a-long-random-password
 WORKABLE_ADMIN_UI_SESSION_SECRET=replace-with-a-different-long-random-secret
 ```
 
-Session-signing secrets must contain at least 32 UTF-8 bytes and should be independently generated random values. For Basic auth, `sessionSecret` may be omitted only when the configured Basic password itself meets that minimum; the admin UI then uses the password for local session signing. A separate `sessionSecret` is recommended; sessions are bound to the current Basic username/password configuration, so rotating either credential invalidates existing sessions without requiring the signing secret to change. `sessionMaxAgeSeconds` is the renewable idle lifetime and `sessionAbsoluteMaxAgeSeconds` is the non-renewable lifetime from initial sign-in (default `86400`, or 24 hours). Prefer Entra for internet-facing or horizontally scaled deployments; the built-in source-scoped failed-attempt state is deliberately local to each admin UI server process and is not a distributed identity lockout service.
+`sessionSecret` is required, must be independent from the Basic password, must contain at least 32 UTF-8 bytes, and should be a generated random value. The Basic password is never used as a session-signing key. Sessions remain bound to the current Basic username/password configuration, so rotating either credential invalidates existing sessions without requiring the signing secret to change. The credential binding uses a process-cached password KDF result, so its deliberate guessing cost is paid when the configured credential changes rather than on every session verification. `sessionMaxAgeSeconds` is the renewable idle lifetime and `sessionAbsoluteMaxAgeSeconds` is the non-renewable lifetime from initial sign-in (default `86400`, or 24 hours). Prefer Entra for internet-facing or horizontally scaled deployments; the built-in source-scoped failed-attempt state is deliberately local to each admin UI server process and is not a distributed identity lockout service.
 
 ### Microsoft Entra ID
 
@@ -202,7 +202,7 @@ For a non-secret Entra config file, use `workable-admin.config.json` and omit se
 }
 ```
 
-`clientSecret` is optional. `sessionSecret` is required for Entra because there is no Basic password to use as a local session-signing fallback; it must contain at least 32 UTF-8 bytes and should be a random secret.
+`clientSecret` is optional. `sessionSecret` is required, must contain at least 32 UTF-8 bytes, and should be a generated random secret.
 
 If you also want the admin UI to call Entra-protected hosted Workable APIs, configure `entraId.targetApis` with one entry per host:
 

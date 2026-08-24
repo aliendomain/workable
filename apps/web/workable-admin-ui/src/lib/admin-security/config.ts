@@ -343,16 +343,19 @@ function validateSessionSecret(
   configuredSecret: string | undefined,
   basicPassword: string | undefined
 ) {
-  const effectiveSecret = configuredSecret ??
-    (authProvider === "basic" && basicAuthEnabled ? basicPassword : undefined);
-  const secretWasConfigured = configuredSecret !== undefined ||
-    (authProvider === "basic" && basicAuthEnabled && basicPassword !== undefined);
-  if (!secretWasConfigured) {
-    return undefined;
+  const secretIsRequired = authProvider === "entra" ||
+    (authProvider === "basic" && basicAuthEnabled);
+  if (configuredSecret === undefined) {
+    return secretIsRequired
+      ? "Workable admin UI authentication requires an independent sessionSecret."
+      : undefined;
   }
-
-  return effectiveSecret?.trim() &&
-      Buffer.byteLength(effectiveSecret, "utf8") >= MINIMUM_SESSION_SECRET_BYTES
+  if (authProvider === "basic" && basicAuthEnabled &&
+    configuredSecret === basicPassword) {
+    return "Workable admin UI sessionSecret must be different from the Basic password.";
+  }
+  return configuredSecret.trim() &&
+      Buffer.byteLength(configuredSecret, "utf8") >= MINIMUM_SESSION_SECRET_BYTES
     ? undefined
     : `Workable admin UI sessionSecret must contain at least ${MINIMUM_SESSION_SECRET_BYTES} UTF-8 bytes.`;
 }
