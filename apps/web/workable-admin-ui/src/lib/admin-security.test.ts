@@ -363,12 +363,9 @@ test("logout generations invalidate delayed renewals without blocking a later si
     );
     assert.equal(signedInAgain.ok, true);
     if (!signedInAgain.ok) return;
-    assert.match(signedInAgain.logoutHeader ?? "", /__Host-workable_admin_logout=/);
     const current = authenticateAdminRequest(
       new Headers({
-        cookie: `${signedInAgain.header.split(";")[0] ?? ""}; ${
-          signedInAgain.logoutHeader?.split(";")[0] ?? ""
-        }`,
+        cookie: `${signedInAgain.header.split(";")[0] ?? ""}; ${tombstone}`,
       }),
       env
     );
@@ -991,9 +988,101 @@ test("Entra callback cannot redirect through a tampered backslash return cookie"
     cookie.startsWith("__Host-workable_admin_session=")
   );
   assert.ok(sessionCookie);
-  assert.ok(responseCookies.some((cookie) =>
-    cookie.startsWith("__Host-workable_admin_logout=") && !/Max-Age=0/i.test(cookie)
+  assert.equal(responseCookies.some((cookie) =>
+    cookie.startsWith("__Host-workable_admin_logout=")
+  ), false);
+});
+
+test("a delayed Entra callback response cannot move the logout generation backward", async () => {
+  resetEntraBackchannelCachesForTests();
+  const env = entraEnv();
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const requestUrl = "https://admin.example.com/api/auth/entra/callback";
+  const firstLogout = createAdminLogoutTombstoneCookie(
+    new Request(requestUrl),
+    env
+  ).split(";")[0] ?? "";
+  const firstGeneration = readLogoutGeneration(firstLogout);
+  const transaction = entraCallbackRequest(signedEntraStateValue(
+    "forged-state",
+    Date.now(),
+    firstGeneration
   ));
+  const transactionHeaders = new Headers(transaction.headers);
+  transactionHeaders.set(
+    "cookie",
+    `${transactionHeaders.get("cookie")}; ${firstLogout}`
+  );
+  let markExchangeStarted!: () => void;
+  let releaseExchange!: () => void;
+  const exchangeStarted = new Promise<void>((resolve) => {
+    markExchangeStarted = resolve;
+  });
+  const exchangeGate = new Promise<void>((resolve) => {
+    releaseExchange = resolve;
+  });
+
+  try {
+    const delayedCallback = completeEntraLogin(
+      new Request(transaction, { headers: transactionHeaders }),
+      env,
+      async (url) => {
+        const requestedUrl = String(url);
+        if (requestedUrl.includes(".well-known/openid-configuration")) {
+          return Response.json({
+            issuer: "https://login.microsoftonline.com/tenant-id/v2.0",
+            jwks_uri: "https://login.microsoftonline.com/keys",
+            token_endpoint: "https://login.microsoftonline.com/token",
+          });
+        }
+        if (requestedUrl === "https://login.microsoftonline.com/token") {
+          markExchangeStarted();
+          await exchangeGate;
+          return Response.json({
+            id_token: createTestEntraIdToken(privateKey, "delayed-key"),
+          });
+        }
+        return Response.json({
+          keys: [{
+            ...publicKey.export({ format: "jwk" }),
+            alg: "RS256",
+            kid: "delayed-key",
+            use: "sig",
+          }],
+        });
+      }
+    );
+
+    await exchangeStarted;
+    const currentLogout = createAdminLogoutTombstoneCookie(
+      new Request(requestUrl),
+      env
+    ).split(";")[0] ?? "";
+    releaseExchange();
+
+    const response = await delayedCallback;
+    assertSuccessfulEntraCallback(response);
+    const responseCookies = getSetCookies(response.headers);
+    assert.equal(responseCookies.some((cookie) =>
+      cookie.startsWith("__Host-workable_admin_logout=")
+    ), false);
+    const delayedSession = responseCookies.find((cookie) =>
+      cookie.startsWith("__Host-workable_admin_session=")
+    )?.split(";")[0] ?? "";
+    assert.ok(delayedSession);
+
+    const authentication = authenticateAdminRequest(
+      new Headers({ cookie: `${delayedSession}; ${currentLogout}` }),
+      env
+    );
+    assert.equal(authentication.ok, false);
+    assert.equal(authentication.status, 401);
+  } finally {
+    releaseExchange();
+    resetEntraBackchannelCachesForTests();
+  }
 });
 
 test("Entra signing-key rotation performs one coalesced forced refresh", async () => {

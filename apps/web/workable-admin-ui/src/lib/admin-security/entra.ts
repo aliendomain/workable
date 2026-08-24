@@ -287,9 +287,6 @@ export async function completeEntraLogin(
     const nextPath = normalizeAdminReturnPath(nextCookie.ok ? nextCookie.value : undefined);
     const response = createRedirectResponse(new URL(nextPath, request.url), 303);
     response.headers.append("set-cookie", sessionCookie.header);
-    if (sessionCookie.logoutHeader) {
-      response.headers.append("set-cookie", sessionCookie.logoutHeader);
-    }
     for (const cookie of createEntraTargetTokenCookieHeaders(
       tokens,
       request,

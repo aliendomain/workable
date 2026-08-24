@@ -67,9 +67,6 @@ export async function POST(request: Request) {
 
   const headers = new Headers(noStoreHeaders);
   headers.append("set-cookie", cookie.header);
-  if (cookie.logoutHeader) {
-    headers.append("set-cookie", cookie.logoutHeader);
-  }
   for (const staleCookie of createExpiredEntraTargetTokenCookies(request.headers)) {
     headers.append("set-cookie", staleCookie);
   }

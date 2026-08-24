@@ -120,14 +120,6 @@ export function createSignedAdminSessionCookie(
   return {
     ok: true,
     identity: { ...identity, sessionId, sessionStartedAt, logoutGeneration },
-    logoutHeader: logoutGeneration === INITIAL_LOGOUT_GENERATION
-      ? undefined
-      : serializeLogoutGenerationCookie(
-          logoutGeneration,
-          request,
-          settings,
-          absoluteExpiresAt - now
-        ),
     header: serializeCookie(
       settings.sessionCookieName,
       `${payload}.${signature}`,

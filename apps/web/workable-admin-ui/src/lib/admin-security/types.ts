@@ -34,7 +34,6 @@ export type AdminSessionCookieResult =
   | {
       ok: true;
       header: string;
-      logoutHeader?: string;
       identity: import("./session.ts").AdminSessionIdentity;
     }
   | AdminSecurityFailure;

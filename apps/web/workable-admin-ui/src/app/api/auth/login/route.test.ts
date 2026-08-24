@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { POST } from "./route.ts";
 import { resetBasicAuthenticationAttemptsForTests } from "@/lib/admin-security/basic";
-import { createAdminLogoutTombstoneCookie } from "@/lib/admin-security";
+import {
+  authenticateAdminRequest,
+  createAdminLogoutTombstoneCookie,
+} from "@/lib/admin-security";
 
 test("login route rejects unsafe POST requests without a same-origin Origin", async () => {
   await withLoginRouteEnv(async () => {
@@ -61,29 +64,40 @@ test("login route accepts browser form credentials", async () => {
   });
 });
 
-test("login route refreshes the current logout generation for the new session lifetime", async () => {
+test("a delayed Basic login response cannot move the logout generation backward", async () => {
   await withLoginRouteEnv(async () => {
-    const logout = createAdminLogoutTombstoneCookie(
+    const firstLogout = createAdminLogoutTombstoneCookie(
       new Request("https://admin.example.com/api/auth/logout")
     );
     const response = await POST(new Request("https://admin.example.com/api/auth/login", {
       body: JSON.stringify({ userName: "admin", password: "secret" }),
       headers: {
         "content-type": "application/json",
-        cookie: logout.split(";")[0] ?? "",
+        cookie: firstLogout.split(";")[0] ?? "",
         origin: "https://admin.example.com",
       },
       method: "POST",
     }));
     const cookies = getSetCookies(response.headers);
+    const delayedSession = cookies.find((cookie) =>
+      /workable_admin_session=/.test(cookie)
+    )?.split(";")[0] ?? "";
+    const currentLogout = createAdminLogoutTombstoneCookie(
+      new Request("https://admin.example.com/api/auth/logout")
+    ).split(";")[0] ?? "";
 
     assert.equal(response.status, 200);
-    assert.ok(cookies.some((cookie) =>
-      /workable_admin_session=/.test(cookie)
-    ));
-    assert.ok(cookies.some((cookie) =>
-      cookie.startsWith("__Host-workable_admin_logout=") && !/Max-Age=0/i.test(cookie)
-    ));
+    assert.ok(delayedSession);
+    assert.equal(cookies.some((cookie) =>
+      cookie.startsWith("__Host-workable_admin_logout=")
+    ), false);
+
+    const authentication = authenticateAdminRequest(
+      new Headers({ cookie: `${delayedSession}; ${currentLogout}` }),
+      process.env
+    );
+    assert.equal(authentication.ok, false);
+    assert.equal(authentication.status, 401);
   });
 });
 
