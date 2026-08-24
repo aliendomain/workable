@@ -25,7 +25,7 @@ export type AdminSessionIdentity = {
   entraSubject?: string;
   sessionId?: string;
   sessionStartedAt?: number;
-  logoutGeneration?: string;
+  logoutTombstones?: string[];
 };
 
 export type AdminSessionReadResult = {
@@ -34,7 +34,7 @@ export type AdminSessionReadResult = {
   absoluteExpiresAt?: number;
   sessionId?: string;
   sessionStartedAt?: number;
-  logoutGeneration?: string;
+  logoutTombstones?: string[];
   hadCookie: boolean;
   shouldClear: boolean;
 };
@@ -50,13 +50,17 @@ type AdminSessionPayload = {
   binding: string;
   sid: string;
   startedAt: number;
-  logoutGeneration: string;
+  logoutTombstones: string[];
 };
 
 const SESSION_RENEWAL_WINDOW_SECONDS = 15 * 60;
-const SECURE_LOGOUT_COOKIE_NAME = "__Host-workable_admin_logout";
-const DEVELOPMENT_LOGOUT_COOKIE_NAME = "workable_admin_logout";
-const INITIAL_LOGOUT_GENERATION = "initial";
+const SESSION_CLOCK_SKEW_SECONDS = 5 * 60;
+const SECURE_LOGOUT_COOKIE_PREFIX = "__Host-workable_admin_logout_";
+const DEVELOPMENT_LOGOUT_COOKIE_PREFIX = "workable_admin_logout_";
+const MAXIMUM_ACTIVE_LOGOUT_TOMBSTONES = 8;
+const MAXIMUM_LOGOUT_COOKIE_CLEANUP = 32;
+const LOGOUT_TOMBSTONE_SIGNATURE_PREFIX = "workable.admin.logout.tombstone.v1:";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function createSignedAdminSessionCookie(
   identity: AdminSessionIdentity,
@@ -64,7 +68,7 @@ export function createSignedAdminSessionCookie(
   settings: AdminSecuritySettings,
   existingSession?: Pick<
     AdminSessionReadResult,
-    "absoluteExpiresAt" | "sessionId" | "sessionStartedAt" | "logoutGeneration"
+    "absoluteExpiresAt" | "sessionId" | "sessionStartedAt" | "logoutTombstones"
   >
 ): AdminSessionCookieResult {
   const secret = sessionSecret(settings);
@@ -83,25 +87,32 @@ export function createSignedAdminSessionCookie(
   const now = Math.floor(Date.now() / 1000);
   const sessionId = existingSession?.sessionId ?? identity.sessionId ?? crypto.randomUUID();
   const sessionStartedAt = existingSession?.sessionStartedAt ?? identity.sessionStartedAt ?? Date.now();
-  const currentLogoutGeneration = readAdminLogoutGeneration(request.headers, settings);
-  if (currentLogoutGeneration === null) {
+  const currentLogoutState = readAdminLogoutTombstones(request.headers, settings);
+  if (!currentLogoutState.ok) {
     return securityFailure(
       401,
       "Workable admin UI logout state is invalid. Sign in again."
     );
   }
-  const logoutGeneration = existingSession?.logoutGeneration ??
-    identity.logoutGeneration ??
-    currentLogoutGeneration;
-  if (!constantTimeEquals(logoutGeneration, currentLogoutGeneration)) {
+  const logoutTombstones = existingSession?.logoutTombstones ??
+    identity.logoutTombstones ??
+    currentLogoutState.tombstones;
+  if (!isValidLogoutTombstoneSnapshot(logoutTombstones) ||
+      !doesLogoutSnapshotCover(logoutTombstones, currentLogoutState.tombstones)) {
     return securityFailure(
       401,
       "Workable admin UI sign-in was invalidated by logout. Sign in again."
     );
   }
   const absoluteExpiresAt = existingSession?.absoluteExpiresAt ??
-    now + settings.sessionAbsoluteMaxAgeSeconds;
+    Math.floor(sessionStartedAt / 1000) + settings.sessionAbsoluteMaxAgeSeconds;
   const expiresAt = Math.min(now + settings.sessionMaxAgeSeconds, absoluteExpiresAt);
+  if (expiresAt <= now) {
+    return securityFailure(
+      401,
+      "Workable admin UI sign-in expired before it completed. Sign in again."
+    );
+  }
   const payload = base64UrlEncode(JSON.stringify({
     sub: identity.name,
     provider: identity.provider,
@@ -113,13 +124,18 @@ export function createSignedAdminSessionCookie(
     binding: createSessionConfigurationBinding(identity, settings, secret),
     sid: sessionId,
     startedAt: sessionStartedAt,
-    logoutGeneration,
+    logoutTombstones,
   }));
   const signature = sign(payload, secret);
 
   return {
     ok: true,
-    identity: { ...identity, sessionId, sessionStartedAt, logoutGeneration },
+    identity: {
+      ...identity,
+      sessionId,
+      sessionStartedAt,
+      logoutTombstones: [...logoutTombstones],
+    },
     header: serializeCookie(
       settings.sessionCookieName,
       `${payload}.${signature}`,
@@ -131,33 +147,46 @@ export function createSignedAdminSessionCookie(
   };
 }
 
-export function createLogoutTombstoneCookie(request: Request, settings: AdminSecuritySettings) {
+export function createLogoutTombstoneCookies(
+  request: Request,
+  settings: AdminSecuritySettings
+) {
   const secret = sessionSecret(settings);
-  if (!secret) return createExpiredSessionCookie(settings);
-  return serializeLogoutGenerationCookie(
-    crypto.randomUUID(),
-    request,
-    settings,
-    settings.sessionAbsoluteMaxAgeSeconds
-  );
+  if (!secret) return [createExpiredSessionCookie(settings)];
+
+  const secure = shouldSecureCookie(request, settings.isProduction);
+  const prefix = secure
+    ? SECURE_LOGOUT_COOKIE_PREFIX
+    : DEVELOPMENT_LOGOUT_COOKIE_PREFIX;
+  const tombstone = crypto.randomUUID();
+  const name = `${prefix}${tombstone}`;
+  const signature = signLogoutTombstone(tombstone, secret);
+  const cookies = [serializeCookie(
+    name,
+    signature,
+    {
+      maxAgeSeconds: Math.min(
+        Number.MAX_SAFE_INTEGER,
+        settings.sessionAbsoluteMaxAgeSeconds + SESSION_CLOCK_SKEW_SECONDS
+      ),
+      secure,
+    }
+  )];
+
+  for (const staleName of readLogoutCookieNames(
+    request.headers.get("cookie"),
+    prefix,
+    MAXIMUM_LOGOUT_COOKIE_CLEANUP
+  )) {
+    if (staleName !== name) {
+      cookies.push(serializeExpiredCookie(staleName));
+    }
+  }
+  return cookies;
 }
 
-function serializeLogoutGenerationCookie(
-  generation: string,
-  request: Request,
-  settings: AdminSecuritySettings,
-  maxAgeSeconds: number
-) {
-  const secret = sessionSecret(settings)!;
-  const payload = base64UrlEncode(JSON.stringify({ generation }));
-  return serializeCookie(
-    logoutCookieName(request, settings),
-    `${payload}.${sign(payload, secret)}`,
-    {
-      maxAgeSeconds,
-      secure: shouldSecureCookie(request, settings.isProduction),
-    }
-  );
+function signLogoutTombstone(tombstone: string, secret: string) {
+  return sign(`${LOGOUT_TOMBSTONE_SIGNATURE_PREFIX}${tombstone}`, secret);
 }
 
 export function createExpiredSessionCookie(settings: AdminSecuritySettings) {
@@ -232,9 +261,9 @@ export function readAdminSessionState(
       !Number.isSafeInteger(parsed.absoluteExp) ||
       typeof parsed.sid !== "string" || !parsed.sid.trim() ||
       !Number.isSafeInteger(parsed.startedAt) ||
-      !isValidLogoutGeneration(parsed.logoutGeneration) ||
+      !isValidLogoutTombstoneSnapshot(parsed.logoutTombstones) ||
       typeof parsed.binding !== "string" ||
-      parsed.iat > now + 300 ||
+      parsed.iat > now + SESSION_CLOCK_SKEW_SECONDS ||
       parsed.exp <= now ||
       parsed.absoluteExp <= now ||
       parsed.exp > parsed.absoluteExp ||
@@ -247,10 +276,10 @@ export function readAdminSessionState(
       };
     }
 
-    const logoutGeneration = readAdminLogoutGeneration(headers, settings);
-    if (logoutGeneration === null || !constantTimeEquals(
-      parsed.logoutGeneration,
-      logoutGeneration
+    const logoutState = readAdminLogoutTombstones(headers, settings);
+    if (!logoutState.ok || !doesLogoutSnapshotCover(
+      parsed.logoutTombstones,
+      logoutState.tombstones
     )) {
       return { identity: null, hadCookie: true, shouldClear: true };
     }
@@ -262,7 +291,7 @@ export function readAdminSessionState(
       entraSubject: parsed.entraSubject,
       sessionId: parsed.sid,
       sessionStartedAt: parsed.startedAt,
-      logoutGeneration: parsed.logoutGeneration,
+      logoutTombstones: [...parsed.logoutTombstones],
     };
     if (!constantTimeEquals(
       parsed.binding,
@@ -281,7 +310,7 @@ export function readAdminSessionState(
       absoluteExpiresAt: parsed.absoluteExp,
       sessionId: parsed.sid,
       sessionStartedAt: parsed.startedAt,
-      logoutGeneration: parsed.logoutGeneration,
+      logoutTombstones: [...parsed.logoutTombstones],
       hadCookie: true,
       shouldClear: false,
     };
@@ -294,51 +323,123 @@ export function readAdminSessionState(
   }
 }
 
-export function readAdminLogoutGeneration(
+export function readAdminLogoutTombstones(
   headers: Headers,
   settings: AdminSecuritySettings
 ) {
-  const secureCookie = readUniqueCookie(
-    headers.get("cookie"),
-    SECURE_LOGOUT_COOKIE_NAME
+  const cookieHeader = headers.get("cookie");
+  const secureState = readLogoutTombstonesForPrefix(
+    cookieHeader,
+    SECURE_LOGOUT_COOKIE_PREFIX,
+    settings
   );
-  if (secureCookie.duplicate) return null;
-  if (secureCookie.ok) return parseLogoutGeneration(secureCookie.value, settings);
-  if (settings.isProduction) return INITIAL_LOGOUT_GENERATION;
-
-  const developmentCookie = readUniqueCookie(
-    headers.get("cookie"),
-    DEVELOPMENT_LOGOUT_COOKIE_NAME
+  if (secureState.present || settings.isProduction) {
+    return secureState.ok
+      ? { ok: true as const, tombstones: secureState.tombstones }
+      : { ok: false as const };
+  }
+  const developmentState = readLogoutTombstonesForPrefix(
+    cookieHeader,
+    DEVELOPMENT_LOGOUT_COOKIE_PREFIX,
+    settings
   );
-  if (!developmentCookie.ok) {
-    return developmentCookie.duplicate ? null : INITIAL_LOGOUT_GENERATION;
+  return developmentState.ok
+    ? { ok: true as const, tombstones: developmentState.tombstones }
+    : { ok: false as const };
+}
+
+function readLogoutTombstonesForPrefix(
+  cookieHeader: string | null,
+  prefix: string,
+  settings: AdminSecuritySettings
+) {
+  const tombstones: string[] = [];
+  const names = new Set<string>();
+  const identifiers = new Set<string>();
+  let present = false;
+  const secret = sessionSecret(settings);
+
+  for (const pair of cookieHeader?.split(";") ?? []) {
+    const separator = pair.indexOf("=");
+    if (separator < 0) continue;
+    const name = pair.slice(0, separator).trim();
+    if (!name.startsWith(prefix)) continue;
+    present = true;
+    const tombstone = name.slice(prefix.length);
+    const identifier = tombstone.toLowerCase();
+    const rawValue = pair.slice(separator + 1).trim();
+    let value = rawValue;
+    try {
+      value = decodeURIComponent(rawValue);
+    } catch {
+      return { ok: false as const, present };
+    }
+    if (!UUID_PATTERN.test(tombstone) || names.has(name) || identifiers.has(identifier) || !secret ||
+        !constantTimeEquals(value, signLogoutTombstone(tombstone, secret))) {
+      return { ok: false as const, present };
+    }
+    names.add(name);
+    identifiers.add(identifier);
+    tombstones.push(identifier);
+    if (tombstones.length > MAXIMUM_ACTIVE_LOGOUT_TOMBSTONES) {
+      return { ok: false as const, present };
+    }
   }
-  return parseLogoutGeneration(developmentCookie.value, settings);
+
+  tombstones.sort();
+  return { ok: true as const, present, tombstones };
 }
 
-function parseLogoutGeneration(value: string, settings: AdminSecuritySettings) {
-  try {
-    const [payload, signature] = value.split(".");
-    const secret = sessionSecret(settings);
-    if (!payload || !signature || !secret ||
-      !constantTimeEquals(signature, sign(payload, secret))) return null;
-    const parsed = JSON.parse(base64UrlDecode(payload)) as { generation?: unknown };
-    return isValidLogoutGeneration(parsed.generation) ? parsed.generation : null;
-  } catch {
-    return null;
+function readLogoutCookieNames(
+  cookieHeader: string | null,
+  prefix: string,
+  maximum: number
+) {
+  const names = new Set<string>();
+  for (const pair of cookieHeader?.split(";") ?? []) {
+    const separator = pair.indexOf("=");
+    if (separator < 0) continue;
+    const name = pair.slice(0, separator).trim();
+    if (!name.startsWith(prefix) ||
+        name.length > prefix.length + 64 ||
+        !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)) continue;
+    names.add(name);
+    if (names.size >= maximum) break;
   }
+  return names;
 }
 
-function isValidLogoutGeneration(value: unknown): value is string {
-  return value === INITIAL_LOGOUT_GENERATION ||
-    (typeof value === "string" &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+export function isValidLogoutTombstoneSnapshot(
+  value: unknown
+): value is string[] {
+  if (!Array.isArray(value) || value.length > MAXIMUM_ACTIVE_LOGOUT_TOMBSTONES) {
+    return false;
+  }
+  let previous = "";
+  for (const tombstone of value) {
+    if (typeof tombstone !== "string" ||
+        !UUID_PATTERN.test(tombstone) ||
+        tombstone !== tombstone.toLowerCase() ||
+        tombstone <= previous) return false;
+    previous = tombstone;
+  }
+  return true;
 }
 
-function logoutCookieName(request: Request, settings: AdminSecuritySettings) {
-  return shouldSecureCookie(request, settings.isProduction)
-    ? SECURE_LOGOUT_COOKIE_NAME
-    : DEVELOPMENT_LOGOUT_COOKIE_NAME;
+export function doesLogoutSnapshotCover(
+  snapshot: readonly string[],
+  activeTombstones: readonly string[]
+) {
+  if (activeTombstones.length === 0) return true;
+  let snapshotIndex = 0;
+  for (const tombstone of activeTombstones) {
+    while (snapshotIndex < snapshot.length &&
+        (snapshot[snapshotIndex] as string) < tombstone) {
+      snapshotIndex++;
+    }
+    if (snapshot[snapshotIndex] !== tombstone) return false;
+  }
+  return true;
 }
 
 export function shouldRenewAdminSession(

@@ -9,7 +9,7 @@ import {
   completeEntraLogin,
   createEntraAuthorizationResponse,
   createEntraTargetAccessTokenResponse,
-  createAdminLogoutTombstoneCookie,
+  createAdminLogoutTombstoneCookies,
   createAdminSessionCookie,
   createExpiredAdminSessionCookie,
   createWorkableTargetUrl,
@@ -320,7 +320,7 @@ test("session renewal cannot extend beyond the configured absolute lifetime", ()
   }
 });
 
-test("logout generations invalidate delayed renewals without blocking a later sign-in", () => {
+test("logout tombstones invalidate delayed renewals without blocking a later sign-in", () => {
   const env = secureEnv({
     WORKABLE_ADMIN_UI_SESSION_MAX_AGE_SECONDS: "60",
     WORKABLE_ADMIN_UI_SESSION_ABSOLUTE_MAX_AGE_SECONDS: "120",
@@ -375,7 +375,7 @@ test("logout generations invalidate delayed renewals without blocking a later si
   }
 });
 
-test("logout generations reject a session issued by a process with a future clock", () => {
+test("logout tombstones reject a session issued by a process with a future clock", () => {
   const env = secureEnv();
   const originalNow = Date.now;
   const baseTime = originalNow();
@@ -405,12 +405,20 @@ test("logout generations reject a session issued by a process with a future cloc
 
     assert.equal(authentication.ok, false);
     assert.equal(authentication.status, 401);
+
+    Date.now = () => baseTime + 24 * 60 * 60 * 1000 + 301_000;
+    const afterTombstoneExpiry = authenticateAdminRequest(
+      new Headers({ cookie: futureSession.header.split(";")[0] ?? "" }),
+      env
+    );
+    assert.equal(afterTombstoneExpiry.ok, false);
+    assert.equal(afterTombstoneExpiry.status, 401);
   } finally {
     Date.now = originalNow;
   }
 });
 
-test("session creation cannot replace the browser's current logout generation", () => {
+test("session creation cannot omit the browser's current logout tombstones", () => {
   const env = secureEnv();
   const settings = getAdminSecuritySettings(env);
   const request = new Request("https://admin.example.com/workers", {
@@ -426,7 +434,7 @@ test("session creation cannot replace the browser's current logout generation", 
     {
       name: "admin",
       provider: "basic",
-      logoutGeneration: "initial",
+      logoutTombstones: [],
     },
     request,
     settings
@@ -437,6 +445,155 @@ test("session creation cannot replace the browser's current logout generation", 
     assert.equal(session.status, 401);
     assert.match(session.error, /invalidated by logout/i);
   }
+});
+
+test("expired logout tombstones do not shorten sessions minted after logout", () => {
+  const env = secureEnv({
+    WORKABLE_ADMIN_UI_SESSION_MAX_AGE_SECONDS: "120",
+    WORKABLE_ADMIN_UI_SESSION_ABSOLUTE_MAX_AGE_SECONDS: "120",
+  });
+  const originalNow = Date.now;
+  const startedAt = originalNow();
+  const request = new Request("https://admin.example.com/workers");
+  try {
+    Date.now = () => startedAt;
+    const preLogoutSession = createAdminSessionCookie("admin", request, env);
+    assert.equal(preLogoutSession.ok, true);
+    if (!preLogoutSession.ok) return;
+    const tombstone = createAdminLogoutTombstoneCookie(request, env)
+      .split(";")[0] ?? "";
+
+    Date.now = () => startedAt + 410_000;
+    const postLogoutSession = createAdminSessionCookie(
+      "admin",
+      new Request(request.url, { headers: { cookie: tombstone } }),
+      env
+    );
+    assert.equal(postLogoutSession.ok, true);
+    if (!postLogoutSession.ok) return;
+
+    Date.now = () => startedAt + 421_000;
+    const current = authenticateAdminRequest(
+      new Headers({ cookie: postLogoutSession.header.split(";")[0] ?? "" }),
+      env
+    );
+    assert.equal(current.ok, true);
+
+    const stale = authenticateAdminRequest(
+      new Headers({ cookie: preLogoutSession.header.split(";")[0] ?? "" }),
+      env
+    );
+    assert.equal(stale.ok, false);
+    assert.equal(stale.status, 401);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("a login response cannot outlive the request that established its logout snapshot", () => {
+  const env = secureEnv({
+    WORKABLE_ADMIN_UI_SESSION_MAX_AGE_SECONDS: "120",
+    WORKABLE_ADMIN_UI_SESSION_ABSOLUTE_MAX_AGE_SECONDS: "120",
+  });
+  const originalNow = Date.now;
+  const loginStartedAt = originalNow();
+  try {
+    Date.now = () => loginStartedAt + 121_000;
+    const session = createAdminSessionCookie(
+      "admin",
+      new Request("https://admin.example.com/api/auth/login"),
+      env,
+      undefined,
+      undefined,
+      loginStartedAt
+    );
+    assert.equal(session.ok, false);
+    assert.equal(session.status, 401);
+    assert.match(session.error, /expired before it completed/i);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("concurrent logout tombstones are additive and compact on the next logout", () => {
+  const env = secureEnv();
+  const request = new Request("https://admin.example.com/api/auth/logout");
+  const first = createAdminLogoutTombstoneCookies(request, env)[0]?.split(";")[0] ?? "";
+  const second = createAdminLogoutTombstoneCookies(request, env)[0]?.split(";")[0] ?? "";
+  assert.ok(first);
+  assert.ok(second);
+  assert.notEqual(first.slice(0, first.indexOf("=")), second.slice(0, second.indexOf("=")));
+  const concurrentState = `${first}; ${second}`;
+
+  const signedIn = createAdminSessionCookie(
+    "admin",
+    new Request(request.url, { headers: { cookie: concurrentState } }),
+    env
+  );
+  assert.equal(signedIn.ok, true);
+  if (!signedIn.ok) return;
+  const authenticated = authenticateAdminRequest(
+    new Headers({
+      cookie: `${signedIn.header.split(";")[0] ?? ""}; ${concurrentState}`,
+    }),
+    env
+  );
+  assert.equal(authenticated.ok, true);
+
+  const compacted = createAdminLogoutTombstoneCookies(
+    new Request(request.url, { headers: { cookie: concurrentState } }),
+    env
+  );
+  assert.equal(compacted.length, 3);
+  assert.ok(compacted.slice(1).every((cookie) => /Max-Age=0/i.test(cookie)));
+  const current = compacted[0]?.split(";")[0] ?? "";
+  const stale = authenticateAdminRequest(
+    new Headers({
+      cookie: `${signedIn.header.split(";")[0] ?? ""}; ${current}`,
+    }),
+    env
+  );
+  assert.equal(stale.ok, false);
+  assert.equal(stale.status, 401);
+});
+
+test("logout tombstone validation work is capped and excess state fails closed", () => {
+  const env = secureEnv();
+  const request = new Request("https://admin.example.com/api/auth/logout");
+  const tombstones = Array.from({ length: 9 }, () =>
+    createAdminLogoutTombstoneCookies(request, env)[0]?.split(";")[0] ?? ""
+  );
+  const cookie = tombstones.join("; ");
+  const session = createAdminSessionCookie(
+    "admin",
+    new Request(request.url, { headers: { cookie } }),
+    env
+  );
+  assert.equal(session.ok, false);
+  assert.equal(session.status, 401);
+
+  const compacted = createAdminLogoutTombstoneCookies(
+    new Request(request.url, { headers: { cookie } }),
+    env
+  );
+  assert.equal(compacted.length, 10);
+  assert.ok(compacted.slice(1).every((header) => /Max-Age=0/i.test(header)));
+
+  const attackerCookies = Array.from({ length: 33 }, (_, index) =>
+    `__Host-workable_admin_logout_bad-${index}=invalid`
+  ).join("; ");
+  const boundedCleanup = createAdminLogoutTombstoneCookies(
+    new Request(request.url, { headers: { cookie: attackerCookies } }),
+    env
+  );
+  assert.equal(boundedCleanup.length, 33);
+
+  const oversizedName = `__Host-workable_admin_logout_${"x".repeat(256)}=invalid`;
+  const oversizedCleanup = createAdminLogoutTombstoneCookies(
+    new Request(request.url, { headers: { cookie: oversizedName } }),
+    env
+  );
+  assert.equal(oversizedCleanup.length, 1);
 });
 
 test("development logout barriers follow secure and HTTP cookie modes", () => {
@@ -451,8 +608,8 @@ test("development logout barriers follow secure and HTTP cookie modes", () => {
     assert.match(
       tombstone,
       url.startsWith("https:")
-        ? /^__Host-workable_admin_logout=/
-        : /^workable_admin_logout=/
+        ? /^__Host-workable_admin_logout_[0-9a-f-]+=/
+        : /^workable_admin_logout_[0-9a-f-]+=/
     );
     const authentication = authenticateAdminRequest(
       new Headers({
@@ -473,12 +630,21 @@ test("malformed or duplicate logout barriers fail an otherwise valid session clo
   assert.equal(session.ok, true);
   if (!session.ok) return;
   const sessionPair = session.header.split(";")[0] ?? "";
-  const logoutName = "__Host-workable_admin_logout";
+  const logoutName = "__Host-workable_admin_logout_00000000-0000-4000-8000-000000000001";
+  const mixedCaseIdentifier = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+  const mixedCaseName = `__Host-workable_admin_logout_${mixedCaseIdentifier}`;
+  const upperCaseIdentifier = mixedCaseIdentifier.toUpperCase();
+  const upperCaseName = `__Host-workable_admin_logout_${upperCaseIdentifier}`;
 
   for (const cookie of [
     `${sessionPair}; ${logoutName}=malformed`,
+    `${sessionPair}; ${logoutName}=%ZZ`,
     `${sessionPair}; ${logoutName}=one; ${logoutName}=two`,
     `${sessionPair}; ${logoutName}=${createSignedInvalidLogoutValue(env)}`,
+    `${sessionPair}; ${mixedCaseName}=${createSignedLogoutValue(
+      mixedCaseIdentifier,
+      env
+    )}; ${upperCaseName}=${createSignedLogoutValue(upperCaseIdentifier, env)}`,
   ]) {
     const authentication = authenticateAdminRequest(
       new Headers({ cookie }),
@@ -846,10 +1012,12 @@ test("Entra login redirects to Microsoft with state, nonce, and PKCE cookies", (
   assert.ok(setCookies.every((cookie) => !cookie.startsWith("__Host-") || /; Secure(?:;|$)/i.test(cookie)));
 });
 
-test("Entra login rejects malformed logout generation state", () => {
+test("Entra login rejects malformed logout tombstone state", () => {
   const response = createEntraAuthorizationResponse(
     new Request("https://admin.example.com/api/auth/entra/login", {
-      headers: { cookie: "__Host-workable_admin_logout=malformed" },
+      headers: {
+        cookie: "__Host-workable_admin_logout_00000000-0000-4000-8000-000000000001=malformed",
+      },
     }),
     entraEnv()
   );
@@ -937,7 +1105,7 @@ test("Entra callback cannot redirect through a tampered backslash return cookie"
     entraEnv()
   );
   const logoutPair = logout.split(";")[0] ?? "";
-  const logoutGeneration = readLogoutGeneration(logoutPair);
+  const logoutTombstones = [readLogoutTombstone(logoutPair)];
   const request = new Request(
     "https://admin.example.com/api/auth/entra/callback?state=expected-state&code=authorization-code",
     {
@@ -946,7 +1114,7 @@ test("Entra callback cannot redirect through a tampered backslash return cookie"
           `__Host-workable_admin_entra_state=${signedEntraStateValue(
             "expected-state",
             transactionStartedAt,
-            logoutGeneration
+            logoutTombstones
           )}`,
           logoutPair,
           "__Host-workable_admin_entra_nonce=expected-nonce",
@@ -989,11 +1157,11 @@ test("Entra callback cannot redirect through a tampered backslash return cookie"
   );
   assert.ok(sessionCookie);
   assert.equal(responseCookies.some((cookie) =>
-    cookie.startsWith("__Host-workable_admin_logout=")
+    cookie.startsWith("__Host-workable_admin_logout_")
   ), false);
 });
 
-test("a delayed Entra callback response cannot move the logout generation backward", async () => {
+test("a delayed Entra callback response cannot remove a newer logout tombstone", async () => {
   resetEntraBackchannelCachesForTests();
   const env = entraEnv();
   const { privateKey, publicKey } = generateKeyPairSync("rsa", {
@@ -1004,11 +1172,11 @@ test("a delayed Entra callback response cannot move the logout generation backwa
     new Request(requestUrl),
     env
   ).split(";")[0] ?? "";
-  const firstGeneration = readLogoutGeneration(firstLogout);
+  const firstTombstones = [readLogoutTombstone(firstLogout)];
   const transaction = entraCallbackRequest(signedEntraStateValue(
     "forged-state",
     Date.now(),
-    firstGeneration
+    firstTombstones
   ));
   const transactionHeaders = new Headers(transaction.headers);
   transactionHeaders.set(
@@ -1066,7 +1234,7 @@ test("a delayed Entra callback response cannot move the logout generation backwa
     assertSuccessfulEntraCallback(response);
     const responseCookies = getSetCookies(response.headers);
     assert.equal(responseCookies.some((cookie) =>
-      cookie.startsWith("__Host-workable_admin_logout=")
+      cookie.startsWith("__Host-workable_admin_logout_")
     ), false);
     const delayedSession = responseCookies.find((cookie) =>
       cookie.startsWith("__Host-workable_admin_session=")
@@ -1244,13 +1412,13 @@ test("forged Entra callback state cannot trigger backchannel requests", async ()
   }
 });
 
-test("expired, future, or malformed-generation Entra transactions cannot trigger backchannel requests", async () => {
+test("expired, future, or malformed-tombstone Entra transactions cannot trigger backchannel requests", async () => {
   let fetchWasCalled = false;
   const now = Date.now();
   const signedStates = [
     signedEntraStateValue("forged-state", now - 10 * 60 * 1000),
     signedEntraStateValue("forged-state", now + 10 * 60 * 1000),
-    signedEntraStateValue("forged-state", now, "not-a-generation"),
+    signedEntraStateValue("forged-state", now, ["not-a-tombstone"]),
   ];
   for (const signedState of signedStates) {
     const response = await completeEntraLogin(
@@ -3730,7 +3898,7 @@ test("Basic authentication requires a session secret independent from its passwo
   assert.match(session.error, /independent sessionSecret/i);
   assert.match(logout, /^__Host-workable_admin_session=/);
   assert.match(logout, /Max-Age=0/i);
-  assert.doesNotMatch(logout, /workable_admin_logout=/i);
+  assert.doesNotMatch(logout, /workable_admin_logout_/i);
 
   const reusedPassword = authenticateAdminRequest(new Headers(), {
     ...env,
@@ -3757,17 +3925,18 @@ test("Basic logout state is signed only by the independent session secret", () =
     env
   );
   const encodedValue = cookie.slice(cookie.indexOf("=") + 1, cookie.indexOf(";"));
-  const [payload, signature] = decodeURIComponent(encodedValue).split(".");
+  const signature = decodeURIComponent(encodedValue);
+  const tombstone = readLogoutTombstone(cookie.split(";")[0] ?? "");
+  const signedValue = `workable.admin.logout.tombstone.v1:${tombstone}`;
 
-  assert.ok(payload);
   assert.ok(signature);
   assert.equal(
     signature,
-    signAdminValue(payload, env.WORKABLE_ADMIN_UI_SESSION_SECRET as string)
+    signAdminValue(signedValue, env.WORKABLE_ADMIN_UI_SESSION_SECRET as string)
   );
   assert.notEqual(
     signature,
-    signAdminValue(payload, env.WORKABLE_ADMIN_UI_PASSWORD as string)
+    signAdminValue(signedValue, env.WORKABLE_ADMIN_UI_PASSWORD as string)
   );
 });
 
@@ -4024,32 +4193,49 @@ function getSetCookies(headers: Headers) {
   return extended.getSetCookie?.() ?? [headers.get("set-cookie") ?? ""];
 }
 
+function createAdminLogoutTombstoneCookie(
+  request: Request,
+  env: AdminSecurityEnvironment = process.env
+) {
+  return createAdminLogoutTombstoneCookies(request, env)[0] ?? "";
+}
+
 function createSignedInvalidLogoutValue(env: AdminSecurityEnvironment) {
-  const payload = Buffer.from("{").toString("base64url");
-  return `${payload}.${signAdminValue(
-    payload,
+  return createSignedLogoutValue(
+    "00000000-0000-4000-8000-000000000002",
+    env
+  );
+}
+
+function createSignedLogoutValue(
+  tombstone: string,
+  env: AdminSecurityEnvironment
+) {
+  return signAdminValue(
+    `workable.admin.logout.tombstone.v1:${tombstone}`,
     env.WORKABLE_ADMIN_UI_SESSION_SECRET as string
-  )}`;
+  );
 }
 
 function signedEntraStateValue(
   state: string,
   startedAt = Date.now(),
-  logoutGeneration = "initial"
+  logoutTombstones: readonly string[] = []
 ) {
-  const value = `${state}.${startedAt}.${logoutGeneration}`;
-  return `${value}.${signAdminValue(
-    value,
+  const payload = Buffer.from(JSON.stringify({
+    state,
+    startedAt,
+    logoutTombstones,
+  })).toString("base64url");
+  return `${payload}.${signAdminValue(
+    payload,
     "replace-with-a-different-long-random-secret"
   )}`;
 }
 
-function readLogoutGeneration(cookiePair: string) {
-  const encodedValue = cookiePair.slice(cookiePair.indexOf("=") + 1);
-  const payload = decodeURIComponent(encodedValue).split(".")[0] ?? "";
-  return (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
-    generation: string;
-  }).generation;
+function readLogoutTombstone(cookiePair: string) {
+  const name = cookiePair.slice(0, cookiePair.indexOf("="));
+  return name.slice(name.lastIndexOf("_") + 1);
 }
 
 function createEntraAuthenticatedCookieHeader(

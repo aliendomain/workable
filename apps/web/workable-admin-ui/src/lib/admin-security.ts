@@ -14,7 +14,7 @@ import {
 import { isAllowedEntraUser } from "./admin-security/entra.ts";
 import {
   createExpiredSessionCookie,
-  createLogoutTombstoneCookie,
+  createLogoutTombstoneCookies,
   createSignedAdminSessionCookie,
   readAdminSessionState,
   sessionSecret,
@@ -169,7 +169,8 @@ export function createAdminSessionCookie(
   request: Request,
   env: AdminSecurityEnvironment = process.env,
   provider?: AdminAuthProvider,
-  entraSubject?: string
+  entraSubject?: string,
+  sessionStartedAt?: number
 ): AdminSessionCookieResult {
   const settings = getAdminSecuritySettings(env);
   if (settings.configError) {
@@ -188,6 +189,7 @@ export function createAdminSessionCookie(
       name: userName,
       provider: selectedProvider,
       entraSubject,
+      sessionStartedAt,
     },
     request,
     settings
@@ -200,11 +202,11 @@ export function createExpiredAdminSessionCookie(
   return createExpiredSessionCookie(getAdminSecuritySettings(env));
 }
 
-export function createAdminLogoutTombstoneCookie(
+export function createAdminLogoutTombstoneCookies(
   request: Request,
   env: AdminSecurityEnvironment = process.env
 ) {
-  return createLogoutTombstoneCookie(request, getAdminSecuritySettings(env));
+  return createLogoutTombstoneCookies(request, getAdminSecuritySettings(env));
 }
 
 export function validateUnsafeRequestOrigin(request: Request): AdminSecurityResult {

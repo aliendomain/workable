@@ -13,6 +13,7 @@ const noStoreHeaders = {
 const maximumLoginBodyBytes = 16 * 1024;
 
 export async function POST(request: Request) {
+  const loginStartedAt = Date.now();
   const csrf = validateUnsafeRequestOrigin(request);
   if (!csrf.ok) {
     return Response.json(
@@ -54,7 +55,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const cookie = createAdminSessionCookie(verification.identity.name, request);
+  const cookie = createAdminSessionCookie(
+    verification.identity.name,
+    request,
+    process.env,
+    undefined,
+    undefined,
+    loginStartedAt
+  );
   if (!cookie.ok) {
     return Response.json(
       { error: cookie.error },

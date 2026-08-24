@@ -1,6 +1,6 @@
 import {
   createExpiredAdminSessionCookie,
-  createAdminLogoutTombstoneCookie,
+  createAdminLogoutTombstoneCookies,
   createExpiredEntraTransactionCookies,
   createExpiredEntraTargetTokenCookies,
   failureHeaders,
@@ -26,7 +26,9 @@ export async function POST(request: Request) {
 
   const headers = new Headers(noStoreHeaders);
   headers.append("set-cookie", createExpiredAdminSessionCookie());
-  headers.append("set-cookie", createAdminLogoutTombstoneCookie(request));
+  for (const cookie of createAdminLogoutTombstoneCookies(request)) {
+    headers.append("set-cookie", cookie);
+  }
   for (const cookie of createExpiredEntraTransactionCookies()) {
     headers.append("set-cookie", cookie);
   }

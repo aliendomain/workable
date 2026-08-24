@@ -16,6 +16,7 @@ import {
 } from "./config.ts";
 import {
   base64UrlDecode,
+  base64UrlEncode,
   constantTimeEquals,
   randomBase64Url,
   sign,
@@ -29,7 +30,9 @@ import {
 } from "./cookies.ts";
 import {
   createSignedAdminSessionCookie,
-  readAdminLogoutGeneration,
+  doesLogoutSnapshotCover,
+  isValidLogoutTombstoneSnapshot,
+  readAdminLogoutTombstones,
   sessionSecret,
 } from "./session.ts";
 import { normalizeAdminReturnPath } from "./return-path.ts";
@@ -139,8 +142,8 @@ export function createEntraAuthorizationResponse(
   const nextPath = normalizeAdminReturnPath(
     new URL(request.url).searchParams.get("next")
   );
-  const logoutGeneration = readAdminLogoutGeneration(request.headers, settings);
-  if (logoutGeneration === null) {
+  const logoutState = readAdminLogoutTombstones(request.headers, settings);
+  if (!logoutState.ok) {
     return Response.json(
       { error: "Workable admin UI logout state is invalid. Sign in again." },
       { status: 401, headers: noStoreHeaders }
@@ -150,7 +153,7 @@ export function createEntraAuthorizationResponse(
   for (const cookie of [
     serializeCookie(cookieNames.state, createSignedStateCookieValue(
       state,
-      logoutGeneration,
+      logoutState.tombstones,
       settings
     ), {
       maxAgeSeconds: OAUTH_COOKIE_MAX_AGE_SECONDS,
@@ -218,10 +221,10 @@ export async function completeEntraLogin(
     );
   }
 
-  const currentLogoutGeneration = readAdminLogoutGeneration(request.headers, settings);
-  if (currentLogoutGeneration === null || !constantTimeEquals(
-    transaction.logoutGeneration,
-    currentLogoutGeneration
+  const currentLogoutState = readAdminLogoutTombstones(request.headers, settings);
+  if (!currentLogoutState.ok || !doesLogoutSnapshotCover(
+    transaction.logoutTombstones,
+    currentLogoutState.tombstones
   )) {
     return createFailedEntraCallbackResponse(
       request,
@@ -270,7 +273,7 @@ export async function completeEntraLogin(
       email: identity.identity.email,
       entraSubject: identity.identity.entraSubject,
       sessionStartedAt: transaction.startedAt,
-      logoutGeneration: transaction.logoutGeneration,
+      logoutTombstones: transaction.logoutTombstones,
     };
     const sessionCookie = createSignedAdminSessionCookie(
       sessionIdentity,
@@ -308,7 +311,7 @@ export async function completeEntraLogin(
 
 function createSignedStateCookieValue(
   state: string,
-  logoutGeneration: string,
+  logoutTombstones: readonly string[],
   settings: AdminSecuritySettings
 ) {
   const secret = sessionSecret(settings);
@@ -316,8 +319,12 @@ function createSignedStateCookieValue(
     throw new Error("Microsoft Entra ID authentication requires session signing.");
   }
   const startedAt = Date.now();
-  const value = `${state}.${startedAt}.${logoutGeneration}`;
-  return `${value}.${sign(value, secret)}`;
+  const payload = base64UrlEncode(JSON.stringify({
+    state,
+    startedAt,
+    logoutTombstones,
+  }));
+  return `${payload}.${sign(payload, secret)}`;
 }
 
 function readSignedStateCookie(
@@ -326,29 +333,34 @@ function readSignedStateCookie(
   settings: AdminSecuritySettings
 ) {
   const secret = sessionSecret(settings);
-  const separator = cookieValue.lastIndexOf(".");
-  if (!secret || separator < 1) {
+  const parts = cookieValue.split(".");
+  if (!secret || parts.length !== 2) {
     return null;
   }
-
-  const value = cookieValue.slice(0, separator);
-  const signature = cookieValue.slice(separator + 1);
-  const logoutGenerationSeparator = value.lastIndexOf(".");
-  const startedAtSeparator = value.lastIndexOf(".", logoutGenerationSeparator - 1);
-  if (!signature || startedAtSeparator < 1 || logoutGenerationSeparator < 1 ||
-    !constantTimeEquals(signature, sign(value, secret))) return null;
-  const cookieState = value.slice(0, startedAtSeparator);
-  const startedAt = Number(value.slice(startedAtSeparator + 1, logoutGenerationSeparator));
-  const logoutGeneration = value.slice(logoutGenerationSeparator + 1);
-  const now = Date.now();
-  return constantTimeEquals(state, cookieState) &&
-      Number.isSafeInteger(startedAt) &&
-      (logoutGeneration === "initial" ||
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(logoutGeneration)) &&
-      startedAt <= now + 5 * 60 * 1000 &&
-      startedAt > now - OAUTH_COOKIE_MAX_AGE_SECONDS * 1000
-    ? { startedAt, logoutGeneration }
-    : null;
+  const [payload, signature] = parts;
+  if (!payload || !signature ||
+      !constantTimeEquals(signature, sign(payload, secret))) return null;
+  try {
+    const parsed = JSON.parse(base64UrlDecode(payload)) as {
+      state?: unknown;
+      startedAt?: unknown;
+      logoutTombstones?: unknown;
+    };
+    const now = Date.now();
+    return typeof parsed.state === "string" &&
+        constantTimeEquals(state, parsed.state) &&
+        Number.isSafeInteger(parsed.startedAt) &&
+        isValidLogoutTombstoneSnapshot(parsed.logoutTombstones) &&
+        (parsed.startedAt as number) <= now + 5 * 60 * 1000 &&
+        (parsed.startedAt as number) > now - OAUTH_COOKIE_MAX_AGE_SECONDS * 1000
+      ? {
+          startedAt: parsed.startedAt as number,
+          logoutTombstones: parsed.logoutTombstones,
+        }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function validateEntraSettings(

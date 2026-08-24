@@ -4,7 +4,7 @@ import { POST } from "./route.ts";
 import { resetBasicAuthenticationAttemptsForTests } from "@/lib/admin-security/basic";
 import {
   authenticateAdminRequest,
-  createAdminLogoutTombstoneCookie,
+  createAdminLogoutTombstoneCookies,
 } from "@/lib/admin-security";
 
 test("login route rejects unsafe POST requests without a same-origin Origin", async () => {
@@ -64,32 +64,50 @@ test("login route accepts browser form credentials", async () => {
   });
 });
 
-test("a delayed Basic login response cannot move the logout generation backward", async () => {
+test("a delayed Basic login response cannot remove a newer logout tombstone", async () => {
   await withLoginRouteEnv(async () => {
     const firstLogout = createAdminLogoutTombstoneCookie(
       new Request("https://admin.example.com/api/auth/logout")
     );
-    const response = await POST(new Request("https://admin.example.com/api/auth/login", {
-      body: JSON.stringify({ userName: "admin", password: "secret" }),
+    let releaseBody!: () => void;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        releaseBody = () => {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({
+            userName: "admin",
+            password: "secret",
+          })));
+          controller.close();
+        };
+      },
+    });
+    const delayedLogin = POST(new Request("https://admin.example.com/api/auth/login", {
+      body,
       headers: {
         "content-type": "application/json",
         cookie: firstLogout.split(";")[0] ?? "",
         origin: "https://admin.example.com",
       },
       method: "POST",
-    }));
+      duplex: "half",
+    } as RequestInit & { duplex: "half" }));
+    const currentLogout = createAdminLogoutTombstoneCookie(
+      new Request("https://admin.example.com/api/auth/logout", {
+        headers: { cookie: firstLogout.split(";")[0] ?? "" },
+      })
+    ).split(";")[0] ?? "";
+    releaseBody();
+
+    const response = await delayedLogin;
     const cookies = getSetCookies(response.headers);
     const delayedSession = cookies.find((cookie) =>
       /workable_admin_session=/.test(cookie)
     )?.split(";")[0] ?? "";
-    const currentLogout = createAdminLogoutTombstoneCookie(
-      new Request("https://admin.example.com/api/auth/logout")
-    ).split(";")[0] ?? "";
 
     assert.equal(response.status, 200);
     assert.ok(delayedSession);
     assert.equal(cookies.some((cookie) =>
-      cookie.startsWith("__Host-workable_admin_logout=")
+      cookie.startsWith("__Host-workable_admin_logout_")
     ), false);
 
     const authentication = authenticateAdminRequest(
@@ -268,4 +286,8 @@ function restoreEnv(previous: ReturnType<typeof snapshotEnv>) {
 function getSetCookies(headers: Headers) {
   const extended = headers as Headers & { getSetCookie?: () => string[] };
   return extended.getSetCookie?.() ?? [headers.get("set-cookie") ?? ""];
+}
+
+function createAdminLogoutTombstoneCookie(request: Request) {
+  return createAdminLogoutTombstoneCookies(request)[0] ?? "";
 }
