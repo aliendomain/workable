@@ -211,7 +211,7 @@ services.AddWorkableSystem(builder =>
 
 Workflows are not executor classes. They are named orchestration definitions that dispatch existing work definitions through built-in step shapes.
 
-Workflow authorization uses the same `IWorkAuthorizationBuilder` model as work registration. See [Workflows](workflows.md) for the current runtime scope, execution semantics, and durability behavior.
+Workflow authorization uses the same `IWorkAuthorizationBuilder` model as work registration, including fine-grained operation masks and synchronous input requirements. Starting a new run maps to `Queue`; resume, pause, and cancel map to their matching worker-action permissions. See [Workflows](workflows.md) for the current runtime scope, execution semantics, authorization mapping, and durability behavior.
 
 When several registrations share the same fluent work configuration or authorization, group them with `WithWorkDefaults(...)`.
 
@@ -494,7 +494,7 @@ The startup source itself is resolved from a startup scope.
 
 - Host applications create systems with `AddWorkableSystem`.
 - A host can register only one unnamed default system.
-- Named Workable system names must be unique within the host.
+- Named Workable system names must be non-empty, must not consist only of whitespace, and must be unique within the host. Literal names such as `<default>` remain ordinary named systems and never alias the unnamed default.
 - Feature assemblies add work with `AddWorkableWork`.
 - Feature assemblies add generated definitions with `AddWorkableWorkDefinitionSource`.
 - Feature assemblies add startup queue requests with `AddWorkableStartupWorkSource`.

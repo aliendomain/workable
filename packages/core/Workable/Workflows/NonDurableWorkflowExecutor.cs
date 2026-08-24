@@ -128,7 +128,7 @@ internal sealed class NonDurableWorkflowExecutor(
             return run.Fail(
                 [WorkMessage.Error(
                     "workable.workflow.execution_exception",
-                    exception.Message,
+                    "Workflow execution failed with an unhandled exception.",
                     "workflow.execution")]);
         }
     }
@@ -427,9 +427,10 @@ internal sealed class NonDurableWorkflowExecutor(
                 cancellationToken);
         if (!handle.QueueOutcome.IsAccepted)
         {
-            run.FailStep(step.Name, handle.QueueOutcome.Messages);
+            var messages = WorkflowExecutionSupport.CreateChildDispatchRejectedMessages(step.Name);
+            run.FailStep(step.Name, messages);
             publisher.StepUpdated(run.ToSnapshot(), step.Name);
-            return new DispatchResult(false, null, handle.QueueOutcome.Messages);
+            return new DispatchResult(false, null, messages);
         }
 
         run.MarkStepCompleted(step.Name, handle.WorkerId is { } workerId ? [workerId] : []);
@@ -503,7 +504,11 @@ internal sealed class NonDurableWorkflowExecutor(
                     cancellationToken);
             if (!handle.QueueOutcome.IsAccepted)
             {
-                return new DispatchEachResult(false, [], WorkflowRunStatus.Failed, handle.QueueOutcome.Messages);
+                return new DispatchEachResult(
+                    false,
+                    [],
+                    WorkflowRunStatus.Failed,
+                    WorkflowExecutionSupport.CreateChildDispatchRejectedMessages(step.Name));
             }
 
             dispatchedHandles.Add(handle);
@@ -564,10 +569,9 @@ internal sealed class NonDurableWorkflowExecutor(
                         : WorkflowCanceledChildBehavior.Block);
                 if (status != WorkflowRunStatus.Completed)
                 {
-                    return new WorkflowRunCompletion(
-                        status,
-                        null,
-                        completion.Messages);
+                    return WorkflowExecutionSupport.CreateChildRunCompletion(
+                        completion.Status,
+                        status);
                 }
 
                 run.RemoveStepWorkerId(joinStepName, completed.WorkerId);
@@ -590,8 +594,7 @@ internal sealed class NonDurableWorkflowExecutor(
         Func<WorkerId, IWorkerHandle> workerHandleFactory,
         CancellationToken cancellationToken)
     {
-        if (run.TryGetChildReceipt(workerId, out var receipt) &&
-            receipt is not null)
+        if (run.TryGetChildReceipt(workerId, out var receipt))
         {
             return WorkflowExecutionSupport.FromReceipt(receipt);
         }

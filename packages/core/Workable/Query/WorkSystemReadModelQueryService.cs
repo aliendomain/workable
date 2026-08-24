@@ -475,7 +475,7 @@ internal sealed class WorkSystemReadModelQueryService(
 
         return candidates.Count == 0
             ? snapshot.Workers
-            : candidates.MinBy(candidate => candidate.Count) ?? [];
+            : candidates.MinBy(candidate => candidate.Count)!;
     }
 
     private static bool TryAddConfigurationCandidates(
@@ -541,7 +541,7 @@ internal sealed class WorkSystemReadModelQueryService(
 
         return candidates.Count == 0
             ? snapshot.Iterations
-            : candidates.MinBy(candidate => candidate.Count) ?? [];
+            : candidates.MinBy(candidate => candidate.Count)!;
     }
 
     private bool TryAddIterationDefinitionCandidates(
@@ -904,19 +904,29 @@ internal sealed class WorkSystemReadModelQueryService(
             .ToDictionary(count => count.Kind, count => count.Count);
 
     private static bool Matches(WorkerReadModelWorker worker, WorkerCriteria query)
-        => DefinitionNameScopeMatches(query.DefinitionNames, worker.DefinitionName) &&
-            (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(worker.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
-            (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(worker.Category, query.Category, query.IncludeSubcategories)) &&
-            (query.SubjectId is null || worker.SubjectId == query.SubjectId) &&
-            (query.ConcurrencyKey is null || worker.ConcurrencyKey == query.ConcurrencyKey) &&
-            (query.Identifier is null || worker.Identifiers.Contains(query.Identifier.Value)) &&
-            (NormalizeActorId(query.ActorId) is not { } actorId || string.Equals(worker.OriginActorId, actorId, StringComparison.Ordinal)) &&
-            (query.States is null || query.States.Contains(worker.State)) &&
-            (query.Configuration is null || Matches(worker, query.Configuration)) &&
-            (query.CreatedFrom is null || worker.CreatedAt >= query.CreatedFrom) &&
-            (query.CreatedTo is null || worker.CreatedAt <= query.CreatedTo) &&
-            (query.UpdatedFrom is null || worker.UpdatedAt >= query.UpdatedFrom) &&
-            (query.UpdatedTo is null || worker.UpdatedAt <= query.UpdatedTo);
+    {
+        if (!DefinitionNameScopeMatches(query.DefinitionNames, worker.DefinitionName) ||
+            (!string.IsNullOrWhiteSpace(query.DefinitionName) &&
+                !string.Equals(worker.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrWhiteSpace(query.Category) &&
+                !CategoryMatches(worker.Category, query.Category, query.IncludeSubcategories)) ||
+            (query.SubjectId is { } subjectId && worker.SubjectId != subjectId) ||
+            (query.ConcurrencyKey is { } concurrencyKey && worker.ConcurrencyKey != concurrencyKey) ||
+            (query.Identifier is { } identifier && !worker.Identifiers.Contains(identifier)) ||
+            (NormalizeActorId(query.ActorId) is { } actorId &&
+                !string.Equals(worker.OriginActorId, actorId, StringComparison.Ordinal)) ||
+            (query.States is { } states && !states.Contains(worker.State)) ||
+            (query.Configuration is { } configuration && !Matches(worker, configuration)) ||
+            (query.CreatedFrom is { } createdFrom && worker.CreatedAt < createdFrom) ||
+            (query.CreatedTo is { } createdTo && worker.CreatedAt > createdTo) ||
+            (query.UpdatedFrom is { } updatedFrom && worker.UpdatedAt < updatedFrom) ||
+            (query.UpdatedTo is { } updatedTo && worker.UpdatedAt > updatedTo))
+        {
+            return false;
+        }
+
+        return true;
+    }
 
     private static bool Matches(WorkerReadModelWorker worker, WorkerConfigurationCriteria query)
         => (query.RecurrenceEnabled is null || worker.RecurrenceEnabled == query.RecurrenceEnabled) &&
@@ -924,18 +934,27 @@ internal sealed class WorkSystemReadModelQueryService(
             (query.ProfilingEnabled is null || worker.ProfilingEnabled == query.ProfilingEnabled);
 
     private static bool Matches(WorkerReadModelIteration iteration, WorkerIterationCriteria query)
-        => (query.WorkerId is null || iteration.WorkerId == query.WorkerId) &&
-            DefinitionNameScopeMatches(query.DefinitionNames, iteration.DefinitionName) &&
-            (string.IsNullOrWhiteSpace(query.DefinitionName) || string.Equals(iteration.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) &&
-            (string.IsNullOrWhiteSpace(query.Category) || CategoryMatches(iteration.Category, query.Category, includeSubcategories: true)) &&
-            (query.SubjectId is null || iteration.SubjectId == query.SubjectId) &&
-            (query.ConcurrencyKey is null || iteration.ConcurrencyKey == query.ConcurrencyKey) &&
-            (query.Identifier is null || iteration.Identifiers.Contains(query.Identifier.Value)) &&
-            (query.Statuses is null || query.Statuses.Contains(iteration.Status)) &&
-            (query.StartedFrom is null || iteration.StartedAt >= query.StartedFrom) &&
-            (query.StartedTo is null || iteration.StartedAt <= query.StartedTo) &&
-            (query.CompletedFrom is null || iteration.CompletedAt >= query.CompletedFrom) &&
-            (query.CompletedTo is null || iteration.CompletedAt <= query.CompletedTo);
+    {
+        if ((query.WorkerId is { } workerId && iteration.WorkerId != workerId) ||
+            !DefinitionNameScopeMatches(query.DefinitionNames, iteration.DefinitionName) ||
+            (!string.IsNullOrWhiteSpace(query.DefinitionName) &&
+                !string.Equals(iteration.DefinitionName, query.DefinitionName, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrWhiteSpace(query.Category) &&
+                !CategoryMatches(iteration.Category, query.Category, includeSubcategories: true)) ||
+            (query.SubjectId is { } subjectId && iteration.SubjectId != subjectId) ||
+            (query.ConcurrencyKey is { } concurrencyKey && iteration.ConcurrencyKey != concurrencyKey) ||
+            (query.Identifier is { } identifier && !iteration.Identifiers.Contains(identifier)) ||
+            (query.Statuses is { } statuses && !statuses.Contains(iteration.Status)) ||
+            (query.StartedFrom is { } startedFrom && iteration.StartedAt < startedFrom) ||
+            (query.StartedTo is { } startedTo && iteration.StartedAt > startedTo) ||
+            (query.CompletedFrom is { } completedFrom && iteration.CompletedAt < completedFrom) ||
+            (query.CompletedTo is { } completedTo && iteration.CompletedAt > completedTo))
+        {
+            return false;
+        }
+
+        return true;
+    }
 
     private static bool Matches(WorkDefinition definition, WorkDefinitionCriteria query)
         => DefinitionNameScopeMatches(query.Names, definition.Name) &&

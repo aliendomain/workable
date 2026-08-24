@@ -5,6 +5,80 @@ namespace Workable.Tests;
 
 public sealed class WorkableSqlServerServiceCollectionExtensionsShould
 {
+    [Fact]
+    public void RegisterSqlProfilingOnlyOnce()
+    {
+        var services = new ServiceCollection();
+
+        Assert.Same(services, services.AddWorkableSqlServerProfiling());
+        Assert.Same(services, services.AddWorkableSqlServerProfiling());
+
+        Assert.Single(services, descriptor =>
+            descriptor.ServiceType == typeof(WorkableSqlServerProfilingRegistrationMarker));
+        Assert.Single(services, descriptor =>
+            descriptor.ServiceType == typeof(IWorkSystemCapabilityContributor));
+        Assert.Single(services, descriptor =>
+            descriptor.ServiceType == typeof(IWorkProfilingInstrumentationFactory));
+    }
+
+    [Theory]
+    [InlineData("enqueue batch size")]
+    [InlineData("enqueue batch window")]
+    [InlineData("claim batch size")]
+    [InlineData("claim sample capacity")]
+    public void RejectInvalidDurableQueueLimits(string setting)
+    {
+        var options = new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = "Server=queue;Database=Workable",
+            EnqueueBatchSize = setting == "enqueue batch size" ? 0 : 1,
+            EnqueueBatchWindow = setting == "enqueue batch window" ? TimeSpan.FromTicks(-1) : TimeSpan.Zero,
+            ClaimBatchSize = setting == "claim batch size" ? 0 : 1,
+            RecentClaimSampleCapacity = setting == "claim sample capacity" ? -1 : 0,
+        };
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ServiceCollection().AddWorkableSqlServerDurableQueue(options));
+
+        Assert.Contains(setting, exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RejectInvalidExecutionDiagnosticReadLimitsBeforeOpeningSqlServer()
+    {
+        var repository = new WorkableSqlServerExecutionDiagnosticsRepository(
+            new WorkableSqlServerPersistenceOptions
+            {
+                ConnectionString = "Server=unused;Database=Workable",
+            });
+        var systemId = WorkSystemId.New();
+        var workerId = WorkerId.New();
+
+        await repository.AppendLogs([]);
+
+        foreach (var take in new[] { 0, WorkExecutionDiagnosticCriteria.MaximumTake + 1 })
+        {
+            var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+                repository.Query(new WorkExecutionDiagnosticCriteria(systemId, Take: take)));
+            Assert.Contains("between 1", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        foreach (var maximumLogCount in new[] { 0, 10_001 })
+        {
+            var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+                repository.Get(new WorkExecutionDiagnosticGetRequest(
+                    systemId,
+                    workerId,
+                    IterationSequence: 1,
+                    MaximumLogCount: maximumLogCount)));
+            Assert.Contains("between 1", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var notInitialized = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            repository.Query(new WorkExecutionDiagnosticCriteria(systemId)));
+        Assert.Contains("was not initialized", notInitialized.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

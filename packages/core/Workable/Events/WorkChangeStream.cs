@@ -129,7 +129,8 @@ internal sealed class WorkChangeStream : IWorkChangeStream, IAsyncDisposable
         private readonly Lock sync = new();
         private readonly int capacity = options.Capacity;
         private readonly Queue<WorkChangeKey> pendingOrder = new();
-        private readonly Dictionary<WorkChangeKey, WorkChange> pending = [];
+        private readonly Dictionary<WorkChangeKey, WorkChange> pending =
+            new(WorkChangeKey.ScopeAwareComparer);
         private TaskCompletionSource changed = CreateSignal();
         private int isDisposed;
         private int peakQueuedCount;

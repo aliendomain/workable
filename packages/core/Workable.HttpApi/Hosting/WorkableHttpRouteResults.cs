@@ -14,6 +14,17 @@ internal static class WorkableHttpRouteResults
             },
         }, statusCode: StatusCodes.Status401Unauthorized);
 
+    internal static async Task ChallengeAuthentication(HttpContext httpContext)
+    {
+        ArgumentNullException.ThrowIfNull(httpContext);
+        if (await WorkableAspNetCoreAuthentication.ChallengeAsync(httpContext))
+        {
+            return;
+        }
+
+        await AuthenticationRequired().ExecuteAsync(httpContext);
+    }
+
     internal static IResult SurfaceAccessDenied()
         => Results.Json(new
         {
@@ -39,6 +50,15 @@ internal static class WorkableHttpRouteResults
                     "system"),
             },
         }, statusCode: StatusCodes.Status403Forbidden);
+
+    internal static IResult SystemNotFound(string? systemName)
+        => Results.NotFound(new
+        {
+            Messages = new[]
+            {
+                WorkMessage.Error("workable.http.system.not_found", $"Workable system '{systemName}' was not found.", "systemName"),
+            },
+        });
 
     internal static IResult AuthorizationDenied(WorkSystemAccessDeniedException exception)
     {
@@ -81,13 +101,7 @@ internal static class WorkableHttpRouteResults
         }
 
         system = null!;
-        notFound = Results.NotFound(new
-        {
-            Messages = new[]
-            {
-                WorkMessage.Error("workable.http.system.not_found", $"Workable system '{systemName}' was not found.", "systemName"),
-            },
-        });
+        notFound = SystemNotFound(systemName);
         return false;
     }
 

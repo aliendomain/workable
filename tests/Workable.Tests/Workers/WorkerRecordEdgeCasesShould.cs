@@ -191,6 +191,112 @@ public sealed class WorkerRecordEdgeCasesShould
         Assert.Null(bucket);
     }
 
+    [Fact]
+    public void CompleteRecurringAndRetryIterationsAcrossRunningStoppingAndWaitingStates()
+    {
+        var recurringConfiguration = WorkConfiguration.Default with
+        {
+            Recurrence = WorkRecurrenceConfiguration.Every(TimeSpan.FromMinutes(1)),
+        };
+        var stoppedByFlag = CreateWorker("record.recurrence.stop-flag", recurringConfiguration);
+        Start(stoppedByFlag);
+        Assert.Equal(
+            WorkCompletionStatus.Completed,
+            stoppedByFlag.CompleteRecurringIteration(WorkExecutionResult.Success(), continueRecurrence: false));
+
+        var pausedRecurrence = CreateWorker("record.recurrence.pause", recurringConfiguration);
+        Start(pausedRecurrence);
+        Assert.True(pausedRecurrence.RequestPause(pausedRecurrence.Revision).IsAccepted);
+        Assert.Equal(
+            WorkCompletionStatus.Paused,
+            pausedRecurrence.CompleteRecurringIteration(WorkExecutionResult.Success(), continueRecurrence: true));
+
+        var canceledRetry = CreateWorker("record.retry.cancel");
+        Start(canceledRetry);
+        Assert.True(canceledRetry.RequestCancel(
+            canceledRetry.Revision,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess)).IsAccepted);
+        Assert.Equal(
+            WorkCompletionStatus.Canceled,
+            canceledRetry.CompleteRetryIteration(WorkExecutionResult.Success(), TimeSpan.Zero, 1));
+
+        var completedRecurrence = CreateWorker("record.recurrence.completed", recurringConfiguration);
+        Start(completedRecurrence);
+        Assert.Equal(
+            WorkCompletionStatus.Invalid,
+            completedRecurrence.CompleteRecurringIteration(WorkExecutionResult.Success(), continueRecurrence: true));
+        Assert.Equal(WorkCompletionStatus.Completed, completedRecurrence.CompleteStoppedRecurrence());
+
+        var failedRecurrence = CreateWorker("record.recurrence.failed", recurringConfiguration);
+        Start(failedRecurrence);
+        Assert.Equal(
+            WorkCompletionStatus.Invalid,
+            failedRecurrence.CompleteRecurringIteration(
+                WorkExecutionResult.Failure([WorkMessage.Error("failed", "failed")]),
+                continueRecurrence: true));
+        Assert.Equal(WorkCompletionStatus.Failed, failedRecurrence.CompleteStoppedRecurrence());
+
+        var retrying = CreateWorker("record.retry.running");
+        Start(retrying);
+        Assert.Equal(
+            WorkCompletionStatus.Invalid,
+            retrying.CompleteRetryIteration(WorkExecutionResult.Failure([]), TimeSpan.Zero, 2));
+        Assert.Equal(WorkerState.Retrying, retrying.State);
+    }
+
+    [Fact]
+    public void ResolveCurrentIterationAndRecordProfilesForCurrentRetainedAndMissingSequences()
+    {
+        var worker = CreateWorker("record.iteration.profile");
+        Assert.Throws<InvalidOperationException>(() => worker.GetCurrentIterationReference());
+        Start(worker);
+        var reference = worker.GetCurrentIterationReference();
+        Assert.Equal(worker.Id, reference.WorkerId);
+        Assert.Equal(1, reference.Sequence);
+
+        var profile = new WorkProfile("profile").ToSnapshot();
+        worker.RecordIterationProfile(reference.Sequence, profile);
+        Assert.Same(profile, worker.ToSnapshot().CurrentIteration?.Profile);
+        worker.Complete(WorkExecutionResult.Success());
+
+        var replacement = new WorkProfile("replacement").ToSnapshot();
+        worker.RecordIterationProfile(reference.Sequence, replacement);
+        Assert.Same(replacement, Assert.Single(worker.ToSnapshot().Iterations).Profile);
+        worker.RecordIterationProfile(reference.Sequence + 10, profile);
+        Assert.Same(replacement, Assert.Single(worker.ToSnapshot().Iterations).Profile);
+    }
+
+    [Fact]
+    public void DeferAndReserveOnlyEligibleConcurrencyStarts()
+    {
+        var configuration = WorkConfiguration.Default with
+        {
+            Coordination = WorkCoordinationConfiguration.Default with
+            {
+                IsEnabled = true,
+                Concurrency = WorkConcurrencyConfiguration.Default with
+                {
+                    IsEnabled = true,
+                    MaximumCapacity = 1,
+                },
+            },
+        };
+        var worker = CreateWorker("record.concurrency", configuration);
+
+        Assert.True(worker.ShouldStartWithConcurrency());
+        Assert.False(worker.ShouldStartWithoutConcurrency());
+        worker.DeferConcurrencyStart();
+        Assert.False(worker.ShouldStartWithConcurrency());
+        Assert.True(worker.IsDeferredConcurrencyStartFor(worker.Work.Definition.Id));
+        Assert.False(worker.IsDeferredConcurrencyStartFor(WorkDefinitionId.New()));
+        worker.ReserveDeferredConcurrencyStart();
+        Assert.True(worker.ShouldStartWithConcurrency());
+        Start(worker);
+        worker.DeferConcurrencyStart();
+        worker.ReserveDeferredConcurrencyStart();
+        Assert.False(worker.IsDeferredConcurrencyStartFor(worker.Work.Definition.Id));
+    }
+
     private static WorkerRecord CreateWorker(
         string definitionName,
         WorkConfiguration? configuration = null)

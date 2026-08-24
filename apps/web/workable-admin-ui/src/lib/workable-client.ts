@@ -65,12 +65,13 @@ export function safeJsonParse(value: string) {
 export async function workableFetch<T>(
   connection: WorkableConnection,
   path: string,
-  init?: RequestInit
+  init?: RequestInit,
+  options: { coalesce?: boolean } = {}
 ): Promise<T> {
   const scopedPath = createScopedWorkablePath(connection, path);
   const method = init?.method?.toUpperCase() ?? "GET";
   const requestKey =
-    method === "GET"
+    method === "GET" && options.coalesce !== false
       ? `${method}:${connection.apiUrl}:${scopedPath}`
       : undefined;
 

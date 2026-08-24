@@ -14,28 +14,32 @@ public sealed record WorkableHttpWorkflowRun(
     DateTimeOffset? CompletedAt,
     IReadOnlyList<WorkMessage> Messages)
 {
-    internal static WorkableHttpWorkflowRun? From(WorkflowRunSnapshot? snapshot)
+    internal static WorkableHttpWorkflowRun? From(
+        WorkflowRunSnapshot? snapshot,
+        WorkflowAvailableActions availableActions)
         => snapshot is null
             ? null
             : new WorkableHttpWorkflowRun(
                 snapshot.Id.Value,
                 snapshot.DefinitionName,
                 snapshot.Status,
-                WorkflowAvailableActions.For(snapshot.Status),
+                availableActions,
                 snapshot.Steps.Select(WorkableHttpWorkflowStep.From).ToArray(),
                 snapshot.CreatedAt,
                 snapshot.StartedAt,
                 snapshot.CompletedAt,
                 snapshot.Messages);
 
-    internal static WorkableHttpWorkflowRun? From(WorkflowCommandRun? snapshot)
+    internal static WorkableHttpWorkflowRun? From(
+        WorkflowCommandRun? snapshot,
+        WorkflowAvailableActions availableActions)
         => snapshot is null
             ? null
             : new WorkableHttpWorkflowRun(
                 snapshot.RunId.Value,
                 snapshot.DefinitionName,
                 snapshot.Status,
-                WorkflowAvailableActions.For(snapshot.Status),
+                availableActions,
                 snapshot.Steps.Select(WorkableHttpWorkflowStep.From).ToArray(),
                 snapshot.CreatedAt,
                 snapshot.StartedAt,

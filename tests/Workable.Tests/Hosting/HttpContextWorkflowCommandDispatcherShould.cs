@@ -49,8 +49,54 @@ public sealed class HttpContextWorkflowCommandDispatcherShould
         Assert.Equal("Http Workflow User", captured.ActorName);
         Assert.Equal("http-workflow-user@example.test", captured.ActorEmail);
         Assert.Equal("Start workflow through HTTP.", captured.Description);
-        Assert.Equal("/workable/workflows/start?mode=test", captured.Url);
+        Assert.Equal("/workable/workflows/start", captured.Url);
         Assert.True(captured.IsAuthenticated);
+    }
+
+    [Fact]
+    public async Task AuthenticateTheExplicitWorkableSchemeForACustomWorkflowEndpoint()
+    {
+        WorkflowHttpCommandCapture? captured = null;
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddWorkableSchemeTestAuthentication();
+        services.AddWorkableAspNetCoreAuthorization();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.AddWork(
+                WorkDefinition.Create("http.workflow.explicit.child"),
+                (context, _, _) =>
+                {
+                    captured = WorkflowHttpCommandCapture.From(context.RequestContext);
+                    return Task.FromResult(WorkExecutionResult.Success());
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("http.workflow.explicit"),
+                workflow => workflow.DispatchWork(
+                    "dispatch",
+                    WorkDefinition.Create("http.workflow.explicit.child")));
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+        });
+        await provider.GetRequiredService<IWorkSystemRegistry>().Default.Start();
+        await using var scope = provider.CreateAsyncScope();
+        var context = CreateHttpContext();
+        context.RequestServices = scope.ServiceProvider;
+        context.Request.Headers.Authorization =
+            WorkableSchemeAuthenticationTestSupport.CreateBearerHeader().ToString();
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext = context;
+
+        var result = await scope.ServiceProvider
+            .GetRequiredService<IHttpContextWorkflowCommandDispatcher>()
+            .Start("http.workflow.explicit");
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(captured);
+        Assert.Equal("workable-user-1", captured.ActorId);
+        Assert.True(captured.IsAuthenticated);
+        Assert.Equal("http-workflow-user", context.User.FindFirstValue(ClaimTypes.NameIdentifier));
     }
 
     [Fact]

@@ -11,7 +11,7 @@ public sealed class WorkableHttpApiOptions
     /// </summary>
     /// <remarks>
     /// These groups are evaluated before the built-in HTTP surface checks the target system for administrator access.
-    /// They apply only to routes mapped by <see cref="WorkableHttpApiExtensions.MapWorkableApi(Microsoft.AspNetCore.Routing.IEndpointRouteBuilder, string)"/>.
+    /// They apply only to routes mapped by <c>MapWorkableApi(...)</c>.
     /// Host-defined endpoints that use Workable directly are unaffected.
     /// Once at least one group is configured, every caller to every built-in <c>/workable</c> route must match at least
     /// one configured group before the request can reach any system-specific built-in surface checks.

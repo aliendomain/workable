@@ -647,7 +647,8 @@ test("navigation system helpers cover access badges, names, lifecycle, and state
     "No work access",
   ]);
   assert.equal(getWorkAccessBadge("Read", 0, 5, false), null);
-  assert.equal(getWorkAccessBadge("Operate", 5, 5, false), "Operate all work");
+  assert.equal(getWorkAccessBadge("Operate", 5, 5, false), "Operate 5 defs");
+  assert.equal(getWorkAccessBadge("Operate", 5, 5, true), "Operate all work");
   assert.equal(normalizeOptional("  Ops  "), "Ops");
   assert.equal(normalizeOptional("  "), undefined);
 

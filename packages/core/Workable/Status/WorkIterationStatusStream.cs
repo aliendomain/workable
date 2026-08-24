@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Channels;
@@ -131,7 +132,9 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
     {
         if (afterSequence < 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(afterSequence), "The status sequence cursor cannot be negative.");
+            throw new WorkIterationStatusCursorOutOfRangeException(
+                nameof(afterSequence),
+                "The status sequence cursor cannot be negative.");
         }
 
         ObjectDisposedException.ThrowIf(this.IsDisposed, this);
@@ -319,7 +322,9 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
         Pulse(subscriptions);
     }
 
-    internal bool TryGetDefinitionName(WorkerIterationReference iteration, out string? workDefinitionName)
+    internal bool TryGetDefinitionName(
+        WorkerIterationReference iteration,
+        [NotNullWhen(true)] out string? workDefinitionName)
     {
         if (this.buffers.TryGetValue(iteration, out var buffer))
         {
@@ -596,7 +601,7 @@ internal sealed class WorkIterationStatusStream : IWorkIterationStatusStream, IA
     {
         if (afterSequence > buffer.LastSequence)
         {
-            throw new ArgumentOutOfRangeException(
+            throw new WorkIterationStatusCursorOutOfRangeException(
                 nameof(afterSequence),
                 afterSequence,
                 $"The status sequence cursor cannot exceed the last published sequence {buffer.LastSequence}.");

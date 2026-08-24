@@ -1,9 +1,9 @@
 using System.Linq;
+using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Text.Json;
 
 namespace Workable;
 internal sealed class WorkableRealtimeBroadcaster(
@@ -16,15 +16,16 @@ internal sealed class WorkableRealtimeBroadcaster(
     WorkableRealtimeWorkerOverviewSubscriptions workerOverviewSubscriptions,
     IHostApplicationLifetime lifetime,
     IOptions<WorkableSignalROptions> options,
+    IWorkableSignalRPayloadSerializer payloads,
     IWorkableRealtimeTimerFactory timerFactory,
-    WorkableRealtimeBroadcastLaneRunner laneRunner) : BackgroundService, IWorkSystemLifecycleObserver
+    WorkableRealtimeBroadcastLaneRunner laneRunner,
+    WorkableSignalRRegistration registration) : BackgroundService, IWorkSystemLifecycleObserver
 {
     private static readonly WorkActor RealtimeBroadcasterActor = new(
         Id: "workable.signalr.realtime-broadcaster",
         Name: "Workable SignalR realtime broadcaster");
 
     private IDisposable? stoppingRegistration;
-
     public override Task StartAsync(CancellationToken cancellationToken)
     {
         this.stoppingRegistration = lifetime.ApplicationStopping.Register(this.BroadcastApplicationStopping);
@@ -92,13 +93,26 @@ internal sealed class WorkableRealtimeBroadcaster(
         }
     }
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        try
+        {
+            await registration.WaitUntilMapped(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            return;
+        }
+
         var tasks = registry.Systems
+            .Where(system => system.RequiresAuthorization)
             .Select(system => this.BroadcastSystem(system, stoppingToken))
             .ToArray();
 
-        return tasks.Length == 0 ? Task.CompletedTask : Task.WhenAll(tasks);
+        if (tasks.Length > 0)
+        {
+            await Task.WhenAll(tasks);
+        }
     }
 
     private async Task BroadcastSystem(IWorkSystem system, CancellationToken cancellationToken)
@@ -198,6 +212,12 @@ internal sealed class WorkableRealtimeBroadcaster(
         Task<bool>? pendingRead = null;
         try
         {
+            if (ReferenceEquals(events, EmptyWorkEventSubscription.Instance))
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return;
+            }
+
             reader = events.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
             while (!cancellationToken.IsCancellationRequested)
             {
@@ -310,7 +330,7 @@ internal sealed class WorkableRealtimeBroadcaster(
                 .Group(groupName)
                 .SendAsync(
                     WorkableRealtimeClientMethods.WorkEvent,
-                    WorkableRealtimeEvent.From(events[0]),
+                    payloads.Serialize(WorkableRealtimeEvent.From(events[0])),
                     cancellationToken);
             return;
         }
@@ -319,7 +339,7 @@ internal sealed class WorkableRealtimeBroadcaster(
             .Group(groupName)
             .SendAsync(
                 WorkableRealtimeClientMethods.WorkEvents,
-                WorkableRealtimeEventBatch.From(events),
+                payloads.Serialize(WorkableRealtimeEventBatch.From(events)),
                 cancellationToken);
     }
 
@@ -473,7 +493,6 @@ internal sealed class WorkableRealtimeBroadcaster(
         var hasPublishedState = workerOverviewSubscriptions.HasPublishedState(subscription.GroupName);
         try
         {
-            reader = changeSubscription.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
             WorkWorkerOverviewRealtimeState? current = null;
             if (workerOverviewSubscriptions.IsSeeded(subscription.GroupName))
             {
@@ -505,6 +524,13 @@ internal sealed class WorkableRealtimeBroadcaster(
             workerOverviewSubscriptions.SetStreaming(subscription.GroupName, isStreaming: true);
             await workerOverviewSubscriptions.WaitForSeed(subscription.GroupName, cancellationToken);
             hasPublishedState |= workerOverviewSubscriptions.HasPublishedState(subscription.GroupName);
+            if (ReferenceEquals(changeSubscription, EmptyWorkChangeSubscription.Instance))
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return;
+            }
+
+            reader = changeSubscription.Read(cancellationToken).GetAsyncEnumerator(cancellationToken);
             while (!cancellationToken.IsCancellationRequested)
             {
                 pendingRead ??= reader.MoveNextAsync().AsTask();
@@ -1244,10 +1270,10 @@ internal sealed class WorkableRealtimeBroadcaster(
                 .Client(subscription.ConnectionId)
                 .SendAsync(
                     WorkableRealtimeClientMethods.WorkerOverviewUpdated,
-                    new WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>(
+                    payloads.Serialize(new WorkableRealtimeViewEnvelope<WorkWorkerOverviewRealtimeUpdate>(
                         subscription.SubscriptionId,
                         "worker-overview",
-                        update),
+                        update)),
                     cancellationToken);
         }
     }
@@ -1273,10 +1299,10 @@ internal sealed class WorkableRealtimeBroadcaster(
                 .Client(subscription.ConnectionId)
                 .SendAsync(
                     WorkableRealtimeClientMethods.ViewUpdated,
-                    new WorkableRealtimeViewEnvelope<WorkComponentQueryResult>(
+                    payloads.Serialize(new WorkableRealtimeViewEnvelope<WorkComponentQueryResult>(
                         subscription.SubscriptionId,
                         viewName,
-                        view),
+                        view)),
                     cancellationToken);
         }
     }

@@ -37,8 +37,43 @@ public sealed class HttpContextWorkCommandDispatcherShould
         Assert.Equal("Http User", response.ActorName);
         Assert.Equal("http-user@example.test", response.ActorEmail);
         Assert.Equal("Dispatch through HTTP.", response.Description);
-        Assert.Equal("/workable/commands/dispatch?mode=test", response.Url);
+        Assert.Equal("/workable/commands/dispatch", response.Url);
         Assert.True(response.IsAuthenticated);
+    }
+
+    [Fact]
+    public async Task AuthenticateTheExplicitWorkableSchemeForACustomEndpoint()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddWorkableSchemeTestAuthentication();
+        services.AddWorkableAspNetCoreAuthorization();
+        services.AddWorkableSystem(builder => builder.AddWork<HttpDispatchEchoWork>(
+            WorkDefinition.Create("http.dispatch.echo")));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+        });
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        await using var scope = provider.CreateAsyncScope();
+        var context = CreateHttpContext();
+        context.RequestServices = scope.ServiceProvider;
+        context.Request.Headers.Authorization =
+            WorkableSchemeAuthenticationTestSupport.CreateBearerHeader().ToString();
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext = context;
+
+        var result = await scope.ServiceProvider
+            .GetRequiredService<IHttpContextWorkCommandDispatcher>()
+            .Dispatch<HttpDispatchInput, HttpDispatchOutput>(
+                "http.dispatch.echo",
+                new HttpDispatchInput("explicit"));
+
+        var response = Assert.IsType<HttpDispatchOutput>(result.Response);
+        Assert.Equal("workable-user-1", response.ActorId);
+        Assert.Equal("Workable Bearer User", response.ActorName);
+        Assert.True(response.IsAuthenticated);
+        Assert.Equal("http-user", context.User.FindFirstValue(ClaimTypes.NameIdentifier));
     }
 
     [Fact]

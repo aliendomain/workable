@@ -1,7 +1,7 @@
 namespace Workable;
 
 /// <summary>
-/// Represents one read or operate authorization requirement for a work definition.
+/// Represents one discover, read, or operate authorization requirement for a work definition.
 /// </summary>
 /// <param name="Groups">The groups that satisfy the requirement.</param>
 /// <param name="Source">The source from which the requirement was configured.</param>
@@ -47,8 +47,27 @@ public sealed record WorkAuthorizationRequirement(
     public bool IsSatisfiedBy(
         IReadOnlySet<string> groups,
         bool isKnownAuthenticatedUser = false)
-        => (this.Groups.Count > 0 && groups.Any(this.Groups.Contains)) ||
-            (this.AllowsKnownAuthenticatedUsers && isKnownAuthenticatedUser);
+    {
+        if (this.AllowsKnownAuthenticatedUsers && isKnownAuthenticatedUser)
+        {
+            return true;
+        }
+
+        if (this.Groups.Count == 0 || groups.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var group in groups)
+        {
+            if (this.Groups.Contains(group))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static HashSet<string> ToSet(IEnumerable<string>? groups)
         => groups is null

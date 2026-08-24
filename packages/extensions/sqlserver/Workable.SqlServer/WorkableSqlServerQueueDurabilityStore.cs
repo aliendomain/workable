@@ -543,7 +543,9 @@ WITH (WorkerId uniqueidentifier '$') requested
                 command.CommandText = RequiredDmlSetOptions + $"""
 DECLARE @Claimed TABLE
 (
-    WorkerId uniqueidentifier NOT NULL PRIMARY KEY
+    WorkerId uniqueidentifier NOT NULL PRIMARY KEY,
+    DefinitionName nvarchar(450) NOT NULL,
+    CreatedAt datetimeoffset NOT NULL
 );
 
 DECLARE @LockResult int;
@@ -587,7 +589,7 @@ IF @RequiresClaimLock = 0
 	    UPDATE queue
 	    SET LeaseId = @LeaseId,
 	        LeaseExpiresAt = @LeaseExpiresAt
-	    OUTPUT inserted.WorkerId
+	    OUTPUT inserted.WorkerId, inserted.DefinitionName, inserted.CreatedAt
 	    INTO @Claimed
 	    FROM {this.queueTable} queue WITH (UPDLOCK, READPAST, ROWLOCK, INDEX(PK_WorkableWorkQueueEntries))
 	    INNER JOIN @Ready ready
@@ -682,7 +684,7 @@ ready AS
 	        WHEN ready.HasPersistentConcurrency = 1 THEN N'Executing'
 	        ELSE ConcurrencyBucket
 	    END
-	OUTPUT inserted.WorkerId
+	OUTPUT inserted.WorkerId, inserted.DefinitionName, inserted.CreatedAt
 	INTO @Claimed
 	FROM {this.queueTable} queue
 	INNER JOIN ready
@@ -700,17 +702,18 @@ ready AS
     END CATCH;
 END;
 
-	SELECT queue.WorkerId,
-	       queue.DefinitionName,
+	-- Read queue-owned result fields from @Claimed instead of rejoining the queue table.
+	-- Cleanup locks queue rows before entry rows; a queue rejoin here could let the
+	-- result reader take entry locks first and complete the opposite lock-order cycle.
+	SELECT claimed.WorkerId,
+	       claimed.DefinitionName,
 	       entries.InputJson,
 	       entries.OptionsJson,
 	       entries.ConfigurationJson,
 	       entries.OriginJson,
 	       entries.WorkflowProvenanceJson,
-	       queue.CreatedAt
+	       claimed.CreatedAt
 	FROM @Claimed claimed
-	INNER JOIN {this.queueTable} queue
-	    ON queue.WorkerId = claimed.WorkerId
 	INNER JOIN {this.entriesTable} entries
 	    ON entries.WorkerId = claimed.WorkerId;
 """;
@@ -1672,24 +1675,6 @@ VALUES
 
     private async Task ExecuteOwned(
         string commandText,
-        Action<DbCommand> configure,
-        CancellationToken cancellationToken)
-    {
-        await ExecuteWithStoreUnavailableHandling(
-            "executing a persistence store command",
-            async () =>
-            {
-                await using var connection = new SqlConnection(options.ConnectionString);
-                await connection.OpenAsync(cancellationToken);
-                await using var command = connection.CreateCommand();
-                command.CommandText = commandText;
-                configure(command);
-                await command.ExecuteNonQueryAsync(cancellationToken);
-            });
-    }
-
-    private async Task ExecuteOwned(
-        string commandText,
         Func<DbCommand, Task> execute,
         CancellationToken cancellationToken)
     {
@@ -2038,9 +2023,7 @@ VALUES
         {
             var itemType = typeToConvert.GetGenericArguments()[0];
             var converterType = typeof(IReadOnlySetJsonConverter<>).MakeGenericType(itemType);
-            return Activator.CreateInstance(converterType) is JsonConverter converter
-                ? converter
-                : throw new InvalidOperationException($"Could not create converter for {typeToConvert}.");
+            return (JsonConverter)Activator.CreateInstance(converterType)!;
         }
 
         private sealed class IReadOnlySetJsonConverter<T> : JsonConverter<IReadOnlySet<T>>
@@ -2050,7 +2033,7 @@ VALUES
                 ref Utf8JsonReader reader,
                 Type typeToConvert,
                 JsonSerializerOptions options)
-                => JsonSerializer.Deserialize<HashSet<T>>(ref reader, options) ?? [];
+                => JsonSerializer.Deserialize<HashSet<T>>(ref reader, options)!;
 
             public override void Write(
                 Utf8JsonWriter writer,

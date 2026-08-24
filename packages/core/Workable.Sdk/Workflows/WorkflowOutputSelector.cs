@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Workable;
@@ -63,8 +64,7 @@ public sealed record WorkflowOutputSelector(string? JsonPointer)
             return attribute.Name;
         }
 
-        var policy = WorkData.DefaultJsonOptions.PropertyNamingPolicy;
-        return policy?.ConvertName(member.Name) ?? member.Name;
+        return JsonNamingPolicy.CamelCase.ConvertName(member.Name);
     }
 
     private static string EscapeJsonPointerSegment(string segment)

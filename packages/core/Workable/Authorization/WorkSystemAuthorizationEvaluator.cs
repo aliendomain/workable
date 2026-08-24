@@ -32,5 +32,20 @@ internal sealed class WorkSystemAuthorizationEvaluator(
         => this.IsSatisfied(configuration.WorkAdministratorGroups);
 
     private bool IsSatisfied(IReadOnlySet<string> allowedGroups)
-        => allowedGroups.Count > 0 && groups.Any(allowedGroups.Contains);
+    {
+        if (allowedGroups.Count == 0 || groups.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var group in groups)
+        {
+            if (allowedGroups.Contains(group))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

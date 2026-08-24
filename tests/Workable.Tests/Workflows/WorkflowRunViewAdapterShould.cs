@@ -45,6 +45,13 @@ public sealed class WorkflowRunViewAdapterShould
         var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
         await system.Start();
 
+        var missingRun = await new WorkflowRunViewAdapter().StepChildren(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkflowRunId.New(),
+            "notify");
+        Assert.Null(missingRun);
+
         var handle = await system.WorkflowRuntime.Start(
             "workflow.operator.parallel",
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
@@ -66,7 +73,6 @@ public sealed class WorkflowRunViewAdapterShould
 
         release.TrySetResult();
         await handle.WaitForCompletion();
-
         Assert.NotNull(detail);
         Assert.Equal("workflow.operator.parallel", detail!.DefinitionName);
         Assert.Equal("notify", detail.CurrentStepName);
@@ -420,9 +426,43 @@ public sealed class WorkflowRunViewAdapterShould
             "notify",
             skip: 1,
             take: 1);
+        var joinPage = await new WorkflowRunViewAdapter().StepChildren(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            handle.RunId!.Value,
+            "settle",
+            skip: 0,
+            take: 10);
+        var missingStep = await new WorkflowRunViewAdapter().StepChildren(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            handle.RunId!.Value,
+            "missing-step",
+            skip: 0,
+            take: 10);
+        var runState = await system.WorkflowRuntime.GetVisibleState(
+            handle.RunId!.Value,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        Assert.NotNull(runState);
+        var missingStatePage = runState!.GetStepWorkerIdsPage(
+            "missing-step",
+            new HashSet<string>(StringComparer.Ordinal),
+            skip: 0,
+            take: 1);
 
         release.TrySetResult();
         await handle.WaitForCompletion();
+        runState.MarkStepCompleted("notify", []);
+        var fallbackCompositePage = runState.GetStepWorkerIdsPage(
+            "notify",
+            new HashSet<string>(["first", "second"], StringComparer.Ordinal),
+            skip: 0,
+            take: 10);
+        var completedJoinPage = runState.GetStepWorkerIdsPage(
+            "settle",
+            new HashSet<string>(["first", "second"], StringComparer.Ordinal),
+            skip: 0,
+            take: 10);
 
         Assert.NotNull(page);
         Assert.Equal(2, page!.TotalCount);
@@ -431,6 +471,150 @@ public sealed class WorkflowRunViewAdapterShould
         var worker = Assert.Single(page.Workers);
         Assert.Equal("workflow.operator.page.second", worker.DefinitionName);
         Assert.Equal(WorkerState.Running, worker.State);
+        Assert.NotNull(joinPage);
+        Assert.Equal(2, joinPage!.TotalCount);
+        Assert.Equal(2, joinPage.Workers.Count);
+        Assert.Equal(2, fallbackCompositePage.TotalCount);
+        Assert.Equal(2, fallbackCompositePage.WorkerIds.Count);
+        Assert.Equal(0, completedJoinPage.TotalCount);
+        Assert.Empty(completedJoinPage.WorkerIds);
+        Assert.Null(missingStep);
+        Assert.Equal(0, missingStatePage.TotalCount);
+        Assert.Empty(missingStatePage.WorkerIds);
+    }
+
+    [Fact]
+    public async Task PageWorkflowRunsBeforeBuildingOperatorPayloads()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.run-page.child"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.operator.run-page"),
+                workflow => workflow.DispatchWork(
+                    "dispatch",
+                    WorkDefinition.Create("workflow.operator.run-page.child")));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+        for (var index = 0; index < 4; index++)
+        {
+            var handle = await system.WorkflowRuntime.Start(
+                "workflow.operator.run-page",
+                WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+            await handle.WaitForCompletion();
+        }
+
+        var page = await new WorkflowRunViewAdapter().RunsPage(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            includeFinal: true,
+            skip: 1,
+            take: 2);
+        var clamped = await new WorkflowRunViewAdapter().RunsPage(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            includeFinal: true,
+            skip: -1,
+            take: int.MaxValue);
+        var skipClamped = await new WorkflowRunViewAdapter().RunsPage(
+            system,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            includeFinal: true,
+            skip: int.MaxValue,
+            take: 1);
+
+        Assert.Equal(4, page.TotalCount);
+        Assert.Equal(1, page.Skip);
+        Assert.Equal(2, page.Take);
+        Assert.Equal(2, page.Runs.Count);
+        Assert.Equal(0, clamped.Skip);
+        Assert.Equal(WorkflowRunViewAdapter.MaximumRunPageSize, clamped.Take);
+        Assert.Equal(4, clamped.Runs.Count);
+        Assert.Equal(WorkflowRunViewAdapter.MaximumRunPageSkip, skipClamped.Skip);
+        Assert.Empty(skipClamped.Runs);
+    }
+
+    [Fact]
+    public async Task ResetJoinFallbackAtEarlierCompletedJoin()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.join-reset.first"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.join-reset.second"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.operator.join-reset"),
+                workflow => workflow
+                    .DispatchWork("first", WorkDefinition.Create("workflow.operator.join-reset.first"))
+                    .Join("first-join")
+                    .DispatchWork("second", WorkDefinition.Create("workflow.operator.join-reset.second"))
+                    .Join("second-join"));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+        var handle = await system.WorkflowRuntime.Start(
+            "workflow.operator.join-reset",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        await handle.WaitForCompletion();
+        var runState = await system.WorkflowRuntime.GetVisibleState(
+            handle.RunId!.Value,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        Assert.NotNull(runState);
+        var page = runState!.GetStepWorkerIdsPage(
+            "second-join",
+            new HashSet<string>(["first", "second"], StringComparer.Ordinal),
+            skip: 0,
+            take: 10);
+        Assert.Equal(0, page.TotalCount);
+        Assert.Empty(page.WorkerIds);
+    }
+
+    [Fact]
+    public async Task BoundAuthoritativeWorkerReadsForOneOperatorView()
+    {
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(false);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.read-bound"),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success()));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        var session = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var method = typeof(WorkflowRunViewAdapter).GetMethod(
+            "LoadWorkers",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task<IReadOnlyDictionary<WorkerId, WorkerSnapshot?>>>(method.Invoke(
+            null,
+            [
+                system,
+                session.Catalog,
+                Enumerable.Range(0, 300).Select(_ => WorkerId.New()),
+                CancellationToken.None,
+            ]));
+
+        var workers = await task;
+
+        Assert.Equal(256, workers.Count);
     }
 
     [Fact]
@@ -607,6 +791,180 @@ public sealed class WorkflowRunViewAdapterShould
         Assert.False(canceled.AvailableActions.Cancel);
     }
 
+    [Fact]
+    public async Task ReportOnlyLifecycleActionsTheViewingCallerMayExecute()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        var reader = new WorkActor("workflow-actions-reader");
+        var pauser = new WorkActor("workflow-actions-pauser");
+        var seed = new WorkActor("workflow-actions-seed");
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+            new Dictionary<string, IReadOnlySet<string>>
+            {
+                [reader.Id!] = Groups("workflow.actions.read"),
+                [pauser.Id!] = Groups("workflow.actions.read", "workflow.actions.pause"),
+                [seed.Id!] = Groups("workflow.actions.seed"),
+            }));
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization();
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.authorized-actions.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.operator.authorized-actions"),
+                workflow => workflow.DispatchWork(
+                    "dispatch",
+                    WorkDefinition.Create("workflow.operator.authorized-actions.child")),
+                authorization => authorization
+                    .AllowReadToGroups("workflow.actions.read")
+                    .AllowOperationsToGroups(
+                        ["workflow.actions.pause"],
+                        WorkOperationPermissions.Pause)
+                    .AllowOperationsToGroups(
+                        ["workflow.actions.seed"],
+                        WorkOperationPermissions.Operate));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+        var runId = (await system.WorkflowRuntime.Start(
+            "workflow.operator.authorized-actions",
+            CreateContext(seed, "workflow.actions.seed"))).RunId!.Value;
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var views = new WorkflowRunViewAdapter();
+
+        var readerView = await views.Run(
+            system,
+            CreateContext(reader, "workflow.actions.read"),
+            runId);
+        var pauserView = await views.Run(
+            system,
+            CreateContext(pauser, "workflow.actions.read", "workflow.actions.pause"),
+            runId);
+        var readerList = await views.Runs(
+            system,
+            CreateContext(reader, "workflow.actions.read"));
+        var readerChildren = await views.StepChildren(
+            system,
+            CreateContext(reader, "workflow.actions.read"),
+            runId,
+            "dispatch");
+
+        Assert.NotNull(readerView);
+        Assert.False(readerView!.AvailableActions.Start);
+        Assert.False(readerView.AvailableActions.Pause);
+        Assert.False(readerView.AvailableActions.Cancel);
+        var hiddenChildStep = Assert.Single(readerView.Steps);
+        Assert.Equal(0, hiddenChildStep.Children.Total);
+        Assert.Empty(hiddenChildStep.ChildWorkerIds);
+        Assert.Empty(hiddenChildStep.ChildSample);
+        Assert.Equal(0, readerView.OutstandingChildren.Total);
+        Assert.Equal(0, Assert.Single(readerList.Runs).OutstandingChildren.Total);
+        Assert.NotNull(readerChildren);
+        Assert.Equal(0, readerChildren!.TotalCount);
+        Assert.Empty(readerChildren.Workers);
+        Assert.NotNull(pauserView);
+        Assert.False(pauserView!.AvailableActions.Start);
+        Assert.True(pauserView.AvailableActions.Pause);
+        Assert.False(pauserView.AvailableActions.Cancel);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => views.Run(
+            system,
+            CreateContext(reader, "workflow.actions.read"),
+            runId,
+            childSampleSize: -1));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => views.Runs(
+            system,
+            CreateContext(reader, "workflow.actions.read"),
+            childSampleSize: WorkflowRunViewAdapter.MaximumChildSampleSize + 1));
+
+        Assert.True((await system.WorkflowRuntime.Execute(
+            runId,
+            WorkflowAction.Cancel,
+            CreateContext(seed, "workflow.actions.seed"))).IsAccepted);
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(runId)?.Status == WorkflowRunStatus.Canceled,
+            "Expected the authorized workflow cancellation to reach a final state.");
+        var finalReaderView = await views.Run(
+            system,
+            CreateContext(reader, "workflow.actions.read"),
+            runId);
+        Assert.NotNull(finalReaderView);
+        Assert.All(finalReaderView!.Steps, step =>
+        {
+            Assert.Empty(step.ChildWorkerIds);
+            Assert.Empty(step.ChildSample);
+            Assert.Equal(0, step.Children.Total);
+        });
+    }
+
+    [Fact]
+    public async Task SanitizeUnhandledChildExceptionsInWorkflowOperatorMessages()
+    {
+        var services = new ServiceCollection();
+        var reader = new WorkActor("workflow-failure-reader");
+        var operatorActor = new WorkActor("workflow-failure-operator");
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(new TestGroupProvider(
+            new Dictionary<string, IReadOnlySet<string>>
+            {
+                [reader.Id!] = Groups("workflow.failure.read"),
+                [operatorActor.Id!] = Groups("workflow.failure.operate"),
+            }));
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization();
+            builder.AddWork(
+                WorkDefinition.Create("workflow.operator.failure.child"),
+                (_, _, _) => throw new InvalidOperationException("secret child failure"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.operator.failure"),
+                workflow => workflow.DispatchWork(
+                    "dispatch",
+                    WorkDefinition.Create("workflow.operator.failure.child")),
+                authorization => authorization
+                    .AllowReadToGroups("workflow.failure.read")
+                    .AllowOperateToGroups("workflow.failure.operate"));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var system = Assert.IsType<InMemoryWorkSystem>(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+        await system.Start();
+        var handle = await system.WorkflowRuntime.Start(
+            "workflow.operator.failure",
+            CreateContext(operatorActor, "workflow.failure.operate"));
+        var runId = handle.RunId!.Value;
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(runId)?.Status == WorkflowRunStatus.Blocked,
+            "Expected the failed child to block the workflow run.");
+        var views = new WorkflowRunViewAdapter();
+
+        var list = await views.Runs(
+            system,
+            CreateContext(reader, "workflow.failure.read"),
+            includeFinal: true);
+        var detail = await views.Run(
+            system,
+            CreateContext(reader, "workflow.failure.read"),
+            runId);
+        var listMessage = Assert.Single(Assert.Single(list.Runs).Messages);
+        var detailMessage = Assert.Single(detail!.Messages);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, detail.Status);
+        Assert.Equal("workable.workflow.child_completion_unsuccessful", listMessage.Code);
+        Assert.Equal("A workflow child completed unsuccessfully with status 'Failed'.", listMessage.Text);
+        Assert.Null(listMessage.Metadata);
+        Assert.Equal(listMessage, detailMessage);
+        Assert.DoesNotContain("secret child failure", listMessage.Text, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(WorkflowRunStatus.Running, WorkflowOperatorNodeStatus.Running)]
     [InlineData(WorkflowRunStatus.Paused, WorkflowOperatorNodeStatus.Paused)]
@@ -760,7 +1118,97 @@ public sealed class WorkflowRunViewAdapterShould
         {
             Steps = [StepSnapshot(WorkflowStepRunStatus.Completed, "dispatch", WorkflowStepKind.DispatchWork, priorId)],
         };
+        Assert.Empty(FindStepWorkerIds(steps, snapshotWithoutJoinState, "parallel")!);
+        Assert.Empty(FindStepWorkerIds(steps, snapshotWithoutJoinState, "branch")!);
         Assert.Equal([priorId], FindStepWorkerIds(steps, snapshotWithoutJoinState, "join"));
+    }
+
+    [Fact]
+    public void ResolveNestedStepIdsWorkflowProvenanceAndEveryChildResolutionSource()
+    {
+        var definition = WorkDefinition.Create("workflow.operator.lookup");
+        var childId = WorkerId.New();
+        IReadOnlyList<WorkflowStepDefinition> steps =
+        [
+            new BranchWorkflowStepDefinition(
+                "branch",
+                [
+                    new DispatchWorkflowStepDefinition("dispatch", definition),
+                    new DispatchEachWorkflowStepDefinition(
+                        "each",
+                        new WorkflowStepReference<object[]>("dispatch"),
+                        definition,
+                        new WorkflowOutputSelector(null)),
+                ]),
+            new ParallelWorkflowStepDefinition("parallel", []),
+            new JoinWorkflowStepDefinition("join"),
+            new UnknownWorkflowStepDefinition(),
+        ];
+        var snapshot = new WorkflowRunSnapshot(
+            WorkflowRunId.New(),
+            "workflow.operator.lookup",
+            WorkflowRunStatus.Running,
+            null,
+            [
+                StepSnapshot(WorkflowStepRunStatus.Completed, "dispatch", WorkflowStepKind.DispatchWork, childId),
+                StepSnapshot(WorkflowStepRunStatus.Running, "branch", WorkflowStepKind.Branch),
+                StepSnapshot(WorkflowStepRunStatus.Running, "parallel", WorkflowStepKind.Parallel),
+                StepSnapshot(WorkflowStepRunStatus.Running, "join", WorkflowStepKind.Join),
+            ],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            [],
+            []);
+
+        Assert.Equal([childId], FindStepWorkerIds(steps, snapshot, "dispatch"));
+        Assert.Empty(FindStepWorkerIds(steps, snapshot, "each")!);
+        Assert.Empty(FindStepWorkerIds(steps, snapshot, "parallel")!);
+        Assert.Equal([childId], FindStepWorkerIds(steps, snapshot, "join"));
+        Assert.Empty(FindStepWorkerIds(steps, snapshot, "unknown")!);
+
+        var worker = CreateWorkerSnapshot(childId, WorkerState.Completed);
+        Assert.Null(InvokePrivate<string?>("GetWorkflowStepName", worker));
+        var workflowWorker = worker with
+        {
+            WorkflowProvenance = new WorkflowProvenance(
+                WorkflowRunId.New(),
+                "workflow.operator.lookup",
+                "dispatch"),
+        };
+        Assert.Equal("dispatch", InvokePrivate<string?>("GetWorkflowStepName", workflowWorker));
+
+        var workers = new Dictionary<WorkerId, WorkerSnapshot?> { [childId] = worker };
+        var nullWorkers = new Dictionary<WorkerId, WorkerSnapshot?> { [childId] = null };
+        var completedReceipt = new WorkflowChildReceipt(
+            childId,
+            "dispatch",
+            definition.Name,
+            WorkerState.Completed,
+            DateTimeOffset.UtcNow,
+            [],
+            null);
+        var failedReceipt = completedReceipt with { State = WorkerState.Failed };
+        Assert.True(InvokePrivate<bool>(
+            "IsResolvedChild",
+            childId,
+            workers,
+            new Dictionary<WorkerId, WorkflowChildReceipt>()));
+        Assert.True(InvokePrivate<bool>(
+            "IsResolvedChild",
+            childId,
+            nullWorkers,
+            new Dictionary<WorkerId, WorkflowChildReceipt> { [childId] = completedReceipt }));
+        Assert.False(InvokePrivate<bool>(
+            "IsResolvedChild",
+            childId,
+            nullWorkers,
+            new Dictionary<WorkerId, WorkflowChildReceipt> { [childId] = failedReceipt }));
+        Assert.False(InvokePrivate<bool>(
+            "IsResolvedChild",
+            childId,
+            new Dictionary<WorkerId, WorkerSnapshot?>(),
+            new Dictionary<WorkerId, WorkflowChildReceipt>()));
     }
 
     [Fact]
@@ -797,6 +1245,71 @@ public sealed class WorkflowRunViewAdapterShould
         Assert.IsType<InvalidOperationException>(exception.InnerException);
     }
 
+    [Fact]
+    public void CreatePendingViewsForEveryUnstartedStepShapeWithoutRetainedSnapshots()
+    {
+        var definition = WorkDefinition.Create("workflow.operator.unstarted.child");
+        var presentWorker = CreateWorkerSnapshot(WorkerId.New(), WorkerState.Queued);
+        var run = new WorkflowRunSnapshot(
+            WorkflowRunId.New(),
+            "workflow.operator.unstarted",
+            WorkflowRunStatus.Running,
+            null,
+            [],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            [],
+            []);
+        var snapshots = new Dictionary<string, WorkflowStepRunSnapshot>();
+        var workers = new Dictionary<WorkerId, WorkerSnapshot?>
+        {
+            [presentWorker.Id] = presentWorker,
+        };
+        var receipts = new Dictionary<WorkerId, WorkflowChildReceipt>();
+        var workersByStep = new Dictionary<string, WorkerSnapshot[]>(StringComparer.Ordinal)
+        {
+            ["dispatch-present"] = [presentWorker],
+            ["nested"] = [presentWorker],
+        };
+        WorkflowStepDefinition[] steps =
+        [
+            new DispatchWorkflowStepDefinition("dispatch-missing", definition),
+            new DispatchWorkflowStepDefinition("dispatch-present", definition),
+            new DispatchEachWorkflowStepDefinition(
+                "each",
+                new WorkflowStepReference<object[]>("source"),
+                definition,
+                new WorkflowOutputSelector(null)),
+            new ParallelWorkflowStepDefinition(
+                "parallel",
+                [new DispatchWorkflowStepDefinition("nested", definition)]),
+            new BranchWorkflowStepDefinition(
+                "branch",
+                [new DispatchWorkflowStepDefinition("branch-child", definition)]),
+            new JoinWorkflowStepDefinition("join"),
+        ];
+
+        var views = steps
+            .Select(step => CreateStepView(step, run, snapshots, workers, receipts, workersByStep))
+            .ToArray();
+
+        Assert.Equal(
+            [
+                WorkflowOperatorNodeStatus.Pending,
+                WorkflowOperatorNodeStatus.WaitingOnChildren,
+                WorkflowOperatorNodeStatus.Pending,
+                WorkflowOperatorNodeStatus.Pending,
+                WorkflowOperatorNodeStatus.Pending,
+                WorkflowOperatorNodeStatus.Pending,
+            ],
+            views.Select(view => view.Status));
+        Assert.Empty(views[0].ChildSample);
+        Assert.Single(views[1].ChildSample);
+        Assert.Single(views[3].Steps);
+        Assert.Single(views[4].Steps);
+    }
+
     private static WorkflowStepRunSnapshot StepSnapshot(
         WorkflowStepRunStatus status,
         string name = "step",
@@ -810,6 +1323,23 @@ public sealed class WorkflowRunViewAdapterShould
             DateTimeOffset.UtcNow,
             status is WorkflowStepRunStatus.Completed or WorkflowStepRunStatus.Failed ? DateTimeOffset.UtcNow : null,
             []);
+
+    private static WorkflowStepOperatorView CreateStepView(
+        WorkflowStepDefinition step,
+        WorkflowRunSnapshot run,
+        IReadOnlyDictionary<string, WorkflowStepRunSnapshot> snapshots,
+        IReadOnlyDictionary<WorkerId, WorkerSnapshot?> workers,
+        IReadOnlyDictionary<WorkerId, WorkflowChildReceipt> receipts,
+        IReadOnlyDictionary<string, WorkerSnapshot[]> workersByStep)
+    {
+        var method = typeof(WorkflowRunViewAdapter).GetMethod(
+            "CreateStepView",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(method);
+        return Assert.IsType<WorkflowStepOperatorView>(method.Invoke(
+            null,
+            [step, run, snapshots, workers, receipts, workersByStep, 3]));
+    }
 
     private static WorkflowStepOperatorView OperatorStep(WorkflowOperatorNodeStatus status)
         => new(
@@ -848,6 +1378,16 @@ public sealed class WorkflowRunViewAdapterShould
 
         Assert.NotNull(method);
         return Assert.IsType<WorkflowOperatorNodeStatus>(method.Invoke(null, arguments));
+    }
+
+    private static T InvokePrivate<T>(string methodName, params object?[] arguments)
+    {
+        var method = typeof(WorkflowRunViewAdapter)
+            .GetMethods(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+            .Single(candidate =>
+                candidate.Name == methodName &&
+                candidate.GetParameters().Length == arguments.Length);
+        return (T)method.Invoke(null, arguments)!;
     }
 
     private static IReadOnlyList<WorkerId>? FindStepWorkerIds(

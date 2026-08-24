@@ -136,4 +136,6 @@ Runtime reconfiguration is allowed for any non-final worker. It does not require
 
 Invalid definition default reconfiguration returns `WorkDefinitionReconfigurationStatus.Invalid`. Invalid queue-time configuration returns `WorkQueueStatus.Invalid`. Invalid runtime reconfiguration returns `WorkActionStatus.Invalid`.
 
+Every enum-valued configuration field must contain a defined enum value. This applies even when the associated feature is disabled, so undefined numeric values cannot be retained and later interpreted through a fallback branch. Queue-time `WorkerOptions.ProfilingCaptureMode` follows the same rule.
+
 Persistent coordination is also validated against the host system. If a work definition, queue override, or worker reconfiguration asks for `WorkCoordinationStorage.Persistent` but the system has no registered persistence store, Workable rejects the operation instead of accepting work that cannot be coordinated safely.

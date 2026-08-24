@@ -374,8 +374,12 @@ export function getWorkAccessBadge(
     return null;
   }
 
-  if (allAccess || count >= total) {
+  if (allAccess) {
     return `${label} all work`;
+  }
+
+  if (count >= total) {
+    return `${label} ${formatCompactCount(count)} defs`;
   }
 
   return `${label} ${formatCompactCount(count)}/${formatCompactCount(total)} defs`;

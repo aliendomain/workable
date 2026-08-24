@@ -42,6 +42,25 @@ public sealed record WorkChangeKey
     /// </summary>
     public string Value { get; }
 
+    internal string? DefinitionName { get; init; }
+
+    internal WorkChangeKey ScopeToDefinition(string definitionName)
+        => this with { DefinitionName = Normalize(definitionName) };
+
+    internal static IEqualityComparer<WorkChangeKey> ScopeAwareComparer { get; } =
+        new WorkChangeKeyScopeAwareComparer();
+
+    /// <inheritdoc />
+    public bool Equals(WorkChangeKey? other)
+        => other is not null &&
+            this.Kind == other.Kind &&
+            string.Equals(this.Type, other.Type, StringComparison.Ordinal) &&
+            string.Equals(this.Value, other.Value, StringComparison.Ordinal);
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+        => HashCode.Combine(this.Kind, this.Type, this.Value);
+
     /// <summary>
     /// Creates a system-wide change key.
     /// </summary>
@@ -109,5 +128,20 @@ public sealed record WorkChangeKey
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value);
         return value.Trim();
+    }
+
+    private sealed class WorkChangeKeyScopeAwareComparer : IEqualityComparer<WorkChangeKey>
+    {
+        public bool Equals(WorkChangeKey? x, WorkChangeKey? y)
+            => ReferenceEquals(x, y) ||
+                (x is not null &&
+                    y is not null &&
+                    x.Equals(y) &&
+                    string.Equals(x.DefinitionName, y.DefinitionName, StringComparison.OrdinalIgnoreCase));
+
+        public int GetHashCode(WorkChangeKey key)
+            => HashCode.Combine(
+                key.GetHashCode(),
+                key.DefinitionName?.ToUpperInvariant());
     }
 }

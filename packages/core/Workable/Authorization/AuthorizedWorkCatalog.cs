@@ -45,11 +45,45 @@ internal sealed class AuthorizedWorkCatalog(
             requestContext);
         if (decision.IsAllowed)
         {
-            return inner.Reconfigure(definition, changes, cancellationToken);
+            return this.FilterReconfigurationOutcome(
+                inner.Reconfigure(definition, changes, cancellationToken),
+                registeredWork.Definition);
         }
 
-        return decision.IsInvalid
+        var outcome = decision.IsInvalid
             ? Task.FromResult(WorkDefinitionReconfigurationOutcome.Invalid(registeredWork.Definition, decision.Messages))
             : Task.FromResult(WorkDefinitionReconfigurationOutcome.Unauthorized(registeredWork.Definition.Name));
+        return this.FilterReconfigurationOutcome(outcome, registeredWork.Definition);
+    }
+
+    internal Task<WorkDefinitionReconfigurationOutcome> Reconfigure(
+        string name,
+        long revision,
+        WorkDefinitionReconfiguration changes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(changes);
+
+        if (!catalog.TryGetWork(name, out var registeredWork) ||
+            !authorization.CanDiscover(registeredWork.Definition))
+        {
+            return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(name));
+        }
+
+        return this.Reconfigure(
+            new WorkDefinitionVersion(registeredWork.Definition.Id, revision),
+            changes,
+            cancellationToken);
+    }
+
+    private async Task<WorkDefinitionReconfigurationOutcome> FilterReconfigurationOutcome(
+        Task<WorkDefinitionReconfigurationOutcome> outcomeTask,
+        WorkDefinition definition)
+    {
+        var outcome = await outcomeTask;
+        return authorization.CanRead(definition) || outcome.Definition is null
+            ? outcome
+            : outcome with { Definition = null };
     }
 }

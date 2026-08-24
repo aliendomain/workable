@@ -20,7 +20,7 @@ internal static class WorkflowExecutionSupport
         var failure = completions.FirstOrDefault(completion => !completion.IsCompletedSuccessfully);
         return failure is null
             ? new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, [])
-            : new WorkflowRunCompletion(ToWorkflowStatus(failure.Status), null, failure.Messages);
+            : CreateChildRunCompletion(failure.Status);
     }
 
     public static async Task<WorkflowRunCompletion> WaitForOutstanding(
@@ -73,7 +73,7 @@ internal static class WorkflowExecutionSupport
                     continue;
                 }
 
-                return new WorkflowRunCompletion(status, null, completion.Messages);
+                return CreateChildRunCompletion(completion.Status, status);
             }
 
             return new WorkflowRunCompletion(WorkflowRunStatus.Completed, null, []);
@@ -147,7 +147,29 @@ internal static class WorkflowExecutionSupport
             receipt.CompletionStatus,
             Worker: null,
             receipt.Output,
-            receipt.Messages);
+            CreateChildCompletionMessages(receipt.CompletionStatus));
+
+    public static WorkflowRunCompletion CreateChildRunCompletion(
+        WorkCompletionStatus completionStatus,
+        WorkflowRunStatus? workflowStatus = null)
+        => new(
+            workflowStatus ?? ToWorkflowStatus(completionStatus),
+            null,
+            CreateChildCompletionMessages(completionStatus));
+
+    public static IReadOnlyList<WorkMessage> CreateChildCompletionMessages(WorkCompletionStatus status)
+        => status == WorkCompletionStatus.Completed
+            ? []
+            : [WorkMessage.Error(
+                "workable.workflow.child_completion_unsuccessful",
+                $"A workflow child completed unsuccessfully with status '{status}'.",
+                "workflow.child")];
+
+    public static IReadOnlyList<WorkMessage> CreateChildDispatchRejectedMessages(string stepName)
+        => [WorkMessage.Error(
+            "workable.workflow.child_dispatch_rejected",
+            $"Workflow step '{stepName}' could not dispatch a child worker.",
+            "workflow.child")];
 
     public static (IReadOnlyList<WorkInput> Inputs, IReadOnlyList<WorkMessage> Messages) CreateDispatchEachInputs(
         DispatchEachWorkflowStepDefinition step,
@@ -207,14 +229,14 @@ internal static class WorkflowExecutionSupport
 
                     return DispatchEachSourceCompletion.Failed(
                         ToWorkflowStatus(completion.Status, behavior),
-                        completion.Messages);
+                        CreateChildCompletionMessages(completion.Status));
                 }
 
                 if (completion.Status != WorkCompletionStatus.Completed)
                 {
                     return DispatchEachSourceCompletion.Failed(
                         ToWorkflowStatus(completion.Status),
-                        completion.Messages);
+                        CreateChildCompletionMessages(completion.Status));
                 }
 
                 var index = indexes[completed.WorkerId];
@@ -259,6 +281,16 @@ internal static class WorkflowExecutionSupport
                     session,
                     delegatedChildOperations);
                 var outcome = await childOperations.Execute(snapshot.Version, WorkAction.Cancel, cancellationToken);
+                if (outcome.Status == WorkActionStatus.NotFound && getAuthoritativeWorker is not null)
+                {
+                    var authoritative = await getAuthoritativeWorker(workerId, cancellationToken);
+                    if (authoritative is not null && !authoritative.IsFinal && authoritative.State != WorkerState.Canceling)
+                    {
+                        failures.Add(CreateChildCancellationRejectedMessage());
+                        break;
+                    }
+                }
+
                 if (outcome.IsAccepted || outcome.Status == WorkActionStatus.NotFound ||
                     outcome.Worker?.IsFinal == true || outcome.Worker?.State == WorkerState.Canceling)
                 {
@@ -271,12 +303,7 @@ internal static class WorkflowExecutionSupport
                     continue;
                 }
 
-                failures.AddRange(outcome.Messages.Count > 0
-                    ? outcome.Messages
-                    : [WorkMessage.Error(
-                        "workable.workflow.child_cancel_rejected",
-                        $"Workflow child worker '{workerId}' rejected cancellation with status '{outcome.Status}'.",
-                        "workflow.child")]);
+                failures.Add(CreateChildCancellationRejectedMessage());
                 break;
             }
         }
@@ -482,16 +509,22 @@ internal static class WorkflowExecutionSupport
             message = default!;
             return true;
         }
-        catch (JsonException exception)
+        catch (JsonException)
         {
             items = [];
             message = WorkMessage.Error(
                 "workable.workflow.dispatch_each.source_output_invalid_json",
-                $"Workflow step '{step.Name}' could not parse the source output from step '{step.SourceStep.StepName}': {exception.Message}",
+                $"Workflow step '{step.Name}' could not expand source step '{step.SourceStep.StepName}' because the source output was not valid JSON.",
                 "workflow.dispatch_each");
             return false;
         }
     }
+
+    private static WorkMessage CreateChildCancellationRejectedMessage()
+        => WorkMessage.Error(
+            "workable.workflow.child_cancel_rejected",
+            "A workflow child rejected cancellation.",
+            "workflow.child");
 
     private static bool TryResolveJsonPointer(
         JsonElement root,

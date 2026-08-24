@@ -6,7 +6,7 @@ namespace Workable;
 /// <param name="Status">The command status.</param>
 /// <param name="RunId">The workflow run identifier associated with the command, when one exists.</param>
 /// <param name="RunStatus">The latest workflow run status known to the command, when one exists.</param>
-/// <param name="Run">The authorized workflow run snapshot captured by the command, when one is available.</param>
+/// <param name="Run">The workflow run snapshot captured by the command when the caller also has Read access.</param>
 /// <param name="ErrorCode">The structured error code, when the command did not succeed.</param>
 /// <param name="ErrorMessage">The human-readable error message, when the command did not succeed.</param>
 /// <param name="Messages">The retained workflow messages associated with the command.</param>

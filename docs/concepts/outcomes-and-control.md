@@ -102,7 +102,7 @@ The important distinction is:
 
 For example, `Cancel` can be accepted now and the worker may publish its later canceled completion after that.
 
-`WorkActionOutcome` also includes the current `WorkerSnapshot` when the worker exists. That gives operators and custom UIs a post-action state view without immediately issuing a second query.
+`WorkActionOutcome` includes the current `WorkerSnapshot` only when the caller also has Read permission for the worker's definition. An operate-only caller still receives the action status, worker id, and structured operation messages, but `Worker` is `null`. This keeps an allowed state change from implicitly disclosing retained input, output, history, request context, or configuration. Read-authorized operators and custom UIs still receive the post-action snapshot without immediately issuing a second query.
 
 ## Bulk Actions
 
@@ -112,11 +112,13 @@ The bulk result includes:
 
 - the action
 - the filter that was used
-- matched worker count
-- one `WorkActionOutcome` per matched worker
+- authorized matched worker count
+- one `WorkActionOutcome` per authorized matched worker
 - summary counts for accepted, conflict, invalid, unauthorized, and not found results
 
-Bulk actions are not all-or-nothing. They are intentionally reported per worker so operators can see mixed results in one response.
+Bulk actions are not all-or-nothing. They are intentionally reported per authorized worker so operators can see mixed execution results in one response. When an Operate requirement depends on retained worker state, candidates that fail or cannot safely evaluate that requirement are omitted from both the count and outcomes. This prevents the bulk response from becoming an existence oracle for workers outside the caller's effective operation scope.
+
+The same Read boundary applies independently to every nested outcome. Operate-only bulk callers receive ids and statuses for authorized targets without nested worker snapshots.
 
 `WorkerBulkActionFilter` is currently category-oriented:
 
@@ -148,6 +150,8 @@ The payload shapes are intentionally different:
 - `NotFound`
 - `Invalid`
 - `Conflict`
+
+Accepted, invalid, and conflict outcomes expose the authoritative `Revision` needed for optimistic concurrency. The complete `Definition` snapshot is present only when the caller also has Read permission; operate-only callers receive `Definition: null`.
 
 ## Optimistic Concurrency
 

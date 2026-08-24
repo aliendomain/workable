@@ -1,7 +1,7 @@
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -19,90 +19,100 @@ public static class WorkableSignalREndpointRouteBuilderExtensions
     /// <param name="path">
     /// Optional hub path override. When omitted, the configured <see cref="WorkableSignalROptions.HubPath"/> is used.
     /// </param>
+    /// <param name="advertise">
+    /// Whether capability discovery should advertise this mapping. Set this to <see langword="false"/> for aliases.
+    /// </param>
+    /// <param name="authorizationPolicy">
+    /// Optional host-defined authorization policy for this mapping. When omitted, the host's default policy applies.
+    /// </param>
+    /// <param name="useHostFallbackPolicy">
+    /// Whether to leave the endpoint without authorization metadata so the host's fallback policy applies.
+    /// </param>
     /// <returns>The endpoint convention builder for further endpoint customization.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the configured Workable realtime settings are invalid or the host's effective hub protocol is
+    /// incompatible with the selected Workable payload serializer.
+    /// </exception>
     /// <remarks>
-    /// Workable SignalR requires authorization-enabled systems and rejects anonymous requests. When a transport
-    /// authentication scheme is configured through ASP.NET Core authorization options, that scheme is also attached
-    /// as endpoint authorization metadata.
+    /// Workable SignalR requires authorization-enabled systems and an authenticated Workable connection. An explicitly
+    /// selected transport authentication scheme is evaluated only for Workable and does not replace the host's ambient principal.
+    /// When <paramref name="useHostFallbackPolicy"/> is true, the host remains responsible for registering and applying
+    /// an appropriate fallback policy through its normal authorization middleware.
     /// </remarks>
     public static IEndpointConventionBuilder MapWorkableSignalR(
         this IEndpointRouteBuilder endpoints,
-        string? path = null)
+        string? path = null,
+        bool advertise = true,
+        string? authorizationPolicy = null,
+        bool useHostFallbackPolicy = false)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
-        EnsureAllSystemsRequireAuthorization(endpoints.ServiceProvider.GetRequiredService<IWorkSystemRegistry>());
 
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<WorkableSignalROptions>>().Value;
-        if (path is null)
+        WorkableSignalROptionsValidation.ThrowIfInvalidRealtime(options);
+        EnsureProtocolCompatibility(endpoints.ServiceProvider);
+        path ??= options.HubPath;
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (authorizationPolicy is not null)
         {
-            path = options.HubPath;
+            ArgumentException.ThrowIfNullOrWhiteSpace(authorizationPolicy);
+        }
+        if (authorizationPolicy is not null && useHostFallbackPolicy)
+        {
+            throw new ArgumentException(
+                "A named authorization policy and the host fallback policy cannot both be selected.",
+                nameof(useHostFallbackPolicy));
+        }
+
+        var builder = endpoints.MapHub<WorkableRealtimeHub>(
+            path,
+            dispatcher => dispatcher.CloseOnAuthenticationExpiration = true);
+        builder.WithMetadata(new WorkableSignalREndpointMetadata());
+        if (authorizationPolicy is not null)
+        {
+            builder.RequireAuthorization(authorizationPolicy);
+        }
+        else if (!useHostFallbackPolicy)
+        {
+            builder.RequireAuthorization();
+        }
+        if (advertise)
+        {
+            endpoints.ServiceProvider
+                .GetRequiredService<WorkableSignalRRegistration>()
+                .Advertise(path);
         }
         else
         {
-            options.HubPath = path;
+            endpoints.ServiceProvider
+                .GetRequiredService<WorkableSignalRRegistration>()
+                .MarkMapped();
         }
 
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-
-        var builder = endpoints.MapHub<WorkableRealtimeHub>(path);
-        ApplyTransportAuthorization(builder, endpoints.ServiceProvider);
-        RequireAuthenticated(builder);
         return builder;
     }
 
-    private static void ApplyTransportAuthorization(IEndpointConventionBuilder builder, IServiceProvider services)
+    private static void EnsureProtocolCompatibility(IServiceProvider services)
     {
-        var transportScheme = services
-            .GetService<IOptions<WorkableAspNetCoreAuthorizationOptions>>()
-            ?.Value
-            .TransportAuthenticationScheme;
-
-        if (string.IsNullOrWhiteSpace(transportScheme))
+        if (services.GetRequiredService<IWorkableSignalRPayloadSerializer>() is not
+            WorkableSignalRJsonPayloadSerializer)
         {
             return;
         }
 
-        builder.RequireAuthorization(new AuthorizationPolicyBuilder(transportScheme)
-            .RequireAuthenticatedUser()
-            .Build());
-    }
-
-    private static void EnsureAllSystemsRequireAuthorization(IWorkSystemRegistry registry)
-    {
-        ArgumentNullException.ThrowIfNull(registry);
-
-        var unsecuredSystems = registry.Systems
-            .Where(system => !system.RequiresAuthorization)
-            .Select(system => system.Name ?? "<default>")
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (unsecuredSystems.Length == 0)
+        var protocols = services
+            .GetRequiredService<IOptions<HubOptions<WorkableRealtimeHub>>>()
+            .Value
+            .SupportedProtocols;
+        if (protocols is { Count: 1 } &&
+            string.Equals(protocols[0], "json", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
         throw new InvalidOperationException(
-            $"Workable SignalR requires authorization-enabled systems. The following systems do not require authorization: {string.Join(", ", unsecuredSystems)}.");
-    }
-
-    private static void RequireAuthenticated(IEndpointConventionBuilder builder)
-    {
-        builder.Add(endpointBuilder =>
-        {
-            var next = endpointBuilder.RequestDelegate
-                ?? throw new InvalidOperationException("Workable SignalR endpoint did not provide a request delegate.");
-            endpointBuilder.RequestDelegate = async httpContext =>
-            {
-                if (!HttpMethods.IsOptions(httpContext.Request.Method) &&
-                    !await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
-                {
-                    httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                    return;
-                }
-
-                await next(httpContext);
-            };
-        });
+            "The default Workable SignalR payload serializer requires the host to configure the Workable hub for only the 'json' protocol. " +
+            "Configure HubOptions<WorkableRealtimeHub>.SupportedProtocols or replace IWorkableSignalRPayloadSerializer for the host-selected protocol.");
     }
 }

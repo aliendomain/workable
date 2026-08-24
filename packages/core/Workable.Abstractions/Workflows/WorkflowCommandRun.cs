@@ -1,7 +1,7 @@
 namespace Workable;
 
 /// <summary>
-/// Represents the workflow run state returned by an authorized workflow command.
+/// Represents workflow run state returned by an authorized workflow command when the caller also has Read access.
 /// </summary>
 /// <param name="RunId">The workflow run identifier.</param>
 /// <param name="DefinitionName">The workflow definition name.</param>

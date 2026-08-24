@@ -115,7 +115,7 @@ A temporary rule with no profile capture mode is logs-only. It does not persist 
 
 The admin UI exposes temporary system-level and work-definition-level controls only when `ExecutionDiagnosticsPersistenceAvailable` is true. Viewing rules and evidence requires diagnostics access; creating or deleting persistent capture rules requires `ControlSystem`. Deleting a rule stops future matching capture; it does not delete artifacts already captured.
 
-The system overview control creates a rule for all work; the catalog definition control creates a rule for one work type. Both require an active lifetime and an artifact retention between one minute and 30 days. The equivalent HTTP request is:
+The control at the top of the system catalog creates a rule for all work; the catalog definition control creates a rule for one work type. Both require an active lifetime and an artifact retention between one minute and 30 days. Creating or updating either scope replaces the prior active rule for that same scope, so repeatedly saving a scope does not accumulate duplicate rules. The equivalent HTTP request is:
 
 ```http
 POST /workable/execution-diagnostics/capture-rules
@@ -149,7 +149,9 @@ POST   /workable/execution-diagnostics/capture-rules
 DELETE /workable/execution-diagnostics/capture-rules/{ruleId}
 ```
 
-Named systems expose the same routes below `/workable/systems/{systemName}`. Queries accept definition, worker, completion-time, minimum-log-level, and result-count filters; use the query route before requesting one complete artifact.
+Named systems expose the same routes below `/workable/systems/{systemName}`. Queries accept definition, worker, completion-time, minimum-log-level, and result-count filters; `take` defaults to `100` and must be between `1` and `1000`. The core diagnostics boundary enforces that range before calling either the built-in SQL Server repository or a custom provider. Use the query route before requesting one complete artifact.
+
+Capture-rule validation failures return actionable Workable-owned messages. If a custom repository fails while persisting an otherwise valid capture rule, the HTTP route returns a stable `workable.execution_diagnostics.repository_failed` response without copying the provider exception message across the transport boundary; the underlying exception is recorded through the host logger.
 
 The MCP adapter exposes `workable_query_execution_diagnostics` for compact iteration and instrumentation summaries and `workable_get_execution_diagnostic` for logs and profile JSON. Both surfaces require system diagnostics access. A single artifact response returns at most 10,000 logs and reports `LogsTruncated` when more persisted logs exist.
 

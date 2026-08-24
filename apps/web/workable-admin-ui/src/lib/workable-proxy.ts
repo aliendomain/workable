@@ -57,7 +57,7 @@ export async function proxyWorkableRequest(
   if (!body.ok) {
     return Response.json(
       { error: body.error },
-      { status: 413, headers: secureJsonHeaders() }
+      { status: body.status, headers: secureJsonHeaders() }
     );
   }
 
@@ -103,6 +103,8 @@ export async function proxyWorkableRequest(
       },
       body: body.text,
       cache: "no-store",
+      redirect: "error",
+      signal: request.signal,
     });
 
     const hostedAuthenticationError =
@@ -110,6 +112,7 @@ export async function proxyWorkableRequest(
         ? createHostedAuthenticationError(response.headers.get("www-authenticate"))
         : null;
     if (hostedAuthenticationError) {
+      await cancelResponseBody(response.body);
       return Response.json(
         { error: hostedAuthenticationError },
         {
@@ -125,7 +128,10 @@ export async function proxyWorkableRequest(
       );
     }
 
-    const responseBody = await response.arrayBuffer();
+    const responseBody =
+      request.method === "HEAD" || isNullBodyStatus(response.status)
+        ? null
+        : response.body;
     return new Response(responseBody, {
       status: response.status,
       statusText: response.statusText,
@@ -147,8 +153,29 @@ export async function proxyWorkableRequest(
       {
         error: createProxyReachabilityError(target.url),
       },
-      { status: 502, headers: secureJsonHeaders() }
+      {
+        status: 502,
+        headers: withCookies(
+          secureJsonHeaders(),
+          [
+            ...targetAccessToken.setCookieHeaders,
+            ...(authentication.sessionCookieHeader ? [authentication.sessionCookieHeader] : []),
+          ]
+        ),
+      }
     );
+  }
+}
+
+async function cancelResponseBody(body: ReadableStream<Uint8Array> | null) {
+  if (!body) {
+    return;
+  }
+
+  try {
+    await body.cancel();
+  } catch {
+    // Releasing the upstream response is best effort; keep the client-safe response stable.
   }
 }
 
@@ -199,22 +226,33 @@ async function readBody(request: Request, maximumBytes: number) {
 
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
 
-    totalBytes += value.byteLength;
-    if (totalBytes > maximumBytes) {
-      await reader.cancel();
-      return {
-        ok: false as const,
-        error: "Workable admin UI proxy request body is too large.",
-      };
-    }
+      totalBytes += value.byteLength;
+      if (totalBytes > maximumBytes) {
+        await cancelRequestBody(reader);
+        return {
+          ok: false as const,
+          status: 413,
+          error: "Workable admin UI proxy request body is too large.",
+        };
+      }
 
-    chunks.push(value);
+      chunks.push(value);
+    }
+  } catch {
+    return {
+      ok: false as const,
+      status: 400,
+      error: "Workable admin UI proxy request body could not be read.",
+    };
+  } finally {
+    reader.releaseLock();
   }
 
   const buffer = new Uint8Array(totalBytes);
@@ -225,6 +263,14 @@ async function readBody(request: Request, maximumBytes: number) {
   }
 
   return { ok: true as const, text: new TextDecoder().decode(buffer) };
+}
+
+async function cancelRequestBody(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    await reader.cancel();
+  } catch {
+    // The request is already rejected; cancellation is best effort.
+  }
 }
 
 function createProxyReachabilityError(url: URL) {
@@ -244,7 +290,7 @@ function isLoopbackHost(hostname: string) {
 }
 
 function withCookies(
-  headers: Record<string, string>,
+  headers: HeadersInit,
   cookies: readonly string[]
 ) {
   const responseHeaders = new Headers(headers);
@@ -255,11 +301,12 @@ function withCookies(
   return responseHeaders;
 }
 
-function secureJsonHeaders(headers: Record<string, string> = {}) {
-  return {
-    ...headers,
-    ...noStoreHeaders,
-  };
+function secureJsonHeaders(headers: HeadersInit = {}) {
+  const result = new Headers(headers);
+  for (const [name, value] of Object.entries(noStoreHeaders)) {
+    result.set(name, value);
+  }
+  return result;
 }
 
 function createSafeProxyContentType(contentType: string | null) {
@@ -272,4 +319,8 @@ function createSafeProxyContentType(contentType: string | null) {
   }
 
   return "text/plain; charset=utf-8";
+}
+
+function isNullBodyStatus(status: number) {
+  return status === 204 || status === 205 || status === 304;
 }

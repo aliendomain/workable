@@ -1,12 +1,13 @@
 namespace Workable;
 
 /// <summary>
-/// Configures read and operate authorization requirements for one work definition registration.
+/// Configures discover, read, and operate authorization requirements for one work definition registration.
 /// </summary>
 public interface IWorkAuthorizationBuilder
 {
     /// <summary>
-    /// Sets both the read and operate group requirements in one call.
+    /// Resets the explicit discover requirement and replaces the read and operate requirements with group-based requirements.
+    /// Previously configured known-authenticated-user grants are removed; the resulting read and operate audiences still imply discovery.
     /// </summary>
     /// <param name="readGroups">The groups allowed to discover and read the definition and its retained data.</param>
     /// <param name="operateGroups">The groups allowed to queue the definition and control its workers.</param>
@@ -16,11 +17,31 @@ public interface IWorkAuthorizationBuilder
         IEnumerable<string>? operateGroups = null);
 
     /// <summary>
+    /// Replaces the definition's explicit discover-group requirement.
+    /// Read and operate audiences also retain effective discovery access.
+    /// </summary>
+    /// <param name="groups">The groups allowed to discover the definition and its schemas.</param>
+    /// <returns>The same builder so additional authorization rules can be chained.</returns>
+    IWorkAuthorizationBuilder AllowDiscoverToGroups(params string[] groups);
+
+    /// <summary>
+    /// Allows discovery for callers that are authenticated and resolve to a known Workable actor.
+    /// </summary>
+    /// <returns>The same builder so additional authorization rules can be chained.</returns>
+    IWorkAuthorizationBuilder AllowDiscoverToKnownAuthenticatedUsers();
+
+    /// <summary>
     /// Replaces the definition's read-group requirement.
     /// </summary>
     /// <param name="groups">The groups allowed to read the definition and related retained data.</param>
     /// <returns>The same builder so additional authorization rules can be chained.</returns>
     IWorkAuthorizationBuilder AllowReadToGroups(params string[] groups);
+
+    /// <summary>
+    /// Allows read access for callers that are authenticated and resolve to a known Workable actor.
+    /// </summary>
+    /// <returns>The same builder so additional authorization rules can be chained.</returns>
+    IWorkAuthorizationBuilder AllowReadToKnownAuthenticatedUsers();
 
     /// <summary>
     /// Replaces the definition's operate-group requirement.

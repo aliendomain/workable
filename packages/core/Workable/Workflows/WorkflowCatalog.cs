@@ -8,7 +8,8 @@ internal sealed class WorkflowCatalog
     {
         ArgumentNullException.ThrowIfNull(workflows);
 
-        this.Definitions = workflows.Select(workflow => workflow.Definition).ToArray();
+        this.RegisteredWorkflows = workflows.ToArray();
+        this.Definitions = this.RegisteredWorkflows.Select(workflow => workflow.Definition).ToArray();
         var duplicates = this.Definitions
             .GroupBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1)
@@ -19,11 +20,13 @@ internal sealed class WorkflowCatalog
             throw new InvalidOperationException($"Workflow definition names must be unique. Duplicate names: {string.Join(", ", duplicates)}.");
         }
 
-        this.byName = workflows.ToDictionary(
+        this.byName = this.RegisteredWorkflows.ToDictionary(
             workflow => workflow.Definition.Name,
             workflow => workflow,
             StringComparer.OrdinalIgnoreCase);
     }
+
+    internal IReadOnlyList<RegisteredWorkflow> RegisteredWorkflows { get; }
 
     public IReadOnlyList<WorkflowDefinition> Definitions { get; }
 

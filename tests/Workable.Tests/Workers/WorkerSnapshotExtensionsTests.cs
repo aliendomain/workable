@@ -215,6 +215,179 @@ public sealed class WorkerSnapshotExtensionsTests
     }
 
     [Fact]
+    public void GetMergedIterationsCoversExecutingTerminalTieAndNullCollectionBoundaries()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var executing = CreateIteration(
+            sequence: 1,
+            status: WorkCompletionStatus.Executing,
+            startedAt: default,
+            completedAt: default,
+            duration: default,
+            messages: null,
+            logs: null,
+            output: null,
+            attemptCount: 1);
+        var terminal = CreateIteration(
+            sequence: 1,
+            status: WorkCompletionStatus.Completed,
+            startedAt: now.AddMinutes(-2),
+            completedAt: now,
+            duration: TimeSpan.FromSeconds(4),
+            messages: [WorkMessage.Info("same", "retained", target: null)],
+            logs: [],
+            output: WorkOutput.FromValue("terminal"),
+            attemptCount: 2);
+
+        var terminalPreferredFromRight = Assert.Single(CreateWorkerSnapshot(
+            iterations: [executing],
+            currentIteration: terminal).GetMergedIterations());
+        var terminalPreferredFromLeft = Assert.Single(CreateWorkerSnapshot(
+            iterations: [terminal],
+            currentIteration: executing).GetMergedIterations());
+
+        Assert.Equal(WorkCompletionStatus.Completed, terminalPreferredFromRight.Status);
+        Assert.Equal(WorkCompletionStatus.Completed, terminalPreferredFromLeft.Status);
+        Assert.Equal(now, terminalPreferredFromRight.CompletedAt);
+        Assert.Equal(TimeSpan.FromSeconds(4), terminalPreferredFromLeft.ExecutionDuration);
+        Assert.Equal(2, terminalPreferredFromRight.AttemptCount);
+        Assert.Equal("terminal", terminalPreferredFromLeft.Output?.ToValue<string>());
+        Assert.Equal(terminal.StartedAt, terminalPreferredFromRight.StartedAt);
+        Assert.Single(terminalPreferredFromRight.Messages);
+        Assert.Empty(terminalPreferredFromRight.Logs);
+
+        var earlierCompleted = terminal with
+        {
+            CompletedAt = now.AddMinutes(-1),
+            Output = WorkOutput.FromValue("earlier"),
+        };
+        var laterCompleted = terminal with
+        {
+            CompletedAt = now.AddMinutes(1),
+            Output = WorkOutput.FromValue("later"),
+        };
+        var laterPreferred = Assert.Single(CreateWorkerSnapshot(
+            iterations: [laterCompleted],
+            currentIteration: earlierCompleted).GetMergedIterations());
+        Assert.Equal("later", laterPreferred.Output?.ToValue<string>());
+
+        var sameCompletionLeft = earlierCompleted with { Sequence = 3, Output = WorkOutput.FromValue("left") };
+        var sameCompletionRight = earlierCompleted with { Sequence = 3, Output = WorkOutput.FromValue("right") };
+        var rightTiePreferred = Assert.Single(CreateWorkerSnapshot(
+            iterations: [sameCompletionLeft],
+            currentIteration: sameCompletionRight).GetMergedIterations());
+        Assert.Equal("right", rightTiePreferred.Output?.ToValue<string>());
+    }
+
+    [Fact]
+    public void GetMergedIterationsFallsBackFromPreferredNullOutputAndDefaultStart()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var preferredTerminal = CreateIteration(
+            8,
+            WorkCompletionStatus.Completed,
+            startedAt: default,
+            completedAt: now,
+            duration: TimeSpan.FromSeconds(5),
+            messages: [],
+            logs: [],
+            output: null,
+            attemptCount: 2);
+        var secondaryTerminal = preferredTerminal with
+        {
+            StartedAt = now.AddMinutes(-1),
+            CompletedAt = now.AddSeconds(-1),
+            Output = WorkOutput.FromValue("secondary"),
+        };
+        var mergedTerminal = Assert.Single(CreateWorkerSnapshot(
+            iterations: [preferredTerminal],
+            currentIteration: secondaryTerminal).GetMergedIterations());
+        Assert.Equal(secondaryTerminal.StartedAt, mergedTerminal.StartedAt);
+        Assert.Equal("secondary", mergedTerminal.Output?.ToValue<string>());
+
+        var preferredExecuting = preferredTerminal with
+        {
+            Status = WorkCompletionStatus.Executing,
+            CompletedAt = now,
+        };
+        var secondaryExecuting = preferredExecuting with
+        {
+            CompletedAt = now.AddSeconds(-1),
+            ExecutionDuration = TimeSpan.FromSeconds(3),
+        };
+        var mergedExecuting = Assert.Single(CreateWorkerSnapshot(
+            iterations: [preferredExecuting],
+            currentIteration: secondaryExecuting).GetMergedIterations());
+        Assert.Equal(secondaryExecuting.CompletedAt, mergedExecuting.CompletedAt);
+    }
+
+    [Fact]
+    public void ActivityEventsCoverActorStateIterationAndSortBoundaries()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var anonymousOrigin = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+        var namedOrigin = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            new WorkActor("", "Named Actor"));
+        var entries = new[]
+        {
+            new WorkerActionHistoryEntry(
+                at,
+                WorkerActionHistoryKind.WorkerAction,
+                WorkAction.Start,
+                WorkActionStatus.Accepted,
+                anonymousOrigin,
+                1,
+                7,
+                WorkerState.Running,
+                [],
+                1),
+            new WorkerActionHistoryEntry(
+                at,
+                WorkerActionHistoryKind.WorkerAction,
+                null,
+                WorkActionStatus.Accepted,
+                namedOrigin,
+                2,
+                6,
+                WorkerState.Waiting,
+                [],
+                null),
+        };
+        var completed = CreateIteration(
+            sequence: 2,
+            status: WorkCompletionStatus.Completed,
+            startedAt: at,
+            completedAt: at,
+            duration: default,
+            messages: [],
+            logs: [],
+            output: null,
+            attemptCount: 0);
+        var worker = CreateWorkerSnapshot(
+            state: WorkerState.Running,
+            stateSequence: 7,
+            actionHistory: entries);
+
+        var events = worker.GetActivityEvents([completed]);
+
+        Assert.Equal(3, events.Count);
+        Assert.Equal(WorkerActivityEventKind.Iteration, events[0].Kind);
+        Assert.Contains(events, item =>
+            item.Kind == WorkerActivityEventKind.ActionRequest &&
+            item.Category == WorkerActivityEventCategory.SystemEvent &&
+            item.Action == WorkAction.Start);
+        Assert.Contains(events, item =>
+            item.Kind == WorkerActivityEventKind.ActionRequest &&
+            item.Category == WorkerActivityEventCategory.UserAction &&
+            item.Action is null &&
+            item.Id.Contains(":none:", StringComparison.Ordinal));
+        Assert.DoesNotContain(events, item => item.Kind == WorkerActivityEventKind.StateChange);
+        Assert.Equal(WorkerActivityEventCategory.SystemEvent, events[0].Category);
+        Assert.Equal(at, events[0].At);
+    }
+
+    [Fact]
     public void FailureResolverUsesRetainedLogsAndJsonMetadataFallbacks()
     {
         var logFailure = WorkerIterationFailureResolver.Resolve(
@@ -256,6 +429,74 @@ public sealed class WorkerSnapshotExtensionsTests
         Assert.Equal(WorkerIterationFailureKind.Exception, metadataFailure.Kind);
         Assert.Equal("42", metadataFailure.Message);
         Assert.True(metadataFailure.DeclaredByWork);
+    }
+
+    [Fact]
+    public void FailureResolverCoversBlankExceptionAndPartialLogFallbacks()
+    {
+        var blankExceptionMessage = WorkerIterationFailureResolver.Resolve(
+            messages:
+            [
+                new WorkMessage(
+                    "blank.exception",
+                    WorkMessageSeverity.Error,
+                    "declared text",
+                    Metadata: new Dictionary<string, object?>
+                    {
+                        ["exceptionType"] = "System.InvalidOperationException",
+                        ["exceptionMessage"] = " ",
+                    }),
+            ],
+            logs: null,
+            fallbackMessage: "fallback");
+        var messageOnlyLog = WorkerIterationFailureResolver.Resolve(
+            messages: null,
+            logs:
+            [
+                new WorkerLogEntry(
+                    DateTimeOffset.UtcNow,
+                    WorkerId.New(),
+                    WorkDefinitionId.New(),
+                    "tests.failure",
+                    LogLevel.Critical,
+                    new EventId(11, "critical"),
+                    "critical failure",
+                    ExceptionType: null,
+                    ExceptionMessage: "message only"),
+            ],
+            fallbackMessage: "fallback");
+        var typeOnlyLog = WorkerIterationFailureResolver.Resolve(
+            messages: [],
+            logs:
+            [
+                new WorkerLogEntry(
+                    DateTimeOffset.UtcNow,
+                    WorkerId.New(),
+                    WorkDefinitionId.New(),
+                    "tests.failure",
+                    LogLevel.Error,
+                    new EventId(12, "error"),
+                    "typed failure",
+                    ExceptionType: "System.Exception",
+                    ExceptionMessage: null),
+            ],
+            fallbackMessage: "fallback");
+        var declaredFailure = WorkerIterationFailureResolver.Resolve(
+            messages: [WorkMessage.Error("declared", "declared failure")],
+            logs: [],
+            fallbackMessage: "fallback");
+        var fallbackFailure = WorkerIterationFailureResolver.Resolve(
+            messages: [WorkMessage.Error("blank", " ")],
+            logs: [],
+            fallbackMessage: "fallback");
+
+        Assert.Equal("The execution failed because an exception was raised.", blankExceptionMessage.Message);
+        Assert.Equal(WorkerIterationFailureKind.Failure, messageOnlyLog.Kind);
+        Assert.Equal("message only", messageOnlyLog.Message);
+        Assert.Equal(WorkerIterationFailureKind.Exception, typeOnlyLog.Kind);
+        Assert.Equal("fallback", typeOnlyLog.Message);
+        Assert.Equal("declared failure", declaredFailure.Message);
+        Assert.Equal("fallback", fallbackFailure.Message);
     }
 
     [Fact]
@@ -364,4 +605,27 @@ public sealed class WorkerSnapshotExtensionsTests
             LastIterationSequence = iterations?.OrderByDescending(iteration => iteration.Sequence).FirstOrDefault()?.Sequence,
         };
     }
+
+    private static WorkerIterationSnapshot CreateIteration(
+        long sequence,
+        WorkCompletionStatus status,
+        DateTimeOffset startedAt,
+        DateTimeOffset completedAt,
+        TimeSpan duration,
+        IReadOnlyList<WorkMessage>? messages,
+        IReadOnlyList<WorkerLogEntry>? logs,
+        WorkOutput? output,
+        int attemptCount)
+        => new(
+            sequence,
+            startedAt,
+            completedAt,
+            duration,
+            status,
+            attemptCount,
+            output,
+            messages!)
+        {
+            Logs = logs!,
+        };
 }

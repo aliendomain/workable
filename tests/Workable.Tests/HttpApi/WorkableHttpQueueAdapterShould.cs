@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 
 namespace Workable.Tests;
@@ -58,6 +59,30 @@ public sealed class WorkableHttpQueueAdapterShould
     }
 
     [Fact]
+    public async Task EnqueueMetadataWithoutJsonBuildsAnEmptyInputWithEveryKey()
+    {
+        var subject = new WorkSubjectId("account", "123");
+        var concurrency = new WorkConcurrencyKey("tenant", "west");
+        var identifier = new WorkIdentifier("invoice", "456");
+        var commands = new RecordingCommandDispatcher();
+        var adapter = new WorkableHttpQueueAdapter(commands);
+
+        var result = await adapter.Enqueue(
+            systemName: null,
+            "http.queue.metadata-only",
+            WorkRequestContext.Create(WorkInvocationChannel.HttpApi),
+            new WorkableHttpWorkRequest(
+                SubjectId: subject,
+                ConcurrencyKey: concurrency,
+                Identifiers: new HashSet<WorkIdentifier> { identifier }));
+
+        Assert.Equal(WorkableHttpWorkStatus.Accepted, result.Status);
+        Assert.Equal(subject, commands.Input?.SubjectId);
+        Assert.Equal(concurrency, commands.Input?.ConcurrencyKey);
+        Assert.Contains(identifier, commands.Input?.Identifiers ?? new HashSet<WorkIdentifier>());
+    }
+
+    [Fact]
     public async Task ConfigurationOnlyOptionsDoNotExplicitlyDisableProfiling()
     {
         var commands = new RecordingCommandDispatcher();
@@ -86,6 +111,41 @@ public sealed class WorkableHttpQueueAdapterShould
     }
 
     [Fact]
+    public void ConvertEveryHttpWorkerOptionInheritanceShape()
+    {
+        var inherited = new WorkableHttpWorkerOptions().ToWorkerOptions();
+        var captureOnly = new WorkableHttpWorkerOptions
+        {
+            ProfilingCaptureMode = WorkProfileCaptureMode.Bounded,
+        }.ToWorkerOptions();
+        var configuration = WorkableHttpWorkConfiguration.From(WorkConfiguration.Default);
+        var disabledWithConfiguration = new WorkableHttpWorkerOptions(false, configuration)
+        {
+            ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+        }.ToWorkerOptions();
+
+        Assert.False(inherited.HasExplicitProfilingEnabled);
+        Assert.False(inherited.HasExplicitProfilingCaptureMode);
+        Assert.False(captureOnly.HasExplicitProfilingEnabled);
+        Assert.True(captureOnly.HasExplicitProfilingCaptureMode);
+        Assert.Equal(WorkProfileCaptureMode.Bounded, captureOnly.ProfilingCaptureMode);
+        Assert.False(disabledWithConfiguration.ProfilingEnabled);
+        Assert.Equal(WorkProfileCaptureMode.Full, disabledWithConfiguration.ProfilingCaptureMode);
+        Assert.NotNull(disabledWithConfiguration.Configuration);
+
+        var legacyConfiguration = configuration with { FailedWorker = null };
+        Assert.Equal(
+            WorkFailedWorkerConfiguration.Default,
+            legacyConfiguration.ToWorkConfiguration().FailedWorker);
+        Assert.Equal(
+            WorkConfiguration.Default.FailedWorker,
+            configuration.ToWorkConfiguration().FailedWorker);
+
+        var genericDescriptor = WorkableHttpQueueRequestDescriptor.Create();
+        Assert.False(genericDescriptor.Capabilities.PersistentCoordinationAvailable);
+    }
+
+    [Fact]
     public async Task ReturnRejectedResultWithoutWaitingForCompletion()
     {
         var message = WorkMessage.Error("queue.invalid", "Nope.");
@@ -107,6 +167,38 @@ public sealed class WorkableHttpQueueAdapterShould
         Assert.Null(result.Completion);
         Assert.Null(result.Output);
         Assert.Equal([message], result.Messages);
+    }
+
+    [Fact]
+    public async Task ReturnFailedResultWhenDispatchHasNeitherACompletionNorQueueOutcome()
+    {
+        var adapter = new WorkableHttpQueueAdapter(new RecordingCommandDispatcher(
+            status: WorkDispatchStatus.Failed));
+
+        var missingCompletion = await adapter.Enqueue(
+            systemName: null,
+            "http.failed-without-completion",
+            WorkRequestContext.Create(WorkInvocationChannel.HttpApi),
+            new WorkableHttpWorkRequest(Completion: WorkableHttpCompletion.WaitForCompletion));
+
+        var createResult = typeof(WorkableHttpQueueAdapter).GetMethod(
+            "CreateQueueResult",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var missingQueueOutcome = Assert.IsType<WorkableHttpWorkResult>(createResult.Invoke(null,
+        [
+            new WorkDispatchResult<object?>(
+                WorkDispatchStatus.Invalid,
+                Response: null,
+                WorkerId: null,
+                ErrorCode: "missing.queue.outcome",
+                ErrorMessage: "No queue outcome.",
+                Messages: [WorkMessage.Error("missing.queue.outcome", "No queue outcome.")]),
+        ]));
+
+        Assert.Equal(WorkableHttpWorkStatus.Failed, missingCompletion.Status);
+        Assert.Null(missingCompletion.Completion);
+        Assert.Equal(WorkableHttpWorkStatus.Rejected, missingQueueOutcome.Status);
+        Assert.False(missingQueueOutcome.QueueOutcome.IsAccepted);
     }
 
     [Theory]

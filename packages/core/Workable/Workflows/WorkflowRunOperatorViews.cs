@@ -7,7 +7,17 @@ namespace Workable;
 /// </summary>
 public sealed record WorkflowRunListView(
     DateTimeOffset GeneratedAt,
-    IReadOnlyList<WorkflowRunListItemView> Runs);
+    IReadOnlyList<WorkflowRunListItemView> Runs)
+{
+    /// <summary>Gets the total number of visible runs before paging.</summary>
+    public int TotalCount { get; init; }
+
+    /// <summary>Gets the normalized number of visible runs skipped.</summary>
+    public int Skip { get; init; }
+
+    /// <summary>Gets the normalized maximum number of runs requested.</summary>
+    public int Take { get; init; }
+}
 
 /// <summary>
 /// Summarizes one workflow run for grid-style operator screens.

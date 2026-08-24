@@ -86,6 +86,19 @@ public sealed class WorkableHttpCatalogAdapterShould
                 string.Compare(definition.Category, "Operations:Billing", StringComparison.OrdinalIgnoreCase)));
     }
 
+    [Fact]
+    public void ReturnDirectDefinitionWithItsExplicitCategory()
+    {
+        var definition = WorkDefinition.Create("operations.root", category: "Operations");
+        var level = WorkableHttpCatalogAdapter.GetDefinitionCatalogLevel(
+            Catalog(definition),
+            "Operations");
+
+        var item = Assert.Single(level.Definitions);
+        Assert.Equal(definition.Name, item.Name);
+        Assert.Equal("Operations", item.Category);
+    }
+
     private static IWorkCatalog Catalog(params WorkDefinition[] definitions)
     {
         var services = new ServiceCollection();

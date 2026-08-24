@@ -5,9 +5,11 @@
     "<other urls here, if any>"
   ],
   "basicAuth": {
+    "enabled": true,
     "username": "admin",
     "password": "replace-with-a-long-random-password"
   },
   "sessionSecret": "replace-with-a-different-long-random-secret",
-  "sessionMaxAgeSeconds": 28800
+  "sessionMaxAgeSeconds": 28800,
+  "sessionAbsoluteMaxAgeSeconds": 86400
 }

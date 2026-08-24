@@ -10,8 +10,10 @@ const noStoreHeaders = {
   "cache-control": "no-store",
   "x-content-type-options": "nosniff",
 };
+const maximumLoginBodyBytes = 16 * 1024;
 
 export async function POST(request: Request) {
+  const loginStartedAt = Date.now();
   const csrf = validateUnsafeRequestOrigin(request);
   if (!csrf.ok) {
     return Response.json(
@@ -24,7 +26,13 @@ export async function POST(request: Request) {
   }
 
   const credentials = await readCredentials(request);
-  if (!credentials) {
+  if (credentials.status === "too-large") {
+    return Response.json(
+      { error: "The login request body is too large." },
+      { status: 413, headers: secureJsonHeaders() }
+    );
+  }
+  if (credentials.status === "invalid") {
     return Response.json(
       { error: "Username and password are required." },
       { status: 400, headers: secureJsonHeaders() }
@@ -32,8 +40,10 @@ export async function POST(request: Request) {
   }
 
   const verification = verifyAdminCredentials(
-    credentials.userName,
-    credentials.password
+    credentials.value.userName,
+    credentials.value.password,
+    process.env,
+    request.headers
   );
   if (!verification.ok) {
     return Response.json(
@@ -45,7 +55,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const cookie = createAdminSessionCookie(verification.identity.name, request);
+  const cookie = createAdminSessionCookie(
+    verification.identity.name,
+    request,
+    process.env,
+    undefined,
+    undefined,
+    loginStartedAt
+  );
   if (!cookie.ok) {
     return Response.json(
       { error: cookie.error },
@@ -58,7 +75,7 @@ export async function POST(request: Request) {
 
   const headers = new Headers(noStoreHeaders);
   headers.append("set-cookie", cookie.header);
-  for (const staleCookie of createExpiredEntraTargetTokenCookies()) {
+  for (const staleCookie of createExpiredEntraTargetTokenCookies(request.headers)) {
     headers.append("set-cookie", staleCookie);
   }
 
@@ -72,29 +89,86 @@ export async function POST(request: Request) {
   );
 }
 
-function secureJsonHeaders(headers: Record<string, string> = {}) {
-  return {
-    ...headers,
-    ...noStoreHeaders,
-  };
+function secureJsonHeaders(headers: HeadersInit = {}) {
+  const result = new Headers(headers);
+  for (const [name, value] of Object.entries(noStoreHeaders)) {
+    result.set(name, value);
+  }
+  return result;
 }
 
 async function readCredentials(request: Request) {
   try {
-    const contentType = request.headers.get("content-type") ?? "";
-    if (contentType.includes("application/json")) {
-      const body = await request.json();
-      return normalizeCredentials(body);
+    const body = await readBoundedBody(request.body);
+    if (!body) {
+      return { status: "too-large" } as const;
     }
 
-    const form = await request.formData();
-    return normalizeCredentials({
+    const contentType = request.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const parsed = JSON.parse(new TextDecoder().decode(body));
+      const credentials = normalizeCredentials(parsed);
+      return credentials
+        ? { status: "ok", value: credentials } as const
+        : { status: "invalid" } as const;
+    }
+
+    const boundedRequest = new Request(request.url, {
+      method: "POST",
+      headers: { "content-type": contentType },
+      body,
+    });
+    const form = await boundedRequest.formData();
+    const credentials = normalizeCredentials({
       userName: form.get("userName"),
       password: form.get("password"),
     });
+    return credentials
+      ? { status: "ok", value: credentials } as const
+      : { status: "invalid" } as const;
   } catch {
-    return null;
+    return { status: "invalid" } as const;
   }
+}
+
+async function readBoundedBody(body: ReadableStream<Uint8Array> | null) {
+  if (!body) {
+    return new Uint8Array();
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      length += value.byteLength;
+      if (length > maximumLoginBodyBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The request is already rejected; cancellation is best effort.
+        }
+        return null;
+      }
+
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const combined = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined;
 }
 
 function normalizeCredentials(value: unknown) {

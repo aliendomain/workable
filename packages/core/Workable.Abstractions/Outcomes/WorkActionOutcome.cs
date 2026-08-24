@@ -5,7 +5,7 @@ namespace Workable;
 /// <param name="Status">The high-level action status returned by the request.</param>
 /// <param name="Action">The action that was requested.</param>
 /// <param name="WorkerId">The target worker id when known.</param>
-/// <param name="Worker">The authoritative worker snapshot returned with the outcome, when available.</param>
+/// <param name="Worker">The authoritative worker snapshot returned only when the caller may read it.</param>
 /// <param name="Messages">Structured messages that describe validation, authorization, or conflict details.</param>
 public sealed record WorkActionOutcome(
     WorkActionStatus Status,

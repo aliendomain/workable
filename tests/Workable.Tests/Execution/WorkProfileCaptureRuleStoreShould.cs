@@ -1,3 +1,4 @@
+using System.Reflection;
 using Workable;
 
 namespace Workable.Tests;
@@ -5,6 +6,83 @@ namespace Workable.Tests;
 [Trait("Category", "Profiling")]
 public sealed class WorkProfileCaptureRuleStoreShould
 {
+    [Fact]
+    public void PruneExpiredRuleStatesAndRejectFurtherReservationsAtCapacity()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var store = new WorkProfileCaptureRuleStore();
+        var expired = new WorkProfileCaptureRuleStore.RuleState(
+            Guid.NewGuid(),
+            "orders.expired",
+            actorId: null,
+            maximumMatches: 1,
+            createdAt: now.AddMinutes(-2),
+            expiresAt: now.AddMinutes(-1),
+            createdBy: WorkActor.Unknown);
+        var rules = (Dictionary<Guid, WorkProfileCaptureRuleStore.RuleState>)typeof(WorkProfileCaptureRuleStore)
+            .GetField("rules", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(store)!;
+        rules.Add(expired.Id, expired);
+
+        Assert.Empty(store.GetRules());
+        Assert.False(expired.IsActive);
+
+        var exhausted = new WorkProfileCaptureRuleStore.RuleState(
+            Guid.NewGuid(),
+            "orders.exhausted",
+            actorId: null,
+            maximumMatches: 1,
+            createdAt: now,
+            expiresAt: now.AddMinutes(5),
+            createdBy: WorkActor.Unknown);
+        Assert.True(exhausted.TryReserve(now));
+        Assert.Equal(0, exhausted.AvailableMatches);
+        Assert.False(exhausted.TryReserve(now));
+        Assert.False(exhausted.Complete(committed: false, now));
+        Assert.True(exhausted.TryReserve(now));
+    }
+
+    [Fact]
+    public void SkipPendingAndInactiveIndexedRulesAndRejectReservationsThatExpireAtAdmission()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var store = new WorkProfileCaptureRuleStore();
+        var snapshot = store.Create(
+            "orders.indexed",
+            actorId: null,
+            maximumMatches: 1,
+            expiresAfter: TimeSpan.FromMinutes(5),
+            createdBy: WorkActor.Unknown);
+        var rules = (Dictionary<Guid, WorkProfileCaptureRuleStore.RuleState>)typeof(WorkProfileCaptureRuleStore)
+            .GetField("rules", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(store)!;
+        var indexed = rules[snapshot.Id];
+        Assert.True(indexed.TryReserve(now));
+
+        Assert.Null(store.TryAcquire(
+            "orders.indexed",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess)));
+
+        Assert.False(indexed.Complete(committed: false, now));
+        indexed.Deactivate();
+        Assert.Null(store.TryAcquire(
+            "orders.indexed",
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess)));
+
+        var expiresDuringAdmission = new WorkProfileCaptureRuleStore.RuleState(
+            Guid.NewGuid(),
+            "orders.expiring",
+            actorId: null,
+            maximumMatches: 1,
+            createdAt: now.AddMinutes(-2),
+            expiresAt: now.AddMilliseconds(-1),
+            createdBy: WorkActor.Unknown);
+
+        Assert.False(expiresDuringAdmission.TryReserve(now.AddMinutes(-1)));
+        Assert.False(expiresDuringAdmission.IsActive);
+        Assert.Equal(0, expiresDuringAdmission.PendingMatches);
+    }
+
     [Fact]
     public void MatchMostSpecificRuleAndCommitItsMatch()
     {
@@ -61,6 +139,33 @@ public sealed class WorkProfileCaptureRuleStoreShould
     }
 
     [Fact]
+    public void MatchGlobalRulesAfterMoreSpecificRulesAreUnavailable()
+    {
+        var store = new WorkProfileCaptureRuleStore();
+        var actor = new WorkActor("user-1");
+        var context = WorkRequestContext.Create(WorkInvocationChannel.InProcess, actor);
+        var global = store.Create(null, null, 1, TimeSpan.FromMinutes(5), actor);
+        var definition = store.Create("orders.run", null, 1, TimeSpan.FromMinutes(5), actor);
+
+        using (var lease = store.TryAcquire("orders.run", context))
+        {
+            Assert.NotNull(lease);
+            lease.Commit();
+        }
+
+        Assert.DoesNotContain(store.GetRules(), rule => rule.Id == definition.Id);
+        Assert.Contains(store.GetRules(), rule => rule.Id == global.Id);
+
+        using (var lease = store.TryAcquire("other.run", context))
+        {
+            Assert.NotNull(lease);
+            lease.Commit();
+        }
+
+        Assert.Empty(store.GetRules());
+    }
+
+    [Fact]
     public void RestoreAReservedMatchWhenQueueAcceptanceDoesNotCommit()
     {
         var store = new WorkProfileCaptureRuleStore();
@@ -71,6 +176,47 @@ public sealed class WorkProfileCaptureRuleStoreShould
         store.TryAcquire("orders.run", context)!.Dispose();
 
         Assert.Equal(1, Assert.Single(store.GetRules(), rule => rule.Id == created.Id).RemainingMatches);
+    }
+
+    [Fact]
+    public void RestoreAGlobalRuleToItsFallbackBucketAfterRollback()
+    {
+        var store = new WorkProfileCaptureRuleStore();
+        var actor = new WorkActor("user-1");
+        var context = WorkRequestContext.Create(WorkInvocationChannel.InProcess, actor);
+        store.Create(null, null, 1, TimeSpan.FromMinutes(5), actor);
+
+        store.TryAcquire("orders.run", context)!.Dispose();
+        using var restored = store.TryAcquire("other.run", context);
+
+        Assert.NotNull(restored);
+        restored.Commit();
+        Assert.Empty(store.GetRules());
+    }
+
+    [Fact]
+    public void AnonymousActorsSkipActorBucketsAndUseDefinitionThenGlobalRules()
+    {
+        var store = new WorkProfileCaptureRuleStore();
+        store.Create(null, "known-user", 1, TimeSpan.FromMinutes(5), WorkActor.Unknown);
+        var definition = store.Create("orders.run", null, 1, TimeSpan.FromMinutes(5), WorkActor.Unknown);
+        var global = store.Create(null, null, 1, TimeSpan.FromMinutes(5), WorkActor.Unknown);
+        var anonymous = WorkRequestContext.Create(WorkInvocationChannel.InProcess, WorkActor.Unknown);
+
+        using (var lease = store.TryAcquire("orders.run", anonymous))
+        {
+            Assert.NotNull(lease);
+            lease.Commit();
+        }
+        Assert.DoesNotContain(store.GetRules(), rule => rule.Id == definition.Id);
+
+        using (var lease = store.TryAcquire("other.run", anonymous))
+        {
+            Assert.NotNull(lease);
+            lease.Commit();
+        }
+        Assert.DoesNotContain(store.GetRules(), rule => rule.Id == global.Id);
+        Assert.Single(store.GetRules());
     }
 
     [Fact]
@@ -109,12 +255,78 @@ public sealed class WorkProfileCaptureRuleStoreShould
     }
 
     [Fact]
+    public void RuleStateCoversInactiveCommittedRestoredAndOrderingBoundaries()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var earlier = new WorkProfileCaptureRuleStore.RuleState(
+            Guid.Empty,
+            null,
+            null,
+            2,
+            now.AddSeconds(-1),
+            now.AddMinutes(5),
+            WorkActor.Unknown);
+        var later = new WorkProfileCaptureRuleStore.RuleState(
+            Guid.NewGuid(),
+            null,
+            null,
+            2,
+            now,
+            now.AddMinutes(5),
+            WorkActor.Unknown);
+        Assert.True(WorkProfileCaptureRuleStore.RuleState.CompareOrder(earlier, later) < 0);
+
+        var sameTimeLowId = new WorkProfileCaptureRuleStore.RuleState(
+            Guid.Empty, null, null, 1, now, now.AddMinutes(5), WorkActor.Unknown);
+        var sameTimeHighId = new WorkProfileCaptureRuleStore.RuleState(
+            Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+            null, null, 1, now, now.AddMinutes(5), WorkActor.Unknown);
+        Assert.True(WorkProfileCaptureRuleStore.RuleState.CompareOrder(sameTimeLowId, sameTimeHighId) < 0);
+
+        later.Deactivate();
+        Assert.False(later.TryReserve(now));
+
+        Assert.True(earlier.TryReserve(now));
+        Assert.False(earlier.Complete(committed: true, now));
+        Assert.True(earlier.IsActive);
+        Assert.True(earlier.TryReserve(now));
+        earlier.Deactivate();
+        Assert.True(earlier.Complete(committed: false, now));
+        Assert.False(earlier.IsActive);
+
+        var expiring = new WorkProfileCaptureRuleStore.RuleState(
+            Guid.NewGuid(), null, null, 1, now, now, WorkActor.Unknown);
+        Assert.False(expiring.TryReserve(now));
+        Assert.False(expiring.IsActive);
+    }
+
+    [Fact]
+    public void RuleLeaseCompletionIsIdempotentAcrossCommitAndDisposeOrders()
+    {
+        var store = new WorkProfileCaptureRuleStore();
+        var actor = new WorkActor("user-1");
+        var context = WorkRequestContext.Create(WorkInvocationChannel.InProcess, actor);
+        store.Create("orders.run", null, 2, TimeSpan.FromMinutes(5), actor);
+
+        var committed = store.TryAcquire("orders.run", context)!;
+        committed.Commit();
+        committed.Commit();
+        committed.Dispose();
+
+        var rolledBack = store.TryAcquire("orders.run", context)!;
+        rolledBack.Dispose();
+        rolledBack.Dispose();
+        rolledBack.Commit();
+
+        Assert.Equal(1, Assert.Single(store.GetRules()).RemainingMatches);
+    }
+
+    [Fact]
     public void ValidateRuleSelectorsMatchesAndLifetime()
     {
         var store = new WorkProfileCaptureRuleStore();
 
-        Assert.Throws<ArgumentException>(() =>
-            store.Create(null, null, 1, TimeSpan.FromMinutes(5), WorkActor.Unknown));
+        store.Create(null, null, 1, TimeSpan.FromMinutes(5), WorkActor.Unknown);
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             store.Create("orders.run", null, 0, TimeSpan.FromMinutes(5), WorkActor.Unknown));
         Assert.Throws<ArgumentOutOfRangeException>(() =>

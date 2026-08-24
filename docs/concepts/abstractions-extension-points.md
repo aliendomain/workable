@@ -15,8 +15,15 @@ Reach for these APIs only when one of these is true:
 - you need a host lifecycle callback during shutdown
 - you are advertising or replacing a realtime transport
 - you need custom authorization-group resolution
+- you are implementing a custom work system whose transports need exact action capability discovery
 
 If you are only queueing, querying, or controlling work, these are not the APIs you want.
+
+## Exact Operation Capability Source
+
+`IWorkOperationAccessSource` is an optional companion interface for custom `IWorkSystem` implementations. Its `DescribeOperationAccess(...)` result reports the exact worker and workflow action categories available to one caller. Transports such as MCP use it to decide which individual action tools to advertise.
+
+If a custom system does not implement this interface, Workable derives a conservative fallback from `IWorkSystem.DescribeAccess(...)`: only system-wide Operate access is expanded, and per-definition coarse Operate counts advertise no exact action. This avoids treating “the caller can operate at least one definition” as proof that every worker or workflow action is available. Implementations should evaluate the supplied `WorkRequestContext`, honor cancellation, and return only categories backed by an authoritative runtime check.
 
 ## Persistence Providers
 
@@ -226,7 +233,7 @@ public interface IWorkRealtimeCapabilityProvider
 
 That matters when another surface, usually HTTP or a custom admin UI, wants to ask "does this host expose realtime and how should I connect to it?" without hard-coding SignalR assumptions.
 
-Most applications will never implement this directly. It matters when you are building or replacing a realtime transport and want the host to advertise that capability coherently.
+Most applications will never implement this directly. It matters when you are building or replacing a realtime transport and want the host to advertise that capability coherently. A host replacement can be registered before or after `AddWorkableSignalR()`; when multiple providers are present, the last registration owns the advertised capability under normal Microsoft dependency-injection replacement ordering.
 
 ## Authorization Group Provider
 
@@ -281,7 +288,7 @@ public sealed class ApplicationWorkGroupProvider(IApplicationPermissions permiss
 
 ASP.NET Core integration additionally resolves groups from the current authenticated user's claims when that user matches the actor being evaluated. It does not replace the actor-based provider. When a durable operation is rehydrated outside HTTP, Workable falls back to the host's `IWorkAuthorizationGroupProvider`.
 
-Invocation adapters can contribute ambient groups through `IWorkAuthorizationGroupContextProvider`. Its nullable result is intentional: return `null` when the current invocation context does not apply to the requested actor, and return an empty set when it does apply but the actor has no groups. Workable checks applicable context providers before falling back to `IWorkAuthorizationGroupProvider`. Context providers are also singleton services and must follow the same concurrency, scoped-resource, cancellation, and bounded-retry rules.
+Invocation adapters can contribute ambient groups through `IWorkAuthorizationGroupContextProvider`. Its nullable result is intentional: return `null` when the current invocation context does not apply to the requested actor, and return an empty set when it does apply but the actor has no groups. Providers run by ascending `Order`; host providers default to `0`, while Workable's default ASP.NET Core claims provider runs at `1000`. Workable uses the first applicable provider before falling back to `IWorkAuthorizationGroupProvider`. Context providers are also singleton services and must follow the same concurrency, scoped-resource, cancellation, and bounded-retry rules.
 
 Adapter code that needs the effective groups should depend on `IWorkAuthorizationGroupResolver`, not call either provider contract directly. The resolver preserves the authoritative order: a matching authorization snapshot already stored on the request context, then an applicable invocation-context provider, then the actor-based provider used by durable and background execution.
 

@@ -62,7 +62,7 @@ public sealed class HttpContextWorkflowCommandDispatcher(
     /// <summary>
     /// Starts a workflow in a specific system using the current HTTP request context with workflow input.
     /// </summary>
-    public Task<WorkflowCommandResult> StartInSystem(
+    public async Task<WorkflowCommandResult> StartInSystem(
         string? systemName,
         string workflowName,
         WorkInput? input,
@@ -72,12 +72,13 @@ public sealed class HttpContextWorkflowCommandDispatcher(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowName);
 
-        if (!this.TryCreateRequestContext(description, out var requestContext, out var unavailable))
+        var (requestContext, unavailable) = await this.CreateRequestContext(description);
+        if (requestContext is null)
         {
-            return Task.FromResult(unavailable);
+            return unavailable!;
         }
 
-        return workflows.Start(
+        return await workflows.Start(
             systemName,
             workflowName,
             requestContext,
@@ -104,19 +105,20 @@ public sealed class HttpContextWorkflowCommandDispatcher(
     /// <summary>
     /// Executes a workflow action in a specific system using the current HTTP request context.
     /// </summary>
-    public Task<WorkflowCommandResult> ExecuteInSystem(
+    public async Task<WorkflowCommandResult> ExecuteInSystem(
         string? systemName,
         WorkflowRunId runId,
         WorkflowRunAction action,
         string? description = null,
         CancellationToken cancellationToken = default)
     {
-        if (!this.TryCreateRequestContext(description, out var requestContext, out var unavailable))
+        var (requestContext, unavailable) = await this.CreateRequestContext(description);
+        if (requestContext is null)
         {
-            return Task.FromResult(unavailable);
+            return unavailable!;
         }
 
-        return workflows.Execute(
+        return await workflows.Execute(
             systemName,
             runId,
             action,
@@ -124,25 +126,24 @@ public sealed class HttpContextWorkflowCommandDispatcher(
             cancellationToken);
     }
 
-    private bool TryCreateRequestContext(
-        string? description,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out WorkRequestContext? requestContext,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out WorkflowCommandResult? unavailable)
+    private async Task<(WorkRequestContext? RequestContext, WorkflowCommandResult? Unavailable)> CreateRequestContext(
+        string? description)
     {
         var httpContext = httpContextAccessor.HttpContext;
         if (httpContext is null)
         {
-            requestContext = null;
-            unavailable = CreateRequestContextUnavailableResult();
-            return false;
+            return (null, CreateRequestContextUnavailableResult());
         }
 
-        requestContext = requestContexts.Create(
+        if (await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
+        {
+            await WorkableAspNetCoreAuthentication.PrepareAuthorizationSnapshotAsync(httpContext);
+        }
+        var requestContext = requestContexts.Create(
             httpContext,
             WorkInvocationChannel.HttpApi,
             description);
-        unavailable = null;
-        return true;
+        return (requestContext, null);
     }
 
     private static WorkflowCommandResult CreateRequestContextUnavailableResult()

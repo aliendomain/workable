@@ -4,8 +4,19 @@ import {
   createHash,
   createHmac,
   randomBytes,
+  scryptSync,
   timingSafeEqual,
 } from "node:crypto";
+
+const SECRET_BOUND_VALUE_BYTES = 32;
+const BASIC_CREDENTIAL_BINDING_PURPOSE =
+  "workable.admin.basic-credential-binding.v1";
+
+let cachedSecretBoundValue: {
+  secret: string;
+  value: string;
+  derived: string;
+} | undefined;
 
 export function randomBase64Url(byteLength = 32) {
   return randomBytes(byteLength).toString("base64url");
@@ -17,6 +28,24 @@ export function sha256Base64Url(value: string) {
 
 export function sign(payload: string, secret: string) {
   return createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
+export function deriveBasicCredentialBinding(
+  value: string,
+  secret: string
+) {
+  if (cachedSecretBoundValue?.secret === secret &&
+    cachedSecretBoundValue.value === value) {
+    return cachedSecretBoundValue.derived;
+  }
+
+  const derived = scryptSync(
+    value,
+    `${BASIC_CREDENTIAL_BINDING_PURPOSE}\0${secret}`,
+    SECRET_BOUND_VALUE_BYTES
+  ).toString("base64url");
+  cachedSecretBoundValue = { secret, value, derived };
+  return derived;
 }
 
 export function base64UrlEncode(value: string) {

@@ -520,12 +520,6 @@ internal sealed class WorkProfile :
         }
         finally
         {
-            for (var index = 0; index < depth; index++)
-            {
-                frames[index].Entries?.Dispose();
-                frames[index] = default;
-            }
-
             ArrayPool<SnapshotFrame>.Shared.Return(frames, clearArray: true);
         }
     }
@@ -697,7 +691,7 @@ internal sealed class WorkProfile :
 
         public ProfileScope Initialize()
         {
-            parent?.AddChild(this);
+            parent!.AddChild(this);
             return this;
         }
     }

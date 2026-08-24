@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Reflection;
 using Workable;
 
 namespace Workable.Tests;
@@ -13,15 +14,33 @@ public sealed class WorkSystemLifecycleTests
     {
         var services = new ServiceCollection().BuildServiceProvider();
 
+        Assert.Throws<InvalidOperationException>(() => new WorkSystemRegistry(
+            services,
+            [],
+            [],
+            [],
+            [],
+            bootstrappers: null));
+
+        var bootstrapper = new RecordingBootstrapper();
+
         var exception = Assert.Throws<InvalidOperationException>(() => new WorkSystemRegistry(
             services,
             [],
             [],
             [],
             [],
-            []));
+            [bootstrapper]));
 
         Assert.Contains("At least one Workable system", exception.Message);
+        Assert.True(bootstrapper.WasInitialized);
+    }
+
+    private sealed class RecordingBootstrapper : IWorkableBootstrapper
+    {
+        public bool WasInitialized { get; private set; }
+
+        public void Initialize() => this.WasInitialized = true;
     }
 
     [Fact]
@@ -122,6 +141,38 @@ public sealed class WorkSystemLifecycleTests
     }
 
     [Fact]
+    public void OmittedSystemLimitOverridesRestoreEveryDefault()
+    {
+        using var provider = new ServiceCollection()
+            .AddWorkableSystem(builder => builder
+                .ConfigureRetention()
+                .ConfigureCapacity()
+                .ConfigureIterationStatuses()
+                .ConfigureProfiling())
+            .BuildServiceProvider();
+
+        Assert.NotNull(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+    }
+
+    [Fact]
+    public void ExplicitSystemIterationStatusOverridesAcceptAConsistentConfiguration()
+    {
+        using var provider = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.ConfigureIterationStatuses(
+                replayItemCapacity: 8,
+                replayPayloadByteCapacity: 4_096,
+                systemReplayItemCapacity: 16,
+                systemReplayByteCapacity: 8_192,
+                maximumPayloadBytes: 2_048,
+                maximumTypeBytes: 128,
+                maximumSubscriptions: 8,
+                maximumSubscriptionsPerIteration: 4))
+            .BuildServiceProvider();
+
+        Assert.NotNull(provider.GetRequiredService<IWorkSystemRegistry>().Default);
+    }
+
+    [Fact]
     public void SystemRetentionRejectsInvalidMaximumFinalWorkers()
     {
         var exception = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
@@ -191,10 +242,20 @@ public sealed class WorkSystemLifecycleTests
             {
                 SystemReplayItemCapacity = 1,
             })));
+        var nonPositiveSystemItems = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                SystemReplayItemCapacity = 0,
+            })));
         var invalidSystemBytes = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
             .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
             {
                 SystemReplayByteCapacity = 1,
+            })));
+        var nonPositiveSystemBytes = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                SystemReplayByteCapacity = 0,
             })));
         var invalidIterationSubscriptions = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
             .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
@@ -206,6 +267,12 @@ public sealed class WorkSystemLifecycleTests
             {
                 MaximumSubscriptions = 1,
             })));
+        var nonPositiveSystemSubscriptions = Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.UseIterationStatuses(new WorkSystemIterationStatusConfiguration
+            {
+                MaximumSubscriptions = 0,
+                MaximumSubscriptionsPerIteration = 1,
+            })));
 
         Assert.Contains("replay item capacity", invalidReplay.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("maximum payload bytes", invalidPayload.Message, StringComparison.OrdinalIgnoreCase);
@@ -213,9 +280,12 @@ public sealed class WorkSystemLifecycleTests
         Assert.Contains("cannot be less", inconsistentPayloadLimits.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("maximum type bytes", invalidType.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("system replay item capacity", invalidSystemItems.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system replay item capacity", nonPositiveSystemItems.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("system replay byte capacity", invalidSystemBytes.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("system replay byte capacity", nonPositiveSystemBytes.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("subscriptions per iteration", invalidIterationSubscriptions.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("maximum subscriptions", invalidSystemSubscriptions.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("maximum subscriptions", nonPositiveSystemSubscriptions.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -404,6 +474,45 @@ public sealed class WorkSystemLifecycleTests
         Assert.Contains(logs.Entries, entry =>
             entry.Level == LogLevel.Information &&
             entry.Message.Contains("shutdown complete: 1 system(s), 2 cooperative cancellation(s)", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task HostedServiceReportsAnEmptyShutdownAndBoundsWorkerFormatting()
+    {
+        var logs = new CapturingLoggerProvider();
+        using var provider = new ServiceCollection()
+            .AddLogging(builder => builder.AddProvider(logs))
+            .AddWorkableSystem(builder => builder.StartWithHost())
+            .BuildServiceProvider();
+        var hostedService = Assert.Single(provider.GetServices<IHostedService>());
+
+        await hostedService.StartAsync(CancellationToken.None);
+        await hostedService.StopAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(logs.Entries, entry => entry.Message.Contains("Stopping workers", StringComparison.Ordinal));
+
+        var formatWorkers = typeof(WorkableHostedService).GetMethod(
+            "FormatWorkers",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        WorkSystemShutdownWorker Worker(string name) => new(
+            WorkerId.New(),
+            name,
+            WorkDefinitionMetadataDefaults.Category,
+            WorkerState.Running,
+            null);
+        var one = Assert.IsType<string>(formatWorkers.Invoke(null, [new[] { Worker("one") }]));
+        var many = Assert.IsType<string>(formatWorkers.Invoke(
+            null,
+            [Enumerable.Range(0, 51).Select(index => Worker(index < 2 ? "repeated" : $"worker-{index}")).ToArray()]));
+        Assert.Equal("one", one);
+        Assert.Contains("repeated x2", many, StringComparison.Ordinal);
+        Assert.Contains("and 1 more", many, StringComparison.Ordinal);
+
+        var formatDuration = typeof(WorkableHostedService).GetMethod(
+            "FormatDuration",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        Assert.Equal("unknown", formatDuration.Invoke(null, [null]));
+        Assert.Equal("0:00:01", formatDuration.Invoke(null, [(TimeSpan?)TimeSpan.FromSeconds(1)]));
     }
 
     [Fact]
@@ -678,6 +787,16 @@ public sealed class WorkSystemLifecycleTests
             .AddWorkableSystem(builder => builder.UseShutdownGracePeriodRatio(0.91)));
 
         Assert.Equal("hostShutdownTimeoutRatio", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-0.1)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    public void ShutdownGracePeriodRatioRejectsNonPositiveAndNonFiniteValues(double ratio)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => WorkSystemShutdownGracePeriod.HostRelative(ratio));
     }
 
     [Fact]

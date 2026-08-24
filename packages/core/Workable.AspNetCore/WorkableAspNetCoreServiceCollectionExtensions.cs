@@ -22,6 +22,7 @@ public static class WorkableAspNetCoreServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
+        services.TryAddSingleton<IWorkClaimsIdentitySelector, PrimaryWorkClaimsIdentitySelector>();
         services.AddAuthorization();
         services.AddOptions<WorkableAspNetCoreAuthorizationOptions>();
         if (configure is not null)
@@ -29,12 +30,14 @@ public static class WorkableAspNetCoreServiceCollectionExtensions
             services.Configure(configure);
         }
 
-        services.TryAddSingleton<IWorkActorFactory, HttpContextWorkActorFactory>();
-        services.TryAddSingleton<IWorkRequestContextFactory, HttpContextWorkRequestContextFactory>();
-        services.TryAddSingleton<IHttpContextWorkCommandDispatcher, HttpContextWorkCommandDispatcher>();
-        services.TryAddSingleton<IHttpContextWorkflowCommandDispatcher, HttpContextWorkflowCommandDispatcher>();
+        services.TryAddScoped<IWorkActorFactory, HttpContextWorkActorFactory>();
+        services.TryAddScoped<IWorkRequestContextFactory, HttpContextWorkRequestContextFactory>();
+        services.TryAddScoped<IHttpContextWorkCommandDispatcher, HttpContextWorkCommandDispatcher>();
+        services.TryAddScoped<IHttpContextWorkflowCommandDispatcher, HttpContextWorkflowCommandDispatcher>();
         services.TryAddEnumerable(
-            ServiceDescriptor.Singleton<IWorkAuthorizationGroupContextProvider, HttpContextClaimsWorkAuthorizationGroupProvider>());
+            ServiceDescriptor.Singleton<
+                IWorkAuthorizationGroupContextProvider,
+                RequestScopedHttpContextClaimsWorkAuthorizationGroupProvider>());
         return services;
     }
 }

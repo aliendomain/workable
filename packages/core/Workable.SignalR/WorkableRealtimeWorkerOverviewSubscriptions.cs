@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Options;
 
 namespace Workable;
 
@@ -10,8 +11,8 @@ namespace Workable;
 /// Tracks active worker-overview subscriptions for the Workable SignalR adapter.
 /// </summary>
 /// <remarks>
-/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The public debug snapshot method
-/// exists so local diagnostics endpoints can inspect shared worker-overview subscription state and streaming health.
+/// Most hosts use this type indirectly through <see cref="WorkableRealtimeHub"/>. The internal snapshot method
+/// supports runtime verification without exposing shared subscription state through a host endpoint.
 /// </remarks>
 public sealed class WorkableRealtimeWorkerOverviewSubscriptions
 {
@@ -21,11 +22,30 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
     };
 
     private readonly object gate = new();
+    private readonly WorkableSignalROptions options;
     private readonly Dictionary<string, WorkableRealtimeWorkerOverviewSubscription> connectionGroups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SubscriptionGroup> groups = new(StringComparer.Ordinal);
     private readonly HashSet<string> streamingGroups = new(StringComparer.Ordinal);
     private TaskCompletionSource changed = CreateChangeSignal();
     private long version;
+
+    /// <summary>
+    /// Creates a tracker with the default Workable SignalR subscription limits.
+    /// </summary>
+    public WorkableRealtimeWorkerOverviewSubscriptions()
+        : this(Options.Create(new WorkableSignalROptions()))
+    {
+    }
+
+    /// <summary>
+    /// Creates a tracker with the configured Workable SignalR subscription limits.
+    /// </summary>
+    /// <param name="options">The realtime adapter options.</param>
+    public WorkableRealtimeWorkerOverviewSubscriptions(IOptions<WorkableSignalROptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        this.options = options.Value;
+    }
 
     internal long Version => Volatile.Read(ref this.version);
 
@@ -64,6 +84,10 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
             {
                 ReleaseGroupLocked(previous.GroupName);
             }
+            else
+            {
+                this.EnsureSubscriptionCapacityLocked(connectionId);
+            }
 
             this.connectionGroups[connectionKey] = subscription;
             if (this.groups.TryGetValue(subscription.GroupName, out var group))
@@ -89,10 +113,11 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         {
             lock (this.gate)
             {
-                if (this.connectionGroups.Remove(connectionKey, out var removed) &&
-                    removed is not null)
+                if (this.connectionGroups.TryGetValue(connectionKey, out var current) &&
+                    ReferenceEquals(current, subscription))
                 {
-                    ReleaseGroupLocked(removed.GroupName);
+                    this.connectionGroups.Remove(connectionKey);
+                    ReleaseGroupLocked(subscription.GroupName);
                 }
             }
 
@@ -125,10 +150,9 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
 
         lock (this.gate)
         {
-            if (this.connectionGroups.Remove(connectionKey, out subscription) &&
-                subscription is not null)
+            if (this.connectionGroups.Remove(connectionKey, out subscription))
             {
-                ReleaseGroupLocked(subscription.GroupName);
+                ReleaseGroupLocked(subscription!.GroupName);
             }
         }
 
@@ -138,36 +162,21 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         }
     }
 
-    internal async Task RemoveConnection(
-        string connectionId,
-        IGroupManager groupManager,
-        CancellationToken cancellationToken)
+    internal void RemoveConnection(string connectionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
-        ArgumentNullException.ThrowIfNull(groupManager);
-
-        WorkableRealtimeWorkerOverviewSubscription[] subscriptions;
         lock (this.gate)
         {
             var keys = this.connectionGroups.Keys
                 .Where(key => key.StartsWith($"{connectionId}:", StringComparison.Ordinal))
                 .ToArray();
-            subscriptions = keys
-                .Select(key => this.connectionGroups[key])
-                .ToArray();
 
             foreach (var key in keys)
             {
-                if (this.connectionGroups.Remove(key, out var subscription) && subscription is not null)
-                {
-                    ReleaseGroupLocked(subscription.GroupName);
-                }
+                var subscription = this.connectionGroups[key];
+                this.connectionGroups.Remove(key);
+                ReleaseGroupLocked(subscription.GroupName);
             }
-        }
-
-        foreach (var subscription in subscriptions)
-        {
-            await groupManager.RemoveFromGroupAsync(connectionId, subscription.GroupName, cancellationToken);
         }
     }
 
@@ -178,7 +187,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         lock (this.gate)
         {
             return [.. this.groups.Values
-                .Where(group => group.ConnectionCount > 0 && group.Subscription.SystemId == system.Id)
+                .Where(group => group.Subscription.SystemId == system.Id)
                 .Select(group => group.Subscription)];
         }
     }
@@ -195,11 +204,11 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
     }
 
     /// <summary>
-    /// Gets debug snapshots for the active worker-overview subscriptions that belong to one Workable system.
+    /// Gets internal snapshots for the active worker-overview subscriptions that belong to one Workable system.
     /// </summary>
     /// <param name="system">The system whose worker-overview subscriptions should be described.</param>
     /// <returns>The current worker-overview subscription snapshots for the system.</returns>
-    public IReadOnlyList<WorkableRealtimeDebugWorkerOverviewSubscriptionSnapshot> GetDebugSubscriptions(IWorkSystem system)
+    internal IReadOnlyList<WorkableRealtimeWorkerOverviewSubscriptionSnapshot> GetSubscriptionSnapshots(IWorkSystem system)
     {
         ArgumentNullException.ThrowIfNull(system);
 
@@ -209,20 +218,20 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
                 .Where(subscription => subscription.SystemId == system.Id)
                 .Select(subscription =>
                 {
-                    this.groups.TryGetValue(subscription.GroupName, out var group);
-                    return new WorkableRealtimeDebugWorkerOverviewSubscriptionSnapshot(
+                    var group = this.groups[subscription.GroupName];
+                    return new WorkableRealtimeWorkerOverviewSubscriptionSnapshot(
                         subscription.ConnectionId,
                         subscription.SubscriptionId,
                         subscription.WorkerId,
                         subscription.GroupName,
                         subscription.Criteria,
-                        group?.ConnectionCount ?? 0,
+                        group.ConnectionCount,
                         this.streamingGroups.Contains(subscription.GroupName),
-                        group?.LastActivityAt,
-                        group?.LastError,
-                        group?.StreamingStartedAt,
-                        group?.StreamingStoppedAt,
-                        group?.ChangeStreamDiagnosticsProvider?.Invoke());
+                        group.LastActivityAt,
+                        group.LastError,
+                        group.StreamingStartedAt,
+                        group.StreamingStoppedAt,
+                        group.ChangeStreamDiagnosticsProvider?.Invoke());
                 })];
         }
     }
@@ -390,7 +399,7 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         WorkWorkerOverviewRealtimeCriteria criteria,
         WorkAuthorizationSnapshot authorization)
     {
-        var key = CreateGroupKey(system.Id, workerId, criteria, authorization.ReadFingerprint);
+        var key = CreateGroupKey(system.Id, workerId, criteria, authorization);
         return new WorkableRealtimeWorkerOverviewSubscription(
             connectionId,
             subscriptionId,
@@ -405,14 +414,15 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         WorkSystemId systemId,
         WorkerId workerId,
         WorkWorkerOverviewRealtimeCriteria criteria,
-        string readFingerprint)
+        WorkAuthorizationSnapshot authorization)
     {
         var json = JsonSerializer.Serialize(new
         {
             SystemId = systemId.Value,
             WorkerId = workerId.Value,
             Criteria = criteria,
-            ReadFingerprint = readFingerprint,
+            authorization.ReadFingerprint,
+            authorization.Actor,
         }, KeyJsonOptions);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(hash).ToLowerInvariant();
@@ -438,6 +448,17 @@ public sealed class WorkableRealtimeWorkerOverviewSubscriptions
         }
 
         SignalChangedLocked();
+    }
+
+    private void EnsureSubscriptionCapacityLocked(string connectionId)
+    {
+        if (this.connectionGroups.Count >= this.options.MaximumSubscriptionsPerKind ||
+            this.connectionGroups.Values.Count(subscription =>
+                string.Equals(subscription.ConnectionId, connectionId, StringComparison.Ordinal)) >=
+                this.options.MaximumSubscriptionsPerConnectionPerKind)
+        {
+            throw new HubException("The Workable realtime worker-overview subscription limit was reached.");
+        }
     }
 
     private async Task WaitForStreaming(string groupName, CancellationToken cancellationToken)

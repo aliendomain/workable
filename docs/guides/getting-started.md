@@ -16,7 +16,7 @@ Optional packages add persistence, security, transport, and realtime integration
 
 - Use [`Workable.SqlServer`](../../packages/extensions/sqlserver/README.md) when the host wants SQL Server persistence for durable queueing and completion, durable workflows, persistence-backed idempotency, and persistence-backed concurrency.
 - Use `Workable.AspNetCore` when the host needs its own controllers, minimal APIs, or custom transports to dispatch Workable work from the current `HttpContext`.
-- Use `Workable.Entra` when an ASP.NET Core target app should validate Microsoft Entra ID bearer tokens for Workable HTTP, MCP, and SignalR adapter calls.
+- Use `Workable.Entra` when an ASP.NET Core host already authenticates Microsoft Entra identities and Workable should interpret those actors and authorization claims.
 - `Workable.Views` provides shared component-view contracts and projections used by HTTP and SignalR adapters. Most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
 - Use `Workable.HttpApi` when the host wants Workable to provide standard HTTP routes for queueing work, starting and inspecting workflow runs, querying workers, and sending worker actions such as pause, cancel, push, and purge.
 - Use `Workable.Mcp` when the host wants authored work definitions, work-system and workflow query tools, and worker or workflow action tools to be available to an MCP client, such as an LLM tool host.
@@ -301,23 +301,24 @@ The `description` argument is optional. Keep it when the endpoint should preserv
 
 Drop down to `IWorkRequestContextFactory` and `IWorkSystem.CreateSession(...)` when the endpoint needs broader session work such as direct query, worker action, catalog, or lifecycle access instead of just dispatching queued work.
 
-If the ASP.NET Core host should validate Microsoft Entra ID bearer tokens for Workable adapters, reference `Workable.Entra` and configure the target app tenant/audience:
+If the ASP.NET Core host already validates Microsoft Entra identities, reference `Workable.Entra` to map those identities into Workable actors and authorization groups:
 
 ```xml
 <PackageReference Include="Workable.Entra" Version="<current-version>" />
 ```
 
 ```csharp
-builder.Services.AddWorkableEntraAuthorization(
-    builder.Configuration.GetSection(WorkableEntraAuthorizationDefaults.ConfigurationSectionName));
+builder.Services.AddWorkableEntraAuthorization();
 
-services.AddWorkableSystem(builder =>
+builder.Services.AddWorkableSystem(builder =>
 {
     builder.ConfigureAuthorization(auth => auth
         .AllowReadAllWorkToGroups("11111111-2222-3333-4444-555555555555")
         .AllowOperateAllWorkToGroups("11111111-2222-3333-4444-555555555555"));
 });
 ```
+
+The host remains responsible for registering and configuring its authentication scheme, tenant, issuers, audiences, validation, events, and middleware. Authentication values such as `TenantId` and `Audience` do not belong under `Workable:Entra`; that section contains only Workable claim-integration settings. See [Microsoft Entra Authentication](entra-authentication.md) for Entra scheme selection and claim interpretation, and [Workable Realtime](../adapters/realtime.md) for SignalR browser-token transport.
 
 ## Queue Work
 
@@ -347,7 +348,7 @@ Non-host libraries reference `Workable.Abstractions` when they consume a work sy
 
 Host applications reference `Workable` when they create systems, queue work, observe events, or control workers.
 
-ASP.NET Core host applications can also reference `Workable.AspNetCore` when custom endpoints or transports should dispatch work from the current `HttpContext`, or `Workable.Entra` when Workable adapter requests should validate Microsoft Entra target-audience bearer tokens. Applications reference `Workable.HttpApi` only when they want Workable's built-in HTTP endpoints, `Workable.Mcp` only when they want an MCP server surface, and `Workable.SignalR` only when they want realtime client updates.
+ASP.NET Core host applications can also reference `Workable.AspNetCore` when custom endpoints or transports should dispatch work from the current `HttpContext`, or `Workable.Entra` when Workable should interpret identities produced by the host's existing Entra authentication. Applications reference `Workable.HttpApi` only when they want Workable's built-in HTTP endpoints, `Workable.Mcp` only when they want an MCP server surface, and `Workable.SignalR` only when they want realtime client updates.
 
 This keeps feature libraries independent of the host runtime while still allowing the host to compose all available work into the systems it owns.
 

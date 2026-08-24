@@ -12,6 +12,10 @@ export async function POST(request: Request, context: RouteContext) {
   return proxyWorkable(request, context);
 }
 
+export async function DELETE(request: Request, context: RouteContext) {
+  return proxyWorkable(request, context);
+}
+
 async function proxyWorkable(request: Request, context: RouteContext) {
   const { path } = await context.params;
   return proxyWorkableRequest(request, path);

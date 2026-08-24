@@ -35,6 +35,39 @@ public interface IWorkSystemSession
     IWorkCatalog Catalog { get; }
 
     /// <summary>
+    /// Reconfigures one discoverable work definition by name without requiring the caller to read its complete definition.
+    /// </summary>
+    /// <remarks>
+    /// The default implementation preserves compatibility for custom sessions by resolving through the existing
+    /// read-filtered catalog. Sessions that support operate-without-read reconfiguration should override this method.
+    /// </remarks>
+    Task<WorkDefinitionReconfigurationOutcome> ReconfigureDefinition(
+        string name,
+        long revision,
+        WorkDefinitionReconfiguration changes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(changes);
+
+        return this.Catalog.TryGet(name, out var definition)
+            ? this.Catalog.Reconfigure(
+                new WorkDefinitionVersion(definition.Id, revision),
+                changes,
+                cancellationToken)
+            : Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(name));
+    }
+
+    /// <summary>
+    /// Gets the caller-scoped redacted definition-discovery surface.
+    /// </summary>
+    /// <remarks>
+    /// Custom session implementations that do not provide a dedicated discovery surface receive a compatibility
+    /// projection of their existing read-filtered catalog.
+    /// </remarks>
+    IWorkDiscoveryCatalog Discovery => new ReadableWorkDiscoveryCatalog(this.Catalog);
+
+    /// <summary>
     /// Gets the caller-scoped queue surface.
     /// </summary>
     IWorkQueueService Queue { get; }

@@ -55,6 +55,59 @@ public sealed class WorkableViewQueryAdapterTests
     }
 
     [Fact]
+    public void NormalizeViewCriteriaRejectsUnknownNamedViews()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new WorkableViewQueryAdapter().NormalizeViewCriteria("not-a-view"));
+
+        Assert.Contains("Unknown view", exception.Message);
+    }
+
+    [Fact]
+    public void NormalizeViewCriteriaRejectsOversizedComponentLists()
+    {
+        var components = Enumerable.Range(0, WorkableViewQueryAdapter.MaximumComponentsPerRequest + 1)
+            .Select(index => new WorkComponentRequest($"component-{index}", "system"))
+            .ToArray();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new WorkableViewQueryAdapter().NormalizeViewCriteria(
+                "overview",
+                new WorkViewCriteria(Components: components)));
+
+        Assert.Contains("cannot contain more than 32", exception.Message);
+    }
+
+    [Fact]
+    public void NormalizeViewCriteriaRejectsDuplicateComponentIdsCaseInsensitively()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new WorkableViewQueryAdapter().NormalizeViewCriteria(
+                "overview",
+                new WorkViewCriteria(Components:
+                [
+                    new WorkComponentRequest("workers", "workers"),
+                    new WorkComponentRequest("WORKERS", "throughput"),
+                ])));
+
+        Assert.Contains("Component ids must be unique", exception.Message);
+    }
+
+    [Fact]
+    public void NormalizeViewCriteriaRejectsEmptyComponentIds()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new WorkableViewQueryAdapter().NormalizeViewCriteria(
+                "overview",
+                new WorkViewCriteria(Components:
+                [
+                    new WorkComponentRequest(" ", "workers"),
+                ])));
+
+        Assert.Contains("requires a non-empty id", exception.Message);
+    }
+
+    [Fact]
     public void ShouldPublishForChangesMatchesWorkerDetailByWorkerId()
     {
         var adapter = new WorkableViewQueryAdapter();
@@ -1054,6 +1107,32 @@ public sealed class WorkableViewQueryAdapterTests
         Assert.True(landing.Worker.IsFinal);
     }
 
+    [Fact]
+    public async Task WorkerOverviewFailsClosedWhenSessionDoesNotExposeReconfigurationAuthorization()
+    {
+        var definition = WorkDefinition.Create(
+            "views.worker.full-capture.authorization",
+            configuration: WorkConfiguration.Default with
+            {
+                Start = WorkStartConfiguration.DoNotStart,
+            });
+        var services = new ServiceCollection();
+        services.AddWorkableSystem(builder => builder.AddWork(
+            definition,
+            (_, _, _) => Task.FromResult(WorkExecutionResult.Success())));
+        await using var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var authorizedSession = await CreateTransportSession(system);
+        var handle = await authorizedSession.Queue.Enqueue(definition.Name);
+        var landing = await new WorkableViewQueryAdapter().WorkerOverview(
+            new NonAuthorizingSession(authorizedSession),
+            RequiredWorkerId(handle));
+
+        Assert.NotNull(landing);
+        Assert.False(landing.Worker.CanToggleFullProfileCapture);
+    }
+
     private static WorkChangeKey CreateStructuredChange(
         WorkKeyKind kind,
         string type,
@@ -1104,6 +1183,31 @@ public sealed class WorkableViewQueryAdapterTests
     {
         Assert.NotNull(value);
         return value;
+    }
+
+    private sealed class NonAuthorizingSession(IWorkSystemSession inner) : IWorkSystemSession
+    {
+        public string? SystemName => inner.SystemName;
+
+        public WorkSystemState SystemState => inner.SystemState;
+
+        public WorkSystemCapabilities Capabilities => inner.Capabilities;
+
+        public IWorkSystemDiagnostics Diagnostics => inner.Diagnostics;
+
+        public IWorkCatalog Catalog => inner.Catalog;
+
+        public IWorkQueueService Queue => inner.Queue;
+
+        public IWorkerOperations Workers => inner.Workers;
+
+        public IWorkQueryService Query => inner.Query;
+
+        public IWorkEventStream Events => inner.Events;
+
+        public IWorkIterationStatusStream IterationStatuses => inner.IterationStatuses;
+
+        public IWorkChangeStream Changes => inner.Changes;
     }
 
     private sealed class LandingLoggedExecutor(ILogger<LandingLoggedExecutor> logger) : IWorkExecutor

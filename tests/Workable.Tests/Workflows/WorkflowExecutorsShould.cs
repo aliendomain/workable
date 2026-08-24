@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using Workable;
 
 namespace Workable.Tests;
@@ -5,6 +7,30 @@ namespace Workable.Tests;
 [Trait("Category", "Workflows")]
 public sealed class WorkflowExecutorsShould
 {
+    [Fact]
+    public void ClassifyEveryCriticalNonDurableExecutionException()
+    {
+        var method = typeof(NonDurableWorkflowExecutor).GetMethod(
+            "ShouldHandleExecutionException",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var critical = new Exception[]
+        {
+            new OperationCanceledException(),
+            new OutOfMemoryException(),
+            new StackOverflowException(),
+            new AccessViolationException(),
+            new AppDomainUnloadedException(),
+            new BadImageFormatException(),
+            new CannotUnloadAppDomainException(),
+            (Exception)RuntimeHelpers.GetUninitializedObject(typeof(ThreadAbortException)),
+            new InvalidProgramException(),
+        };
+
+        Assert.All(critical, exception => Assert.False(Assert.IsType<bool>(method.Invoke(null, [exception]))));
+        Assert.True(Assert.IsType<bool>(method.Invoke(null, [new InvalidOperationException()])));
+    }
+
     [Fact]
     public async Task CancelNonDurableExecutionWhenCancellationIsRequested()
     {
@@ -50,7 +76,10 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.execution_exception");
+        var message = Assert.Single(completion.Messages);
+        Assert.Equal("workable.workflow.execution_exception", message.Code);
+        Assert.Equal("Workflow execution failed with an unhandled exception.", message.Text);
+        Assert.DoesNotContain("session failed", message.Text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -82,7 +111,8 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.parallel.rejected");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_dispatch_rejected");
+        Assert.DoesNotContain(completion.Messages, message => message.Text.Contains("Rejected", StringComparison.Ordinal));
         Assert.Equal(WorkflowStepRunStatus.Failed, run.ToSnapshot().Steps.Single(step => step.Name == "dispatch").Status);
         Assert.Equal(2, queueCalls);
         Assert.NotNull(acceptedWorkerId);
@@ -115,7 +145,8 @@ public sealed class WorkflowExecutorsShould
         var snapshot = run.ToSnapshot();
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.branch.rejected");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_dispatch_rejected");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workflow.branch.rejected");
         Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "documents").Status);
         Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "dispatch").Status);
         Assert.Equal(2, queueCalls);
@@ -197,7 +228,8 @@ public sealed class WorkflowExecutorsShould
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
         Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "join").Status);
-        Assert.Contains(completion.Messages, message => message.Code == messageCode);
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == messageCode);
     }
 
     [Fact]
@@ -243,7 +275,8 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.trailing.failed");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workflow.trailing.failed");
     }
 
     [Fact]
@@ -329,6 +362,39 @@ public sealed class WorkflowExecutorsShould
     }
 
     [Fact]
+    public async Task FailNonDurableExecutionWithoutForwardingDispatchEachQueueRejection()
+    {
+        var loadWorkerId = WorkerId.New();
+        var executor = new NonDurableWorkflowExecutor(
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(
+                    string.Equals(name, "sample.load", StringComparison.Ordinal)
+                        ? new TestWorkerHandle(
+                            WorkQueueOutcome.Accepted(loadWorkerId),
+                            loadWorkerId,
+                            Task.FromResult(new WorkCompletion(
+                                WorkCompletionStatus.Completed,
+                                null,
+                                WorkOutput.FromJson("""{"items":[{"id":"alpha"}]}"""),
+                                [])))
+                        : RejectedHandle(WorkQueueOutcome.Invalid(
+                            [WorkMessage.Error("secret.dispatch.rejected", "Secret queue rejection.")]))))));
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.non-durable.dispatch-each.rejected"),
+            Dispatch("load", "sample.load"),
+            DispatchEach("fan-out", "load", "sample.process", "/items"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        var message = Assert.Single(completion.Messages);
+        Assert.Equal("workable.workflow.child_dispatch_rejected", message.Code);
+        Assert.DoesNotContain("Secret", message.Text, StringComparison.Ordinal);
+        Assert.Equal(WorkflowStepRunStatus.Failed, run.ToSnapshot().Steps.Single(step => step.Name == "fan-out").Status);
+    }
+
+    [Fact]
     public async Task BlockNonDurableExecutionWhenDispatchEachSourceIsPaused()
     {
         var loadWorkerId = WorkerId.New();
@@ -351,7 +417,8 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.source.paused");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workflow.source.paused");
         Assert.Equal(WorkflowStepRunStatus.Running, run.ToSnapshot().Steps.Single(step => step.Name == "fan-out").Status);
     }
 
@@ -573,7 +640,8 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.dispatch.rejected");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_dispatch_rejected");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workflow.dispatch.rejected");
         Assert.Equal(WorkflowStepRunStatus.Failed, run.ToSnapshot().Steps.Single(step => step.Name == "dispatch").Status);
         Assert.Equal(WorkflowRunStatus.Running, run.ToSnapshot().Status);
         Assert.Empty(store.DeletedRunIds);
@@ -615,7 +683,8 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.dispatch.rejected");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_dispatch_rejected");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workflow.dispatch.rejected");
         Assert.Equal(WorkflowRunStatus.Running, run.ToSnapshot().Status);
         Assert.Empty(store.DeletedRunIds);
         Assert.DoesNotContain(store.Upserts, record => record.Status == WorkflowRunStatus.Failed);
@@ -656,7 +725,8 @@ public sealed class WorkflowExecutorsShould
         var snapshot = run.ToSnapshot();
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.branch.rejected");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_dispatch_rejected");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workflow.branch.rejected");
         Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "documents").Status);
         Assert.Equal(WorkflowStepRunStatus.Failed, snapshot.Steps.Single(step => step.Name == "dispatch").Status);
         Assert.Contains(store.Upserts, record => record.Steps.Single(step => step.Name == "documents").Status == WorkflowStepRunStatus.Failed);
@@ -695,9 +765,54 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.source.paused");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workflow.source.paused");
         Assert.Equal(WorkflowStepRunStatus.Running, run.ToSnapshot().Steps.Single(step => step.Name == "fan-out").Status);
         Assert.Equal(WorkflowRunStatus.Blocked, store.Upserts.Last().Status);
+    }
+
+    [Fact]
+    public async Task FailDurableExecutionWithoutForwardingDispatchEachQueueRejection()
+    {
+        var store = new RecordingWorkflowStore();
+        var persistence = new WorkflowPersistenceCoordinator(store, "workflow-tests");
+        var loadWorkerId = WorkerId.New();
+        var executor = new DurableWorkflowExecutor(
+            "workflow-tests",
+            CreateRegisteredWork,
+            _ => new TestWorkSystemSession(new DelegateQueueService((name, _, _, _) =>
+                Task.FromResult<IWorkerHandle>(
+                    string.Equals(name, "sample.load", StringComparison.Ordinal)
+                        ? AcceptedHandle(loadWorkerId)
+                        : RejectedHandle(WorkQueueOutcome.Invalid(
+                            [WorkMessage.Error("secret.dispatch.rejected", "Secret queue rejection.")]))))),
+            workerId => workerId == loadWorkerId
+                ? new TestWorkerHandle(
+                    WorkQueueOutcome.Accepted(workerId),
+                    workerId,
+                    Task.FromResult(new WorkCompletion(
+                        WorkCompletionStatus.Completed,
+                        null,
+                        WorkOutput.FromJson("""{"items":[{"id":"alpha"}]}"""),
+                        [])))
+                : CompletedHandle(workerId),
+            persistence);
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create(
+                "workflow.durable.dispatch-each.rejected",
+                coordination: WorkflowCoordinationConfiguration.Durable),
+            Dispatch("load", "sample.load"),
+            DispatchEach("fan-out", "load", "sample.process", "/items"));
+        var run = WorkflowRunState.Create(workflow, WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        var completion = await executor.Execute(run, workflow, CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
+        var message = Assert.Single(completion.Messages);
+        Assert.Equal("workable.workflow.child_dispatch_rejected", message.Code);
+        Assert.DoesNotContain("Secret", message.Text, StringComparison.Ordinal);
+        Assert.Equal(WorkflowStepRunStatus.Failed, run.ToSnapshot().Steps.Single(step => step.Name == "fan-out").Status);
+        Assert.DoesNotContain(store.Upserts, record => record.Status == WorkflowRunStatus.Failed);
     }
 
     [Theory]
@@ -1132,7 +1247,8 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workflow.child.failed");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workflow.child.failed");
         Assert.Equal(WorkflowStepRunStatus.Running, run.ToSnapshot().Steps.Single(step => step.Name == "join").Status);
         Assert.Empty(store.DeletedRunIds);
     }
@@ -1268,7 +1384,8 @@ public sealed class WorkflowExecutorsShould
         var completion = await executor.Execute(run, workflow, CancellationToken.None);
 
         Assert.Equal(WorkflowRunStatus.Failed, completion.Status);
-        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child.not_found");
+        Assert.Contains(completion.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(completion.Messages, message => message.Code == "workable.workflow.child.not_found");
         Assert.Equal(WorkflowRunStatus.Running, run.ToSnapshot().Status);
         Assert.Empty(store.DeletedRunIds);
         Assert.DoesNotContain(store.Upserts, record => record.Status == WorkflowRunStatus.Failed);

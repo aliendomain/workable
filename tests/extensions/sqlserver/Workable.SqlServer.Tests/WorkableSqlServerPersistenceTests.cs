@@ -20,6 +20,8 @@ namespace Workable.Tests;
 [Trait("Category", "PersistenceIntegration")]
 public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
 {
+    private const int DatabaseCreationAttempts = 3;
+    private const int TransientFileInitializationErrorNumber = 17053;
     private const string SchemaName = "workable";
     private static readonly JsonSerializerOptions DurableJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -28,7 +30,7 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
 
     private readonly ITestOutputHelper output;
     private readonly SqlServerTestHost sqlServer;
-    private readonly string databaseName = "WorkableTests_" + Guid.NewGuid().ToString("N");
+    private string databaseName = CreateDatabaseName();
 
     public WorkableSqlServerPersistenceTests(
         SqlServerTestHost sqlServer,
@@ -36,32 +38,62 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
     {
         this.sqlServer = sqlServer;
         this.output = output;
-        this.ConnectionString = sqlServer.BuildConnectionString(this.databaseName);
     }
 
-    private string ConnectionString { get; }
+    private string ConnectionString => this.sqlServer.BuildConnectionString(this.databaseName);
 
     public async Task InitializeAsync()
     {
         this.output.WriteLine($"SQL Server test host: {this.sqlServer.Description}");
 
-        await using var connection = new SqlConnection(this.sqlServer.MasterConnectionString);
-        await connection.OpenAsync();
-        await Execute(connection, $"CREATE DATABASE {Quote(this.databaseName)};");
+        for (var attempt = 1; attempt <= DatabaseCreationAttempts; attempt++)
+        {
+            await using var connection = new SqlConnection(this.sqlServer.MasterConnectionString);
+            await connection.OpenAsync();
+
+            try
+            {
+                await Execute(connection, $"CREATE DATABASE {Quote(this.databaseName)};");
+                return;
+            }
+            catch (SqlException exception) when (
+                attempt < DatabaseCreationAttempts &&
+                IsTransientFileInitializationFailure(exception))
+            {
+                this.output.WriteLine(
+                    $"SQL Server transiently failed to initialize database files for '{this.databaseName}' " +
+                    $"(attempt {attempt} of {DatabaseCreationAttempts}); retrying with a fresh database name.");
+                await DropDatabaseIfExists(connection, this.databaseName);
+                this.databaseName = CreateDatabaseName();
+                await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt));
+            }
+        }
+
+        throw new InvalidOperationException("SQL Server database creation retry loop completed unexpectedly.");
     }
 
     public async Task DisposeAsync()
     {
         await using var connection = new SqlConnection(this.sqlServer.MasterConnectionString);
         await connection.OpenAsync();
-        await Execute(connection, $"""
-IF DB_ID(N'{Escape(this.databaseName)}') IS NOT NULL
+        await DropDatabaseIfExists(connection, this.databaseName);
+    }
+
+    private static string CreateDatabaseName()
+        => "WorkableTests_" + Guid.NewGuid().ToString("N");
+
+    private static bool IsTransientFileInitializationFailure(SqlException exception)
+        => exception.Errors.Cast<SqlError>()
+            .Any(error => error.Number == TransientFileInitializationErrorNumber);
+
+    private static Task DropDatabaseIfExists(SqlConnection connection, string databaseName)
+        => Execute(connection, $"""
+IF DB_ID(N'{Escape(databaseName)}') IS NOT NULL
 BEGIN
-    ALTER DATABASE {Quote(this.databaseName)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE {Quote(this.databaseName)};
+    ALTER DATABASE {Quote(databaseName)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE {Quote(databaseName)};
 END
 """);
-    }
 
     [Fact]
     public async Task StartInitializesWorkEntriesSchema()
@@ -319,6 +351,57 @@ CREATE TABLE {WorkableSqlServerSchema.QuoteIdentifier(freshSchemaName)}.Unrelate
 SELECT COUNT(*)
 FROM {WorkableSqlServerSchema.QuoteIdentifier(freshSchemaName)}.SchemaVersion;
 """));
+    }
+
+    [Fact]
+    public async Task SchemaValidatorsDescribeEveryMissingFeatureOfAnEmptySchema()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string emptySchemaName = "workable_validation_empty";
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, $"""
+IF SCHEMA_ID(N'{emptySchemaName}') IS NULL
+    EXEC(N'CREATE SCHEMA {WorkableSqlServerSchema.QuoteIdentifier(emptySchemaName)}');
+""");
+        }
+
+        var queue = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            WorkableSqlServerSchema.ValidateInstalled(this.ConnectionString, emptySchemaName));
+        Assert.Contains($"{emptySchemaName}.WorkEntries", queue.Message, StringComparison.Ordinal);
+        Assert.Contains("IX_WorkableWorkQueueEntries_Concurrency", queue.Message, StringComparison.Ordinal);
+
+        var workflow = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(this.ConnectionString, emptySchemaName));
+        Assert.Contains($"{emptySchemaName}.WorkflowRuns", workflow.Message, StringComparison.Ordinal);
+        Assert.Contains("IX_WorkableWorkflowRuns_Recovery", workflow.Message, StringComparison.Ordinal);
+
+        var diagnostics = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(this.ConnectionString, emptySchemaName));
+        Assert.Contains($"{emptySchemaName}.WorkIterationDiagnostics", diagnostics.Message, StringComparison.Ordinal);
+        Assert.Contains("IX_WorkableWorkDiagnosticCaptureRules_System", diagnostics.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SchemaScalarRejectsMissingRowsAndDatabaseNullValues()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await using var connection = await this.OpenConnection();
+        var missing = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            InvokeSchemaScalar<int>(connection, "SELECT 1 WHERE 1 = 0;"));
+        var databaseNull = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            InvokeSchemaScalar<int>(connection, "SELECT CAST(NULL AS int);"));
+
+        Assert.Equal("Expected SQL scalar query to return a value.", missing.Message);
+        Assert.Equal("Expected SQL scalar query to return a value.", databaseNull.Message);
     }
 
     [Fact]
@@ -1309,6 +1392,74 @@ FROM workable.WorkflowRuns;
     }
 
     [Fact]
+    public async Task WorkflowRunReaderRestoresLegacyNullOptionalValues()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        var runId = Guid.NewGuid();
+        var definitionId = Guid.NewGuid();
+        const string persistenceScope = "workflow-null-coverage";
+        await using (var connection = await this.OpenConnection())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+DELETE FROM workable.WorkflowRuns WHERE PersistenceScope = @PersistenceScope;
+
+INSERT INTO workable.WorkflowRuns
+(
+    RunId, PersistenceScope, WorkSystemName, DefinitionId, DefinitionRevision, DefinitionName,
+    DefinitionFingerprint, RequestContextJson, WorkflowInputJson, Status, StepsJson, MessagesJson,
+    ChildReceiptsJson, PendingControlAction, PendingControlRequestContextJson, CreatedAt, StartedAt, CompletedAt
+)
+VALUES
+(
+    @RunId, @PersistenceScope, NULL, @DefinitionId, 1, N'workflow.legacy.nulls',
+    N'legacy-fingerprint', @RequestContextJson, NULL, N'Running', N'null', N'null',
+    N'null', NULL, NULL, @CreatedAt, NULL, NULL
+);
+""";
+            command.Parameters.AddWithValue("@RunId", runId);
+            command.Parameters.AddWithValue("@PersistenceScope", persistenceScope);
+            command.Parameters.AddWithValue("@DefinitionId", definitionId);
+            command.Parameters.AddWithValue(
+                "@RequestContextJson",
+                JsonSerializer.Serialize(
+                    WorkOrigin.Create(WorkInvocationChannel.InProcess),
+                    DurableJsonOptions));
+            command.Parameters.AddWithValue("@CreatedAt", DateTimeOffset.UtcNow);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        var loaded = new List<WorkflowRunPersistenceRecord>();
+        await foreach (var item in store.ListWorkflowRuns(new WorkflowPersistenceReadRequest(persistenceScope)))
+        {
+            loaded.Add(item);
+        }
+
+        var restored = Assert.Single(loaded);
+        Assert.Null(restored.WorkSystemName);
+        Assert.Null(restored.Input);
+        Assert.Null(restored.StartedAt);
+        Assert.Null(restored.CompletedAt);
+        Assert.Empty(restored.Steps);
+        Assert.Empty(restored.Messages);
+        Assert.Empty(restored.ChildReceipts);
+        Assert.Null(restored.PendingControlAction);
+        Assert.Null(restored.PendingControlRequestContext);
+        Assert.Equal(WorkInvocationChannel.InProcess, restored.RequestContext.Origin.Channel);
+
+        await store.DeleteWorkflowRun(new WorkflowPersistenceDeleteRequest(new WorkflowRunId(runId)));
+    }
+
+    [Fact]
     public async Task WorkflowTransactionCommitsWorkflowRunsAndDurableWorkersAtomically()
     {
         if (this.SkipIfUnavailable())
@@ -1345,6 +1496,20 @@ SELECT COUNT(*)
 FROM workable.WorkflowRuns;
 """));
         Assert.Equal(1, await CountRowsForSubject(connection, "workflow-transaction-commit"));
+
+        await using (var transaction = await store.BeginWorkflowTransaction(
+            new WorkflowPersistenceTransactionRequest("workflow-tests")))
+        {
+            await store.DeleteWorkflowRun(
+                new WorkflowPersistenceDeleteRequest(run.RunId),
+                transaction);
+            await transaction.Commit();
+        }
+
+        Assert.Equal(0, await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM workable.WorkflowRuns;
+"""));
     }
 
     [Fact]
@@ -1382,6 +1547,417 @@ FROM workable.WorkflowRuns;
         var existing = await store.DurableWorkersExist([alpha, missing, beta]);
 
         Assert.True(existing.SetEquals([alpha, beta]));
+        Assert.True(await store.DurableWorkerExists(alpha));
+        Assert.False(await store.DurableWorkerExists(missing));
+    }
+
+    [Fact]
+    public async Task EmptyDurabilityBatchesAreNoOpsAndTransactionsRemainProviderBound()
+    {
+        var store = new WorkableSqlServerQueueDurabilityStore(new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = this.ConnectionString,
+        });
+        var foreignTransaction = new ForeignDurabilityTransaction();
+
+        Assert.Empty(await store.DurableWorkersExist([]));
+        await store.RenewLeases([], TimeSpan.FromMinutes(1));
+        await store.RetainFailed(Array.Empty<WorkQueueDurabilityCleanupRequest>());
+        await store.RetainFailed(Array.Empty<WorkQueueDurabilityFailureRequest>());
+        await store.DeleteFinal([]);
+        await store.DeleteFinal([], foreignTransaction);
+
+        var workerId = WorkerId.New();
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => store.DeleteFinal(
+            [new WorkQueueDurabilityCleanupRequest(workerId, Lease: null)],
+            foreignTransaction));
+        Assert.Contains("requires a SQL Server durability transaction", exception.Message);
+    }
+
+    [Fact]
+    public async Task IdempotencyReservationsCommitRollbackAndHonorAnExistingSqlTransaction()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        var store = new WorkableSqlServerQueueDurabilityStore(new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = this.ConnectionString,
+        });
+        var systemId = WorkSystemId.New();
+        var definition = WorkDefinition.Create("sql.idempotency.reservation");
+        var requestContext = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+        var committedSubject = new WorkSubjectId("coverage", $"committed-{Guid.NewGuid():N}");
+        var committed = new WorkIdempotencyPersistenceRequest(
+            systemId,
+            "reservation-tests",
+            WorkerId.New(),
+            definition,
+            committedSubject,
+            requestContext,
+            DateTimeOffset.UtcNow,
+            Transaction: null);
+
+        await store.ReserveIdempotency(committed);
+        var duplicate = await Assert.ThrowsAsync<WorkQueueDurabilityDuplicateException>(() =>
+            store.ReserveIdempotency(committed with { WorkerId = WorkerId.New() }));
+        Assert.Contains(committedSubject.ToString(), duplicate.Message, StringComparison.Ordinal);
+
+        var rolledBackSubject = new WorkSubjectId("coverage", $"rolled-back-{Guid.NewGuid():N}");
+        await using (var connection = await this.OpenConnection())
+        await using (var transaction = await connection.BeginTransactionAsync())
+        {
+            await store.ReserveIdempotency(committed with
+            {
+                WorkerId = WorkerId.New(),
+                SubjectId = rolledBackSubject,
+                Transaction = new WorkableSqlServerQueueDurabilityTransaction(connection, transaction),
+            });
+            await transaction.RollbackAsync();
+        }
+
+        await store.ReserveIdempotency(committed with
+        {
+            WorkerId = WorkerId.New(),
+            SubjectId = rolledBackSubject,
+        });
+    }
+
+    [Fact]
+    public void DurabilitySerializationHandlesNullsDefaultsAndReadOnlySets()
+    {
+        Assert.Equal("default", InvokeDurabilityHelper<string>("NormalizeWorkSystemName", (object?)null));
+        Assert.Equal("default", InvokeDurabilityHelper<string>("NormalizeWorkSystemName", "   "));
+        Assert.Equal("orders", InvokeDurabilityHelper<string>("NormalizeWorkSystemName", "orders"));
+        Assert.Null(InvokeGenericDurabilityHelper("Serialize", typeof(object), null));
+        Assert.Contains("value", InvokeGenericDurabilityHelper("Serialize", typeof(object), new { value = 1 }) as string);
+        Assert.Null(InvokeDurabilityHelper<object?>("SerializeWorkerOptions", (object?)null));
+        Assert.NotNull(InvokeDurabilityHelper<object?>("SerializeWorkerOptions", new WorkerOptions()));
+
+        var factoryType = typeof(WorkableSqlServerQueueDurabilityStore).GetNestedType(
+            "IReadOnlySetJsonConverterFactory",
+            BindingFlags.NonPublic)!;
+        var factory = Assert.IsAssignableFrom<JsonConverterFactory>(Activator.CreateInstance(factoryType));
+        Assert.True(factory.CanConvert(typeof(IReadOnlySet<string>)));
+        Assert.False(factory.CanConvert(typeof(List<string>)));
+
+        var options = new JsonSerializerOptions();
+        options.Converters.Add(factory);
+        var serialized = JsonSerializer.Serialize<IReadOnlySet<string>>(new HashSet<string> { "a", "b" }, options);
+        var roundTrip = JsonSerializer.Deserialize<IReadOnlySet<string>>(serialized, options);
+        var fromNull = JsonSerializer.Deserialize<IReadOnlySet<string>>("null", options);
+
+        Assert.NotNull(roundTrip);
+        Assert.True(roundTrip.SetEquals(["a", "b"]));
+        Assert.Null(fromNull);
+    }
+
+    [Fact]
+    public void DurabilityPayloadSerializationCoversOptionalAndPersistentConcurrencyShapes()
+    {
+        var systemId = WorkSystemId.New();
+        var explicitOptions = new WorkerOptions(ProfilingEnabled: true)
+        {
+            ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+        };
+        var persistent = CreateDurableEnqueueRequest(
+            systemId,
+            "orders",
+            WorkerId.New(),
+            "orders.persistent",
+            "100",
+            transaction: null,
+            enableIdempotency: true,
+            options: explicitOptions);
+        var nonPersistent = CreateNonConcurrentDurableEnqueueRequest(
+            systemId,
+            WorkerId.New(),
+            "orders.non-persistent",
+            "200");
+        var withoutInput = new WorkQueueDurabilityEnqueueRequest(
+            systemId,
+            " ",
+            WorkerId.New(),
+            WorkDefinition.Create("orders.no-input"),
+            null,
+            WorkerOptions.Default,
+            WorkConfiguration.Default,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            DateTimeOffset.UtcNow,
+            Idempotency: null,
+            Transaction: null);
+        var withConcurrencyAndProvenance = withoutInput with
+        {
+            Input = WorkInput.Empty.WithConcurrencyKey(new WorkConcurrencyKey("tenant", "west")),
+            WorkflowProvenance = new WorkflowProvenance(
+                WorkflowRunId.New(),
+                "orders.workflow",
+                "dispatch"),
+        };
+
+        var persistentJson = SerializePrivatePayload("CreateEnqueuePayload", persistent);
+        var nonPersistentJson = SerializePrivatePayload("CreateEnqueuePayload", nonPersistent);
+        var withoutInputJson = SerializePrivatePayload("CreateEnqueuePayload", withoutInput);
+        var concurrencyJson = SerializePrivatePayload("CreateEnqueuePayload", withConcurrencyAndProvenance);
+
+        Assert.Contains("\"hasPersistentConcurrency\":true", persistentJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"hasIdempotencyReservation\":true", persistentJson, StringComparison.OrdinalIgnoreCase);
+        using var persistentDocument = JsonDocument.Parse(persistentJson);
+        var optionsJson = persistentDocument.RootElement.GetProperty("optionsJson").GetString();
+        Assert.Contains("\"profilingEnabled\":true", optionsJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"profilingCaptureMode\":\"Full\"", optionsJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"hasPersistentConcurrency\":false", nonPersistentJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"concurrencyScope\":null", nonPersistentJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"workSystemName\":\"default\"", withoutInputJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"subjectType\":null", withoutInputJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"inputJson\":null", withoutInputJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"concurrencyType\":\"tenant\"", concurrencyJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"concurrencyValue\":\"west\"", concurrencyJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("orders.workflow", concurrencyJson, StringComparison.OrdinalIgnoreCase);
+
+        var lease = new WorkQueueDurabilityLease(WorkerId.New(), "owner", "lease");
+        var cleanupJson = InvokeDurabilityHelper<string>(
+            "SerializeCleanupRequests",
+            new WorkQueueDurabilityCleanupRequest[]
+            {
+                new(lease.WorkerId, lease),
+                new(WorkerId.New(), null),
+            });
+        var failureJson = InvokeDurabilityHelper<string>(
+            "SerializeFailureRequests",
+            new WorkQueueDurabilityFailureRequest[]
+            {
+                new(lease.WorkerId, lease, DateTimeOffset.UtcNow, [WorkMessage.Error("failed", "Failed")]),
+                new(WorkerId.New(), null, DateTimeOffset.UtcNow, []),
+            });
+        var renewalJson = InvokeDurabilityHelper<string>(
+            "SerializeRenewalLeases",
+            new WorkQueueDurabilityLease[] { lease });
+        Assert.Contains("lease", cleanupJson, StringComparison.Ordinal);
+        Assert.Contains("\"leaseId\":null", cleanupJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("failed", failureJson, StringComparison.Ordinal);
+        Assert.Contains("lease", renewalJson, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DurabilityDeserializationSupportsNullPayloadEnvelopeAndLegacyOriginRows()
+    {
+        using var nullReader = CreateStringReader(DBNull.Value);
+        Assert.True(nullReader.Read());
+        Assert.Null(InvokeGenericDurabilityReader("Deserialize", typeof(WorkInput), nullReader, 0));
+        Assert.Null(InvokeDurabilityReader("DeserializeWorkerOptions", nullReader, 0));
+        Assert.Null(InvokeDurabilityReader("DeserializeOptionalRequestContext", nullReader, 0));
+        var fallback = Assert.IsType<WorkRequestContext>(
+            InvokeDurabilityReader("DeserializeRequestContext", nullReader, 0));
+        Assert.Equal(WorkInvocationChannel.InProcess, fallback.Origin.Channel);
+
+        var origin = WorkOrigin.Create(WorkInvocationChannel.HttpApi);
+        var envelopeJson = JsonSerializer.Serialize(new
+        {
+            origin,
+            description = "persisted request",
+            url = "/orders",
+            authorization = (WorkAuthorizationSnapshot?)null,
+            isAuthenticated = true,
+        }, DurableJsonOptions);
+        using var envelopeReader = CreateStringReader(envelopeJson);
+        Assert.True(envelopeReader.Read());
+        var envelope = Assert.IsType<WorkRequestContext>(
+            InvokeDurabilityReader("DeserializeRequestContext", envelopeReader, 0));
+        Assert.Equal("persisted request", envelope.Description);
+        Assert.Equal("/orders", envelope.Url);
+        Assert.True(envelope.IsAuthenticated);
+
+        using var legacyReader = CreateStringReader(JsonSerializer.Serialize(origin, DurableJsonOptions));
+        Assert.True(legacyReader.Read());
+        var legacy = Assert.IsType<WorkRequestContext>(
+            InvokeDurabilityReader("DeserializeRequestContext", legacyReader, 0));
+        Assert.Equal(WorkInvocationChannel.HttpApi, legacy.Origin.Channel);
+
+        var persistedOptionsType = typeof(WorkableSqlServerQueueDurabilityStore).GetNestedType(
+            "PersistedWorkerOptions",
+            BindingFlags.NonPublic)!;
+        var withFlags = Activator.CreateInstance(
+            persistedOptionsType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [true, WorkProfileCaptureMode.Full, WorkConfiguration.Default],
+            culture: null)!;
+        var defaults = Activator.CreateInstance(
+            persistedOptionsType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [null, null, WorkConfiguration.Default],
+            culture: null)!;
+        var explicitWorkerOptions = Assert.IsType<WorkerOptions>(
+            persistedOptionsType.GetMethod("ToWorkerOptions")!.Invoke(withFlags, null));
+        var defaultWorkerOptions = Assert.IsType<WorkerOptions>(
+            persistedOptionsType.GetMethod("ToWorkerOptions")!.Invoke(defaults, null));
+        Assert.True(explicitWorkerOptions.ProfilingEnabled);
+        Assert.Equal(WorkProfileCaptureMode.Full, explicitWorkerOptions.ProfilingCaptureMode);
+        Assert.False(defaultWorkerOptions.HasExplicitProfilingEnabled);
+        Assert.False(defaultWorkerOptions.HasExplicitProfilingCaptureMode);
+    }
+
+    [Theory]
+    [InlineData(-2, 0, true)]
+    [InlineData(2, 0, true)]
+    [InlineData(53, 0, true)]
+    [InlineData(64, 0, true)]
+    [InlineData(233, 0, true)]
+    [InlineData(4060, 0, true)]
+    [InlineData(18456, 0, true)]
+    [InlineData(50000, 20, true)]
+    [InlineData(50000, 16, false)]
+    public void ClassifyEverySqlServerAvailabilityError(int number, byte errorClass, bool expected)
+    {
+        var exception = CreateSqlException(number, errorClass);
+
+        Assert.Equal(expected, InvokeDurabilityHelper<bool>("IsStoreUnavailable", exception));
+        Assert.Equal(
+            expected,
+            (bool)typeof(WorkableSqlServerExecutionDiagnosticsRepository)
+                .GetMethod("IsStoreUnavailable", BindingFlags.Static | BindingFlags.NonPublic)!
+                .Invoke(null, [exception])!);
+    }
+
+    [Fact]
+    public void ReadOnlySetConverterFactoryRejectsUnrelatedShapesAndRoundTripsSets()
+    {
+        var factoryType = typeof(WorkableSqlServerQueueDurabilityStore)
+            .GetNestedType("IReadOnlySetJsonConverterFactory", BindingFlags.NonPublic)!;
+        var factory = Assert.IsAssignableFrom<JsonConverterFactory>(Activator.CreateInstance(factoryType, nonPublic: true));
+
+        Assert.False(factory.CanConvert(typeof(string)));
+        Assert.False(factory.CanConvert(typeof(List<string>)));
+        Assert.True(factory.CanConvert(typeof(IReadOnlySet<string>)));
+
+        var options = new JsonSerializerOptions();
+        options.Converters.Add(factory);
+        IReadOnlySet<string> source = new HashSet<string>(["alpha", "beta"], StringComparer.Ordinal);
+        var json = JsonSerializer.Serialize(source, options);
+        var restored = JsonSerializer.Deserialize<IReadOnlySet<string>>(json, options);
+
+        Assert.NotNull(restored);
+        Assert.True(restored.SetEquals(source));
+    }
+
+    [Theory]
+    [InlineData("queue", true)]
+    [InlineData("queue", false)]
+    [InlineData("workflow", true)]
+    [InlineData("workflow", false)]
+    [InlineData("diagnostics", true)]
+    [InlineData("diagnostics", false)]
+    public async Task InitializationClassifiesAMissingDatabaseAsStoreUnavailable(
+        string component,
+        bool autoDeploySchema)
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var connectionString = new SqlConnectionStringBuilder(this.ConnectionString)
+        {
+            InitialCatalog = $"workable_missing_{Guid.NewGuid():N}",
+            ConnectTimeout = 1,
+        }.ConnectionString;
+        var systemId = WorkSystemId.New();
+
+        var exception = component switch
+        {
+            "queue" => await Assert.ThrowsAsync<WorkPersistenceStoreUnavailableException>(() =>
+                new WorkableSqlServerQueueDurabilityStore(new WorkableSqlServerQueueDurabilityOptions
+                {
+                    ConnectionString = connectionString,
+                    AutoDeploySchema = autoDeploySchema,
+                }).Initialize(new WorkQueueDurabilityInitializationContext(systemId, "coverage", []))),
+            "workflow" => await Assert.ThrowsAsync<WorkPersistenceStoreUnavailableException>(() =>
+                new WorkableSqlServerQueueDurabilityStore(new WorkableSqlServerQueueDurabilityOptions
+                {
+                    ConnectionString = connectionString,
+                    AutoDeploySchema = autoDeploySchema,
+                }).InitializeWorkflows(new WorkflowPersistenceInitializationContext("coverage", []))),
+            "diagnostics" => await Assert.ThrowsAsync<WorkPersistenceStoreUnavailableException>(() =>
+                new WorkableSqlServerExecutionDiagnosticsRepository(new WorkableSqlServerPersistenceOptions
+                {
+                    ConnectionString = connectionString,
+                    AutoDeploySchema = autoDeploySchema,
+                }).Initialize(new WorkExecutionDiagnosticsInitializationContext(systemId, "coverage"))),
+            _ => throw new InvalidOperationException($"Unknown persistence component '{component}'."),
+        };
+
+        Assert.Contains("could not reach SQL Server", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.IsType<SqlException>(exception.InnerException);
+    }
+
+    [Theory]
+    [InlineData("workflow-list")]
+    [InlineData("claim-ready")]
+    [InlineData("claim-failed")]
+    [InlineData("renew")]
+    [InlineData("retain-failed")]
+    [InlineData("delete-final")]
+    public async Task QueueOperationsClassifyAMissingDatabaseAsStoreUnavailable(string operation)
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var connectionString = new SqlConnectionStringBuilder(this.ConnectionString)
+        {
+            InitialCatalog = $"workable_missing_operation_{Guid.NewGuid():N}",
+            ConnectTimeout = 1,
+        }.ConnectionString;
+        var store = new WorkableSqlServerQueueDurabilityStore(new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = connectionString,
+        });
+        var workerId = WorkerId.New();
+        var lease = new WorkQueueDurabilityLease(workerId, "coverage-owner", "coverage-lease");
+
+        var exception = await Assert.ThrowsAsync<WorkPersistenceStoreUnavailableException>(async () =>
+        {
+            switch (operation)
+            {
+                case "workflow-list":
+                    await foreach (var _ in store.ListWorkflowRuns(new WorkflowPersistenceReadRequest("coverage")))
+                    {
+                    }
+                    break;
+                case "claim-ready":
+                    await ClaimReady(store, "coverage-owner", 1, "coverage");
+                    break;
+                case "claim-failed":
+                    await ClaimFailed(store, "coverage-owner", 1, "coverage");
+                    break;
+                case "renew":
+                    await store.RenewLeases([lease], TimeSpan.FromMinutes(1));
+                    break;
+                case "retain-failed":
+                    await store.RetainFailed([
+                        new WorkQueueDurabilityFailureRequest(
+                            workerId,
+                            lease,
+                            DateTimeOffset.UtcNow,
+                            [WorkMessage.Error("coverage", "coverage")]),
+                    ]);
+                    break;
+                case "delete-final":
+                    await store.DeleteFinal([new WorkQueueDurabilityCleanupRequest(workerId, lease)]);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown operation '{operation}'.");
+            }
+        });
+
+        Assert.Contains("could not reach SQL Server", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.IsType<SqlException>(exception.InnerException);
     }
 
     [Fact]
@@ -1440,6 +2016,147 @@ FROM workable.WorkflowRuns;
             batchSize: 10,
             workSystemName: systemName));
         Assert.Equal(provenance, failed.WorkflowProvenance);
+    }
+
+    [Fact]
+    public async Task FailedClaimRestoresLegacyNullPayloadColumnsWithSafeDefaults()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var systemName = $"failed-null-payload-{Guid.NewGuid():N}";
+        var workerId = WorkerId.New();
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        await store.Enqueue(CreateDurableEnqueueRequest(
+            WorkSystemId.New(),
+            systemName,
+            workerId,
+            "sample.dispatch",
+            $"failed-null-payload-{Guid.NewGuid():N}",
+            transaction: null));
+        var ready = Assert.Single(await ClaimReady(store, "failed-null-ready", 10, systemName));
+        await store.RetainFailed([
+            new WorkQueueDurabilityFailureRequest(
+                workerId,
+                ready.Lease,
+                DateTimeOffset.UtcNow,
+                [WorkMessage.Error("temporary", "This payload is cleared to simulate a legacy row.")]),
+        ]);
+
+        await using (var connection = await this.OpenConnection())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+UPDATE workable.WorkEntries
+SET InputJson = NULL,
+    OptionsJson = NULL,
+    ConfigurationJson = NULL,
+    OriginJson = N'null',
+    WorkflowProvenanceJson = NULL,
+    FailureMessagesJson = NULL
+WHERE WorkerId = @WorkerId;
+UPDATE workable.WorkQueueEntries
+SET LeaseExpiresAt = NULL
+WHERE WorkerId = @WorkerId;
+""";
+            command.Parameters.AddWithValue("@WorkerId", workerId.Value);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var failed = Assert.Single(await ClaimFailed(store, "failed-null-claim", 10, systemName));
+        Assert.Null(failed.Input);
+        Assert.Equal(WorkerOptions.Default, failed.Options);
+        Assert.Equal(WorkConfiguration.Default, failed.Configuration);
+        Assert.Equal(WorkInvocationChannel.InProcess, failed.RequestContext.Origin.Channel);
+        Assert.Null(failed.WorkflowProvenance);
+        var warning = Assert.Single(failed.Messages);
+        Assert.Equal("workable.queue_durability.legacy_failure_restored", warning.Code);
+    }
+
+    [Fact]
+    public async Task ReadyClaimRestoresLegacyNullPayloadColumnsWithSafeDefaults()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var systemName = $"ready-null-payload-{Guid.NewGuid():N}";
+        var workerId = WorkerId.New();
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerDurableQueue(this.ConnectionString, SchemaName)
+            .BuildServiceProvider();
+        var store = provider.GetRequiredService<IWorkPersistenceStore>();
+        await store.Enqueue(CreateDurableEnqueueRequest(
+            WorkSystemId.New(),
+            systemName,
+            workerId,
+            "sample.dispatch",
+            $"ready-null-payload-{Guid.NewGuid():N}",
+            transaction: null));
+
+        await using (var connection = await this.OpenConnection())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+UPDATE workable.WorkEntries
+SET InputJson = NULL,
+    OptionsJson = NULL,
+    ConfigurationJson = NULL,
+    OriginJson = N'null',
+    WorkflowProvenanceJson = NULL
+WHERE WorkerId = @WorkerId;
+""";
+            command.Parameters.AddWithValue("@WorkerId", workerId.Value);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var ready = Assert.Single(await ClaimReady(store, "ready-null-claim", 10, systemName));
+        Assert.Null(ready.Input);
+        Assert.Equal(WorkerOptions.Default, ready.Options);
+        Assert.Equal(WorkConfiguration.Default, ready.Configuration);
+        Assert.Equal(WorkInvocationChannel.InProcess, ready.RequestContext.Origin.Channel);
+        Assert.Null(ready.WorkflowProvenance);
+    }
+
+    [Fact]
+    public async Task DuplicateWorkerWithoutSubjectUsesTheSafeDiagnosticPlaceholder()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        var store = new WorkableSqlServerQueueDurabilityStore(new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = this.ConnectionString,
+            EnqueueBatchSize = 1,
+        });
+        var workerId = WorkerId.New();
+        var request = CreateDurableEnqueueRequest(
+            WorkSystemId.New(),
+            $"duplicate-worker-{Guid.NewGuid():N}",
+            workerId,
+            "sample.dispatch",
+            $"unused-{Guid.NewGuid():N}",
+            transaction: null) with
+        {
+            Input = null,
+            Idempotency = null,
+        };
+
+        await store.Enqueue(request);
+        var exception = await Assert.ThrowsAsync<WorkQueueDurabilityDuplicateException>(() => store.Enqueue(request));
+
+        Assert.Contains("<none>", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2463,6 +3180,38 @@ WHERE entries.WorkSystemName = N'sql-store-batched-enqueue-system'
         Assert.Equal(1, results.Count(static exception => exception is null));
         Assert.Single(results.OfType<WorkQueueDurabilityDuplicateException>());
         Assert.Equal(1, persistedRows);
+    }
+
+    [Fact]
+    public async Task CanceledPendingBatchIsDiscardedWithoutOpeningSqlConnection()
+    {
+        var store = new WorkableSqlServerQueueDurabilityStore(new WorkableSqlServerQueueDurabilityOptions
+        {
+            ConnectionString = "Server=invalid.invalid;Initial Catalog=unused;User ID=unused;Password=unused;TrustServerCertificate=true",
+            EnqueueBatchSize = 32,
+            EnqueueBatchWindow = TimeSpan.FromMinutes(1),
+        });
+        using var cancellation = new CancellationTokenSource();
+        var request = CreateDurableEnqueueRequest(
+            WorkSystemId.New(),
+            "canceled-batch",
+            WorkerId.New(),
+            "sample.dispatch",
+            "canceled-batch",
+            transaction: null);
+
+        var enqueue = store.Enqueue(request, cancellation.Token);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => enqueue);
+
+        var flush = (Task)typeof(WorkableSqlServerQueueDurabilityStore)
+            .GetMethod("FlushEnqueueBatch", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(store, null)!;
+        await flush;
+        var emptyFlush = (Task)typeof(WorkableSqlServerQueueDurabilityStore)
+            .GetMethod("FlushEnqueueBatch", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(store, null)!;
+        await emptyFlush;
     }
 
     [Fact]
@@ -4472,8 +5221,24 @@ WHERE DiagnosticId = '{diagnosticId:D}';
         Assert.Equal(WorkProfileCaptureMode.Full, persisted.ProfileCaptureMode);
         Assert.Equal(TimeSpan.FromHours(3), persisted.ArtifactRetention);
         Assert.Equal(actor, persisted.CreatedBy);
-        Assert.True(await repository.DeleteCaptureRule(
+        var replacementId = Guid.NewGuid();
+        await repository.UpsertCaptureRule(new WorkExecutionDiagnosticCaptureRule(
+            replacementId,
+            context.WorkSystemId,
+            context.WorkSystemName,
+            "ORDERS.REBUILD",
+            LogLevel.Error,
+            null,
+            TimeSpan.FromHours(1),
+            now,
+            now.AddMinutes(20),
+            actor), 1);
+        persisted = Assert.Single(await repository.ListCaptureRules(context));
+        Assert.Equal(replacementId, persisted.Id);
+        Assert.False(await repository.DeleteCaptureRule(
             new WorkExecutionDiagnosticCaptureRuleDeleteRequest(context.WorkSystemId, ruleId)));
+        Assert.True(await repository.DeleteCaptureRule(
+            new WorkExecutionDiagnosticCaptureRuleDeleteRequest(context.WorkSystemId, replacementId)));
         Assert.False(await repository.DeleteCaptureRule(
             new WorkExecutionDiagnosticCaptureRuleDeleteRequest(context.WorkSystemId, ruleId)));
 
@@ -4497,6 +5262,31 @@ SELECT COUNT(*)
 FROM workable.WorkDiagnosticCaptureRules
 WHERE RuleId = '{expiredRule.Id:D}';
 """));
+    }
+
+    [Fact]
+    public async Task CaptureRuleRepositoryRejectsANonPositiveActiveRuleLimitBeforeConnecting()
+    {
+        var repository = new WorkableSqlServerExecutionDiagnosticsRepository(
+            new WorkableSqlServerPersistenceOptions
+            {
+                ConnectionString = "Server=unused.invalid;Initial Catalog=unused;Integrated Security=true;TrustServerCertificate=true",
+            });
+        var now = DateTimeOffset.UtcNow;
+        var rule = new WorkExecutionDiagnosticCaptureRule(
+            Guid.NewGuid(),
+            WorkSystemId.New(),
+            "validation",
+            null,
+            LogLevel.Information,
+            null,
+            TimeSpan.FromMinutes(5),
+            now,
+            now.AddMinutes(1),
+            new WorkActor("validator"));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            repository.UpsertCaptureRule(rule, maximumActiveRules: 0));
     }
 
     [Fact]
@@ -4559,6 +5349,57 @@ WHERE RuleId = '{expiredRule.Id:D}';
         var rejected = Assert.IsType<SqlException>(Assert.Single(outcomes, outcome => outcome is not null));
         Assert.Equal(50010, rejected.Number);
         Assert.Single(await firstRepository.ListCaptureRules(context));
+    }
+
+    [Fact]
+    public async Task ConcurrentCaptureRuleWritesAtomicallyReplaceTheSameScope()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using var firstProvider = this.CreateDiagnosticsProvider("diagnostic-rule-replace", autoDeploySchema: false);
+        await using var secondProvider = this.CreateDiagnosticsProvider("diagnostic-rule-replace", autoDeploySchema: false);
+        var firstRepository = firstProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var secondRepository = secondProvider.GetRequiredService<IWorkExecutionDiagnosticsRepository>();
+        var context = new WorkExecutionDiagnosticsInitializationContext(
+            WorkSystemId.New(),
+            "diagnostic-rule-replace-system");
+        await Task.WhenAll(firstRepository.Initialize(context), secondRepository.Initialize(context));
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ready = 0;
+
+        async Task Replace(IWorkExecutionDiagnosticsRepository repository, string actorId)
+        {
+            if (Interlocked.Increment(ref ready) == 2)
+            {
+                gate.TrySetResult();
+            }
+
+            await gate.Task;
+            var now = DateTimeOffset.UtcNow;
+            await repository.UpsertCaptureRule(new WorkExecutionDiagnosticCaptureRule(
+                Guid.NewGuid(),
+                context.WorkSystemId,
+                context.WorkSystemName,
+                "Orders.Run",
+                LogLevel.Information,
+                null,
+                TimeSpan.FromHours(1),
+                now,
+                now.AddMinutes(10),
+                new WorkActor(actorId)), 1);
+        }
+
+        await Task.WhenAll(
+            Task.Run(() => Replace(firstRepository, "first")),
+            Task.Run(() => Replace(secondRepository, "second")));
+
+        var persisted = Assert.Single(await firstRepository.ListCaptureRules(context));
+        Assert.Equal("Orders.Run", persisted.DefinitionName);
+        Assert.Contains(persisted.CreatedBy.Id, new[] { "first", "second" });
     }
 
     [Fact]
@@ -5497,6 +6338,113 @@ WHERE WorkerId = @WorkerId;
     }
 
     private sealed record WorkflowSqlInput(string Value);
+
+    private sealed class ForeignDurabilityTransaction : IWorkQueueDurabilityTransaction;
+
+    private static T InvokeDurabilityHelper<T>(string methodName, object? argument)
+        => (T)typeof(WorkableSqlServerQueueDurabilityStore)
+            .GetMethod(methodName, BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [argument])!;
+
+    private static SqlException CreateSqlException(int number, byte errorClass)
+    {
+        var errorConstructor = typeof(SqlError)
+            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic)
+            .OrderByDescending(constructor => constructor.GetParameters().Length)
+            .First();
+        var errorArguments = errorConstructor.GetParameters()
+            .Select(parameter => parameter.Name switch
+            {
+                "infoNumber" or "number" => (object?)number,
+                "errorState" or "state" => (byte)1,
+                "errorClass" or "class" => errorClass,
+                "server" => "coverage-server",
+                "errorMessage" or "message" => "coverage failure",
+                "procedure" => "coverage-procedure",
+                "lineNumber" => 1,
+                "win32ErrorCode" => Activator.CreateInstance(parameter.ParameterType),
+                "exception" => null,
+                _ => parameter.HasDefaultValue
+                    ? parameter.DefaultValue
+                    : parameter.ParameterType.IsValueType
+                        ? Activator.CreateInstance(parameter.ParameterType)
+                        : null,
+            })
+            .ToArray();
+        var error = (SqlError)errorConstructor.Invoke(errorArguments);
+        var errors = (SqlErrorCollection)Activator.CreateInstance(typeof(SqlErrorCollection), nonPublic: true)!;
+        typeof(SqlErrorCollection)
+            .GetMethod("Add", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(errors, [error]);
+        var create = typeof(SqlException)
+            .GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Where(method => method.Name == "CreateException")
+            .First(method => method.GetParameters() is var parameters &&
+                parameters.Length >= 2 &&
+                parameters[0].ParameterType == typeof(SqlErrorCollection) &&
+                parameters[1].ParameterType == typeof(string));
+        var createArguments = create.GetParameters()
+            .Select((parameter, index) => index switch
+            {
+                0 => (object?)errors,
+                1 => "coverage",
+                _ => parameter.HasDefaultValue
+                    ? parameter.DefaultValue
+                    : parameter.ParameterType.IsValueType
+                        ? Activator.CreateInstance(parameter.ParameterType)
+                        : null,
+            })
+            .ToArray();
+        return (SqlException)create.Invoke(null, createArguments)!;
+    }
+
+    private static Task<T> InvokeSchemaScalar<T>(SqlConnection connection, string commandText)
+        => (Task<T>)typeof(WorkableSqlServerSchema)
+            .GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Single(method => method.Name == "Scalar" && method.IsGenericMethodDefinition)
+            .MakeGenericMethod(typeof(T))
+            .Invoke(
+                null,
+                [connection, commandText, SchemaName, CancellationToken.None, null, null])!;
+
+    private static object? InvokeGenericDurabilityHelper(string methodName, Type typeArgument, object? argument)
+        => typeof(WorkableSqlServerQueueDurabilityStore)
+            .GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Single(method => method.Name == methodName && method.IsGenericMethodDefinition)
+            .MakeGenericMethod(typeArgument)
+            .Invoke(null, [argument]);
+
+    private static string SerializePrivatePayload(string methodName, object argument)
+    {
+        var payload = typeof(WorkableSqlServerQueueDurabilityStore)
+            .GetMethod(methodName, BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [argument])!;
+        return JsonSerializer.Serialize(payload, payload.GetType(), DurableJsonOptions);
+    }
+
+    private static object? InvokeGenericDurabilityReader(
+        string methodName,
+        Type typeArgument,
+        DbDataReader reader,
+        int ordinal)
+        => typeof(WorkableSqlServerQueueDurabilityStore)
+            .GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Single(method => method.Name == methodName && method.IsGenericMethodDefinition)
+            .MakeGenericMethod(typeArgument)
+            .Invoke(null, [reader, ordinal]);
+
+    private static object? InvokeDurabilityReader(string methodName, DbDataReader reader, int ordinal)
+        => typeof(WorkableSqlServerQueueDurabilityStore)
+            .GetMethod(methodName, BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [reader, ordinal]);
+
+    private static DataTableReader CreateStringReader(object value)
+    {
+        using var table = new DataTable();
+        table.Columns.Add("Payload", typeof(string));
+        table.Rows.Add(value);
+        return table.CreateDataReader();
+    }
 
     private static WorkQueueDurabilityEnqueueRequest CreateDurableEnqueueRequest(
         WorkSystemId systemId,

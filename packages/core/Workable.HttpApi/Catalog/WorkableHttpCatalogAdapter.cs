@@ -47,15 +47,12 @@ public sealed class WorkableHttpCatalogAdapter
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Changes);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        if (!session.Catalog.TryGet(name, out var definition))
-        {
-            return Task.FromResult(WorkDefinitionReconfigurationOutcome.NotFound(name));
-        }
-
-        return session.Catalog.Reconfigure(
-            new WorkDefinitionVersion(definition.Id, request.Revision),
+        return session.ReconfigureDefinition(
+            name,
+            request.Revision,
             request.Changes,
             cancellationToken);
     }
@@ -77,10 +74,7 @@ public sealed class WorkableHttpCatalogAdapter
 
         string[] pathSegments = string.IsNullOrWhiteSpace(category)
             ? []
-            : (string.IsNullOrWhiteSpace(category)
-                ? WorkDefinitionMetadataDefaults.Category
-                : category)
-                .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            : category.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var categories = new Dictionary<string, WorkSystemCatalogCategoryItem>(StringComparer.OrdinalIgnoreCase);
         var directDefinitions = new List<WorkableHttpDefinitionCatalogItem>();
 

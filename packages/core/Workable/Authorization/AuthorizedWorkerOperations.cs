@@ -35,15 +35,13 @@ internal sealed class AuthorizedWorkerOperations(
 
         if (authorizationResult.Status is WorkerActionAuthorizationStatus.Invalid)
         {
-            return WorkProfileAccessFilter.Apply(WorkActionOutcome.Invalid(
+            return this.FilterOutcome(WorkActionOutcome.Invalid(
                 action,
                 authorizationResult.Worker,
-                authorizationResult.Messages), canViewDiagnostics);
+                authorizationResult.Messages));
         }
 
-        return WorkProfileAccessFilter.Apply(
-            await inner.Execute(worker, request, cancellationToken),
-            canViewDiagnostics);
+        return this.FilterOutcome(await inner.Execute(worker, request, cancellationToken));
     }
 
     public async Task<WorkerBulkActionOutcome> ExecuteAll(
@@ -69,23 +67,18 @@ internal sealed class AuthorizedWorkerOperations(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var authorizationResult = this.AuthorizeAction(worker, action);
-            outcomes.Add(authorizationResult.Status switch
+            if (authorizationResult.Status is not WorkerActionAuthorizationStatus.Authorized)
             {
-                WorkerActionAuthorizationStatus.Authorized => await inner.Execute(
-                    worker.Version,
-                    action,
-                    cancellationToken),
-                WorkerActionAuthorizationStatus.Invalid => WorkActionOutcome.Invalid(
-                    action,
-                    authorizationResult.Worker,
-                    authorizationResult.Messages),
-                _ => WorkActionOutcome.Unauthorized(action, worker.Id),
-            });
+                continue;
+            }
+
+            outcomes.Add(this.FilterOutcome(await inner.Execute(
+                worker.Version,
+                action,
+                cancellationToken)));
         }
 
-        return WorkProfileAccessFilter.Apply(
-            new WorkerBulkActionOutcome(action, filter, candidates.Count, outcomes),
-            canViewDiagnostics);
+        return new WorkerBulkActionOutcome(action, filter, outcomes.Count, outcomes);
     }
 
     public async Task<WorkActionOutcome> Reconfigure(
@@ -93,6 +86,7 @@ internal sealed class AuthorizedWorkerOperations(
         WorkerReconfiguration changes,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(changes);
         var authorizationResult = await this.AuthorizeReconfiguration(worker.WorkerId, changes, cancellationToken);
         if (authorizationResult.Status is WorkerActionAuthorizationStatus.NotFound)
         {
@@ -106,15 +100,25 @@ internal sealed class AuthorizedWorkerOperations(
 
         if (authorizationResult.Status is WorkerActionAuthorizationStatus.Invalid)
         {
-            return WorkProfileAccessFilter.Apply(WorkActionOutcome.Invalid(
+            return this.FilterOutcome(WorkActionOutcome.Invalid(
                 WorkAction.Start,
                 authorizationResult.Worker,
-                authorizationResult.Messages), canViewDiagnostics);
+                authorizationResult.Messages));
         }
 
-        return WorkProfileAccessFilter.Apply(
-            await inner.Reconfigure(worker, changes, cancellationToken),
-            canViewDiagnostics);
+        return this.FilterOutcome(await inner.Reconfigure(worker, changes, cancellationToken));
+    }
+
+    private WorkActionOutcome FilterOutcome(WorkActionOutcome outcome)
+    {
+        if (outcome.Worker is { } worker &&
+            (!catalog.TryGetWork(worker.DefinitionName, out var registeredWork) ||
+                !authorization.CanRead(registeredWork.Definition)))
+        {
+            return outcome with { Worker = null };
+        }
+
+        return WorkProfileAccessFilter.Apply(outcome, canViewDiagnostics);
     }
 
     private async Task<WorkerActionAuthorizationResult> AuthorizeAction(
@@ -137,7 +141,12 @@ internal sealed class AuthorizedWorkerOperations(
     {
         if (!catalog.TryGetWork(worker.DefinitionName, out var registeredWork))
         {
-            return WorkerActionAuthorizationResult.Unauthorized(worker);
+            return WorkerActionAuthorizationResult.NotFound();
+        }
+
+        if (!authorization.CanDiscover(registeredWork.Definition))
+        {
+            return WorkerActionAuthorizationResult.NotFound();
         }
 
         var decision = authorization.AuthorizeWorkerAction(
@@ -168,7 +177,12 @@ internal sealed class AuthorizedWorkerOperations(
 
         if (!catalog.TryGetWork(worker.DefinitionName, out var registeredWork))
         {
-            return WorkerActionAuthorizationResult.Unauthorized(worker);
+            return WorkerActionAuthorizationResult.NotFound();
+        }
+
+        if (!authorization.CanDiscover(registeredWork.Definition))
+        {
+            return WorkerActionAuthorizationResult.NotFound();
         }
 
         var decision = authorization.AuthorizeWorkerReconfiguration(

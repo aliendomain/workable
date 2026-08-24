@@ -49,7 +49,7 @@ public static class WorkableServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection that should receive the system registration.</param>
     /// <param name="name">
-    /// The optional system name. Use <see langword="null"/> to register the default unnamed system.
+    /// The optional non-whitespace system name. Use <see langword="null"/> to register the default unnamed system.
     /// </param>
     /// <param name="configure">The callback that configures the system before the container is built.</param>
     /// <returns>The same service collection so additional application services can be registered.</returns>
@@ -60,6 +60,10 @@ public static class WorkableServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
+        if (name is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        }
 
         var builder = new WorkSystemBuilder(services, name);
         configure(builder);

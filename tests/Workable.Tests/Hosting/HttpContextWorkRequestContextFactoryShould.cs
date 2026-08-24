@@ -75,7 +75,65 @@ public sealed class HttpContextWorkRequestContextFactoryShould
         Assert.Equal(WorkInvocationChannel.HttpApi, context.Channel);
         Assert.Equal(WorkOriginSurface.HostApplication, context.Surface);
         Assert.Equal("Queue through HTTP.", context.Description);
-        Assert.Equal("/workable/custom/queue?definition=demo", context.Url);
+        Assert.Equal("/workable/custom/queue", context.Url);
+        Assert.DoesNotContain("demo", context.Url!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExcludeQueryStringFromEveryProtocolRequestContextUrl()
+    {
+        var actors = new RecordingActorFactory(new WorkActor("user-123"));
+        var factory = new HttpContextWorkRequestContextFactory(actors);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.PathBase = "/host";
+        httpContext.Request.Path = "/workable/realtime";
+        httpContext.Request.QueryString = new QueryString(
+            "?access_token=secret-bearer-token&id=connection-id");
+
+        foreach (var channel in new[]
+        {
+            WorkInvocationChannel.HttpApi,
+            WorkInvocationChannel.SignalR,
+            WorkInvocationChannel.Mcp,
+        })
+        {
+            var context = factory.Create(httpContext, channel);
+
+            Assert.Equal("/host/workable/realtime", context.Url);
+            Assert.DoesNotContain("secret-bearer-token", context.Url!, StringComparison.Ordinal);
+            Assert.DoesNotContain("connection-id", context.Url!, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void KeepAnExplicitContextAuthoritativeWhileAnotherSnapshotIsActive()
+    {
+        var activeIdentity = new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, "active-user")],
+            "Active");
+        var activeSnapshot = new WorkableAspNetCoreAuthentication.WorkableAuthenticationSnapshot(
+            new ClaimsPrincipal(activeIdentity),
+            activeIdentity,
+            authenticationScheme: null)
+        {
+            Actor = new WorkActor("active-user"),
+        };
+        var explicitActor = new WorkActor("explicit-user");
+        var actors = new RecordingActorFactory(explicitActor);
+        var factory = new HttpContextWorkRequestContextFactory(actors);
+        var explicitContext = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, explicitActor.Id!)],
+                "Explicit")),
+        };
+
+        using var scope = WorkableAspNetCoreAuthentication.UseSnapshot(activeSnapshot);
+        var context = factory.Create(explicitContext, WorkInvocationChannel.HttpApi);
+
+        Assert.Same(explicitContext, actors.LastHttpContext);
+        Assert.Equal(explicitActor, context.Actor);
+        Assert.True(context.IsAuthenticated);
     }
 
     private sealed class RecordingActorFactory(WorkActor actor) : IWorkActorFactory

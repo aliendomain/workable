@@ -190,9 +190,10 @@ internal static class WorkConfigurationComposer
         if (attribute is not null)
         {
             authorization = WorkDefinitionAuthorization.Create(
-                attribute.ReadGroups,
-                attribute.OperateGroups,
-                WorkAuthorizationRegistrationSource.Attribute);
+                readGroups: attribute.ReadGroups,
+                operateGroups: attribute.OperateGroups,
+                source: WorkAuthorizationRegistrationSource.Attribute,
+                discoverGroups: attribute.DiscoverGroups);
             operateAuthorization = WorkOperateAuthorizationConfiguration.FromDefinition(authorization);
         }
 

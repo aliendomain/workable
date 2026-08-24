@@ -2306,6 +2306,8 @@ export function WorkableConsole() {
                           <ConsoleViewMount active={visibleView === "definitions"}>
                             <DefinitionsView
                               autoOpenScopedDefinition={autoOpenScopedDefinitionInCatalog}
+                              canControlSystem={activeSystem?.access?.canControlSystem ?? false}
+                              canViewDiagnostics={activeSystem?.access?.canViewDiagnostics ?? false}
                               catalogScope={activeCatalogScope}
                               connection={hydratedConnection}
                               onCatalogScopeChange={(scope) => {

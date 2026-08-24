@@ -4,15 +4,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Description>Microsoft Entra ID bearer-token integration for Workable ASP.NET Core adapter surfaces, including JWT validation and Workable authorization claim mapping.</Description>
+    <Description>Microsoft Entra ID integration for interpreting host-authenticated actors and authorization claims on Workable ASP.NET Core adapter surfaces.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

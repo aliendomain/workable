@@ -236,11 +236,60 @@ public sealed class WorkEventPayloadTests
 
         Assert.Equal("dispatch", stepData.GetProperty("step").GetProperty("name").GetString());
         Assert.Equal("Completed", stepData.GetProperty("step").GetProperty("status").GetString());
-        Assert.Equal(1, stepData.GetProperty("step").GetProperty("workerCount").GetInt32());
-        Assert.Equal(1, stepData.GetProperty("run").GetProperty("outstandingChildWorkerCount").GetInt32());
+        Assert.False(stepData.GetProperty("step").TryGetProperty("workerCount", out _));
+        Assert.False(stepData.GetProperty("run").TryGetProperty("outstandingChildWorkerCount", out _));
 
         Assert.Equal("Completed", completedData.GetProperty("run").GetProperty("status").GetString());
         Assert.Equal("dispatch", completedData.GetProperty("run").GetProperty("currentStepName").GetString());
+    }
+
+    [Fact]
+    public async Task WorkflowFailureEventsSanitizeUnhandledChildExceptions()
+    {
+        await using var events = new WorkEventStream();
+        var publisher = new WorkflowEventPublisher(WorkSystemId.New(), "events-system", events);
+        await using var subscription = events.Subscribe(new WorkEventFilter(
+            DefinitionName: "events.workflow.failure",
+            EventType: "workflow.blocked"));
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var exception = new WorkMessage(
+            "workable.execution.exception",
+            WorkMessageSeverity.Error,
+            "secret child failure",
+            Metadata: new Dictionary<string, object?>
+            {
+                ["exceptionType"] = typeof(InvalidOperationException).FullName,
+                ["exceptionStackTrace"] = "secret stack",
+            });
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = new WorkflowRunSnapshot(
+            WorkflowRunId.New(),
+            "events.workflow.failure",
+            WorkflowRunStatus.Blocked,
+            null,
+            [],
+            now,
+            now,
+            null,
+            [exception],
+            [])
+        {
+            DefinitionId = WorkflowDefinitionId.New(),
+        };
+
+        publisher.Completion(new WorkflowRunCompletion(
+            WorkflowRunStatus.Blocked,
+            snapshot,
+            [exception]));
+        var blocked = await ReadNext(reader);
+        var message = RequiredData(blocked).GetProperty("messages")[0];
+
+        Assert.Equal("workable.execution.exception", message.GetProperty("code").GetString());
+        Assert.Equal(
+            "Work execution failed with an unhandled exception.",
+            message.GetProperty("text").GetString());
+        Assert.False(message.TryGetProperty("metadata", out var metadata) && metadata.ValueKind != JsonValueKind.Null);
+        Assert.DoesNotContain("secret child failure", message.GetRawText(), StringComparison.Ordinal);
     }
 
     [Fact]

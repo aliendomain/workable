@@ -377,6 +377,39 @@ public sealed class WorkProfileShould
     }
 
     [Fact]
+    public void RenderStructuredContextForNestedScopesTimingsAndLastLeafMetrics()
+    {
+        WorkProfileSnapshotNode Node(
+            WorkProfileMetricType type,
+            string label,
+            IReadOnlyList<WorkProfileSnapshotNode>? children = null)
+            => new(type, 1, 1, label, new { value = label }, children ?? [], "test");
+        var nestedLeaf = Node(WorkProfileMetricType.Metric, "nested-leaf");
+        var snapshot = new WorkProfileSnapshot(
+            new WorkProfileSnapshotNode(
+                WorkProfileMetricType.Scope,
+                3,
+                1,
+                "root",
+                null,
+                [
+                    Node(WorkProfileMetricType.Scope, "scope", [nestedLeaf]),
+                    Node(WorkProfileMetricType.Timing, "timing"),
+                    Node(WorkProfileMetricType.Metric, "last-metric"),
+                ],
+                WorkProfileInstrumentation.Application),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        var rendered = snapshot.ToAsciiTree();
+
+        Assert.Contains("scope", rendered, StringComparison.Ordinal);
+        Assert.Contains("timing", rendered, StringComparison.Ordinal);
+        Assert.Contains("last-metric", rendered, StringComparison.Ordinal);
+        Assert.Contains("\"value\"", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task WaitForAnEnteredInstrumentationRegistrationWithoutPublishingEarly()
     {
         var profile = new WorkProfile("root");
@@ -456,5 +489,33 @@ public sealed class WorkProfileShould
         Assert.Null(scope);
         Assert.Null(context);
         Assert.Null(lazyScope);
+    }
+
+    [Fact]
+    public void NameMethodScopesForTypesWithoutAFullName()
+    {
+        var profile = new WorkProfile("root");
+        var genericParameter = typeof(Dictionary<,>).GetGenericArguments()[0];
+
+        using (profile.CreateMethodScope(genericParameter, "Execute"))
+        {
+        }
+
+        Assert.Contains(
+            profile.ToSnapshot().Root.Children,
+            node => node.Label.Contains($"{genericParameter.Name}.Execute", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CompleteASealedPendingRegistrationBeforeAWaiterIsCreated()
+    {
+        var profile = new WorkProfile("root");
+        var registry = (IWorkProfilePendingInstrumentationRegistry)profile;
+        Assert.True(registry.TryEnterPendingInstrumentationRegistration());
+
+        profile.Seal();
+        registry.ExitPendingInstrumentationRegistration();
+
+        Assert.Equal("root", profile.ToSnapshot().Root.Label);
     }
 }

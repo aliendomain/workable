@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using System.Reflection;
 using Workable;
 
 namespace Workable.Tests;
@@ -24,6 +25,38 @@ public sealed class CatalogTests
         Assert.True(registry.TryGet("named", out var named));
         Assert.True(named.Catalog.TryGet("second", out _));
         Assert.False(named.Catalog.TryGet("first", out _));
+    }
+
+    [Fact]
+    public void ResolveDefinitionsByIdAndNormalizeAnEmptyCategoryPath()
+    {
+        var definition = WorkDefinition.Create("catalog.by-id");
+        var system = CreateSystem(definition);
+        var catalog = Assert.IsType<WorkSystemCatalog>(system.Catalog);
+
+        Assert.True(catalog.TryGet(definition.Id, out var found));
+        Assert.Equal(definition.Name, found.Name);
+        Assert.False(catalog.TryGet(WorkDefinitionId.New(), out var missing));
+        Assert.Null(missing);
+
+        var categoryPath = typeof(WorkSystemCatalog).GetMethod(
+            "GetCategoryPath",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected category path helper.");
+        Assert.Equal(
+            [WorkDefinitionMetadataDefaults.Category],
+            (IReadOnlyList<string>)categoryPath.Invoke(null, ["::"])!);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("\t")]
+    public void WhitespaceNamedSystemsAreRejected(string name)
+    {
+        var services = new ServiceCollection();
+
+        Assert.Throws<ArgumentException>(() => services.AddWorkableSystem(name, _ => { }));
     }
 
     [Fact]
@@ -197,7 +230,8 @@ public sealed class CatalogTests
         Assert.Equal(definition.Description, outcome.Definition.Description);
         Assert.Equal(inputSchema, outcome.Definition.InputSchema);
         Assert.Equal(outputSchema, outcome.Definition.OutputSchema);
-        Assert.Same(metadata, outcome.Definition.Metadata);
+        Assert.NotSame(metadata, outcome.Definition.Metadata);
+        Assert.Equal(metadata, outcome.Definition.Metadata);
         Assert.True(outcome.Definition.DefaultOptions.ProfilingEnabled);
         Assert.Equal(WorkStartPolicy.DoNotStart, outcome.Definition.Configuration.Start.Policy);
 
@@ -284,6 +318,22 @@ public sealed class CatalogTests
         Assert.True(system.Catalog.TryGet(definition.Name, out var current));
         Assert.Equal(0, current.Revision);
         Assert.False(current.Configuration.Recurrence.IsEnabled);
+    }
+
+    [Fact]
+    public async Task DefinitionReconfigurationRejectsEmptyChangesWithoutChangingRevision()
+    {
+        var definition = WorkDefinition.Create("definition.empty");
+        var system = CreateSystem(definition);
+
+        var outcome = await system.Catalog.Reconfigure(
+            definition.Version,
+            new WorkDefinitionReconfiguration());
+
+        Assert.Equal(WorkDefinitionReconfigurationStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message => message.Code == "workable.definition.reconfiguration.empty");
+        Assert.True(system.Catalog.TryGet(definition.Name, out var current));
+        Assert.Equal(0, current.Revision);
     }
 
     [Fact]

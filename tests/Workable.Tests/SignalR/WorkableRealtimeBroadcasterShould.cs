@@ -4,6 +4,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Runtime.CompilerServices;
+using System.Reflection;
+using System.Text.Json;
 using Workable;
 
 namespace Workable.Tests;
@@ -11,6 +13,212 @@ namespace Workable.Tests;
 [Trait("Category", "SignalR")]
 public sealed class WorkableRealtimeBroadcasterShould
 {
+    [Fact]
+    public void NormalizeDiagnosticAlertCriteriaAndEventTimingBoundaries()
+    {
+        Assert.False(InvokeStatic<bool>(
+            "IsDiagnosticsAlertChangesSubscription",
+            ViewSubscription(new WorkViewCriteria(Components: null))));
+
+        foreach (var componentType in new[]
+        {
+            "queueDiagnostics",
+            "systemDiagnostics",
+            "readModelDiagnostics",
+            "retentionDiagnostics",
+            "concurrencyDiagnostics",
+            "durabilityDiagnostics",
+        })
+        {
+            var criteria = new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "diagnostics",
+                    componentType,
+                    JsonSerializer.SerializeToElement(new { publishMode = "alertChanges" }),
+                    WorkComponentShapes.Compact),
+            ]);
+            Assert.True(InvokeStatic<bool>(
+                "IsDiagnosticsAlertChangesSubscription",
+                ViewSubscription(criteria)));
+        }
+
+        Assert.False(InvokeStatic<bool>(
+            "IsDiagnosticsAlertChangesSubscription",
+            ViewSubscription(new WorkViewCriteria(Components:
+            [
+                new("diagnostics", "futureDiagnostics", JsonSerializer.SerializeToElement(new { publishMode = "alertChanges" }), WorkComponentShapes.Compact),
+                new("wrong-shape", "queueDiagnostics", JsonSerializer.SerializeToElement(new { publishMode = "alertChanges" }), WorkComponentShapes.Standard),
+                new("wrong-mode", "queueDiagnostics", JsonSerializer.SerializeToElement(new { publishMode = "interval" }), WorkComponentShapes.Compact),
+            ]))));
+
+        var configured = ViewSubscription(new WorkViewCriteria(Components:
+        [
+            new("read", "readModelDiagnostics", JsonSerializer.SerializeToElement(new { warningThreshold = 0 })),
+            new("retention", "retentionDiagnostics", JsonSerializer.SerializeToElement(new { warningSeconds = 2 })),
+            new("concurrency", "concurrencyDiagnostics", JsonSerializer.SerializeToElement(new { warningSeconds = 3 })),
+            new("durability", "durabilityDiagnostics", JsonSerializer.SerializeToElement(new
+            {
+                acceptedWorkerWarningSeconds = 4,
+                cleanupWarningSeconds = 5,
+            })),
+        ]));
+        Assert.Equal(1, InvokeStatic<int>("GetReadModelDiagnosticsWarningThreshold", configured));
+        Assert.Equal(2, InvokeStatic<int>("GetRetentionDiagnosticsWarningSeconds", configured));
+        Assert.Equal(3, InvokeStatic<int>("GetConcurrencyDiagnosticsWarningSeconds", configured));
+        Assert.Equal(4, InvokeStatic<int>("GetDurabilityAcceptedWorkerWarningSeconds", configured));
+        Assert.Equal(5, InvokeStatic<int>("GetDurabilityCleanupWarningSeconds", configured));
+
+        var defaults = ViewSubscription(new WorkViewCriteria(Components: null));
+        Assert.Equal(100, InvokeStatic<int>("GetReadModelDiagnosticsWarningThreshold", defaults));
+        Assert.Equal(30, InvokeStatic<int>("GetRetentionDiagnosticsWarningSeconds", defaults));
+        Assert.Equal(30, InvokeStatic<int>("GetConcurrencyDiagnosticsWarningSeconds", defaults));
+        Assert.Equal(30, InvokeStatic<int>("GetDurabilityAcceptedWorkerWarningSeconds", defaults));
+        Assert.Equal(30, InvokeStatic<int>("GetDurabilityCleanupWarningSeconds", defaults));
+
+        var timingOptions = new WorkableSignalROptions
+        {
+            MinimumTimeWindow = TimeSpan.FromMilliseconds(50),
+            BatchTimeWindow = TimeSpan.Zero,
+            LiveTimeWindow = TimeSpan.FromMilliseconds(1),
+        };
+        Assert.Equal(TimeSpan.FromSeconds(1), InvokeStatic<TimeSpan>("NormalizeBatchTimeWindow", timingOptions));
+        Assert.Equal(
+            TimeSpan.FromSeconds(2),
+            InvokeStatic<TimeSpan>("NormalizeBatchTimeWindow", new WorkableSignalROptions
+            {
+                MinimumTimeWindow = TimeSpan.FromSeconds(2),
+                BatchTimeWindow = TimeSpan.FromSeconds(1),
+            }));
+        Assert.Equal(TimeSpan.FromMilliseconds(50), InvokeStatic<TimeSpan>("NormalizeLiveTimeWindow", timingOptions));
+        Assert.Equal(
+            TimeSpan.FromMilliseconds(50),
+            InvokeStatic<TimeSpan>(
+                "ResolveTimeWindow",
+                EventSubscription() with { Filter = new WorkEventFilter(WorkerId: WorkerId.New()) },
+                timingOptions));
+        Assert.Equal(
+            TimeSpan.FromSeconds(1),
+            InvokeStatic<TimeSpan>("ResolveTimeWindow", EventSubscription(), timingOptions));
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(1, 1)]
+    [InlineData(10, 2)]
+    public void ClassifyEveryDiagnosticsLagBoundary(
+        int thresholdMultiple,
+        int expectedValue)
+    {
+        var options = JsonSerializer.SerializeToElement(new
+        {
+            warningThreshold = 1,
+            warningSeconds = 1,
+            acceptedWorkerWarningSeconds = 1,
+            cleanupWarningSeconds = 1,
+        });
+        var subscription = ViewSubscription(new WorkViewCriteria(Components:
+        [
+            new("read", "readModelDiagnostics", options),
+            new("retention", "retentionDiagnostics", options),
+            new("concurrency", "concurrencyDiagnostics", options),
+            new("durability", "durabilityDiagnostics", options),
+        ]));
+        var state = InvokeStatic<WorkableRealtimeDiagnosticsAlertState>(
+            "CreateDiagnosticsAlertState",
+            new DiagnosticsSession(CreateDiagnostics(thresholdMultiple)),
+            subscription,
+            null);
+        var expected = (WorkableRealtimeDiagnosticsLagSeverity)expectedValue;
+
+        Assert.Equal(expected, state.ReadModelLagSeverity);
+        Assert.Equal(expected, state.RetentionLagSeverity);
+        Assert.Equal(expected, state.ConcurrencyLagSeverity);
+        Assert.Equal(expected, state.AcceptedWorkerLagSeverity);
+        Assert.Equal(expected, state.CleanupLagSeverity);
+    }
+
+    [Fact]
+    public async Task KeepEmptyAuthorizedEventPumpInertUntilItsGroupIsCanceled()
+    {
+        await using var provider = CreateAuthorizedProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var eventSubscriptions = new WorkableRealtimeEventSubscriptions();
+        var broadcaster = CreateBroadcaster(
+            provider,
+            new WorkableRealtimeViewSubscriptions(),
+            new RecordingHubClients("never-fails"),
+            new ManualTimerFactory(),
+            new RecordingLogger<WorkableRealtimeBroadcaster>(),
+            eventSubscriptions: eventSubscriptions);
+        var subscription = new WorkableRealtimeEventSubscriptions.EventSubscription(
+            "hidden-connection",
+            system.Id,
+            "hidden-events",
+            Filter: null,
+            NoReadAuthorization());
+        using var cancellation = new CancellationTokenSource();
+
+        var pump = InvokeTask(
+            broadcaster,
+            "BroadcastEventGroup",
+            system,
+            subscription,
+            cancellation.Token);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        Assert.False(pump.IsCompleted);
+
+        await cancellation.CancelAsync();
+        await pump.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task KeepEmptyAuthorizedWorkerOverviewPumpInertUntilItsGroupIsCanceled()
+    {
+        await using var provider = CreateAuthorizedProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var subscriptions = new WorkableRealtimeWorkerOverviewSubscriptions();
+        var groups = new RecordingSignalRGroupManager();
+        using var watchCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var watch = subscriptions.Watch(
+            "hidden-connection",
+            groups,
+            system,
+            "hidden-worker",
+            WorkerId.New(),
+            new WorkWorkerOverviewRealtimeCriteria(),
+            NoReadAuthorization(),
+            watchCancellation.Token);
+        var subscription = await TestEventually.UntilNotNull(
+            () => Task.FromResult(subscriptions.GetActiveSubscriptions(system).SingleOrDefault()),
+            "Expected the hidden worker overview subscription to become active.");
+        subscriptions.SetSeeded(subscription.GroupName, hasPublishedState: false);
+        var broadcaster = CreateBroadcaster(
+            provider,
+            new WorkableRealtimeViewSubscriptions(),
+            new RecordingHubClients("never-fails"),
+            new ManualTimerFactory(),
+            new RecordingLogger<WorkableRealtimeBroadcaster>(),
+            workerOverviewSubscriptions: subscriptions);
+        using var cancellation = new CancellationTokenSource();
+
+        var pump = InvokeTask(
+            broadcaster,
+            "BroadcastWorkerOverviewGroup",
+            system,
+            subscription,
+            cancellation.Token);
+        await watch.WaitAsync(TimeSpan.FromSeconds(1));
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        Assert.False(pump.IsCompleted);
+
+        await cancellation.CancelAsync();
+        await pump.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
     [Fact]
     public async Task IsolateDiagnosticsDeliveryFailuresAndForgetInactiveGroups()
     {
@@ -317,6 +525,52 @@ public sealed class WorkableRealtimeBroadcasterShould
     }
 
     [Fact]
+    public async Task BoundFullBatchesAndSkipShutdownBroadcastsWithoutSubscribers()
+    {
+        var broadcaster = CreateBatchingBroadcaster(maxBatchSize: 3);
+        broadcaster.Dispose();
+
+        var first = CreateEvent("first");
+        var second = CreateEvent("second");
+        var third = CreateEvent("third");
+        var eventBatch = await InvokeWithResult(
+            broadcaster,
+            "CollectEventBatch",
+            EventSubscription(),
+            new SequenceAsyncEnumerator<WorkEvent>(second, third),
+            null,
+            first,
+            CancellationToken.None);
+        Assert.Equal(
+            [first, second, third],
+            Assert.IsAssignableFrom<IReadOnlyList<WorkEvent>>(
+                eventBatch.GetType().GetProperty("Events")!.GetValue(eventBatch)));
+
+        var changeReader = new SequenceAsyncEnumerator<WorkChange>(
+            new(1, DateTimeOffset.UtcNow, WorkChangeKey.Definition("one")),
+            new(2, DateTimeOffset.UtcNow, WorkChangeKey.Definition("two")));
+        var changedKeys = new HashSet<WorkChangeKey> { WorkChangeKey.System() };
+        await InvokeWithResult(
+            broadcaster,
+            "CollectChangeNotifications",
+            changeReader,
+            null,
+            changedKeys,
+            CancellationToken.None);
+        Assert.Equal(3, changedKeys.Count);
+
+        await using var provider = CreateProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var noSubscribers = CreateBroadcaster(
+            provider,
+            new WorkableRealtimeViewSubscriptions(),
+            new RecordingHubClients("never-fails"),
+            new ManualTimerFactory(),
+            new RecordingLogger<WorkableRealtimeBroadcaster>());
+        await noSubscribers.SystemStopping(system, WorkOrigin.Create(WorkInvocationChannel.InProcess));
+    }
+
+    [Fact]
     public async Task PreservePendingReadsWhenBatchingIsDisabled()
     {
         var broadcaster = CreateBatchingBroadcaster(maxBatchSize: 1);
@@ -409,10 +663,10 @@ public sealed class WorkableRealtimeBroadcasterShould
         Assert.Equal(1, clients.For("failed-connection").Attempts);
         var error = Assert.Single(logger.Entries);
         Assert.Contains(workerId.Value.ToString(), error.Message, StringComparison.OrdinalIgnoreCase);
-        var debug = Assert.Single(subscriptions.GetDebugSubscriptions(system));
-        Assert.False(debug.IsStreaming);
-        Assert.Equal("Client delivery failed.", debug.LastError);
-        Assert.Null(debug.ChangeStreamDiagnostics);
+        var snapshot = Assert.Single(subscriptions.GetSubscriptionSnapshots(system));
+        Assert.False(snapshot.IsStreaming);
+        Assert.Equal("Client delivery failed.", snapshot.LastError);
+        Assert.Null(snapshot.ChangeStreamDiagnostics);
     }
 
     [Fact]
@@ -461,19 +715,39 @@ public sealed class WorkableRealtimeBroadcasterShould
             })
             .BuildServiceProvider();
 
+    private static ServiceProvider CreateAuthorizedProvider()
+        => new ServiceCollection()
+            .AddLogging()
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization(true);
+                builder.AddWork(
+                    WorkDefinition.Create(
+                        "signalr.broadcaster.private",
+                        configuration: WorkConfiguration.Default with
+                        {
+                            Start = WorkStartConfiguration.DoNotStart,
+                        }),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configure: null,
+                    authorize: authorization => authorization.AllowReadToGroups("private.read"));
+            })
+            .BuildServiceProvider();
+
     private static WorkableRealtimeBroadcaster CreateBroadcaster(
         ServiceProvider provider,
         WorkableRealtimeViewSubscriptions subscriptions,
         RecordingHubClients clients,
         IWorkableRealtimeTimerFactory timerFactory,
         ILogger<WorkableRealtimeBroadcaster> logger,
-        WorkableRealtimeWorkerOverviewSubscriptions? workerOverviewSubscriptions = null)
+        WorkableRealtimeWorkerOverviewSubscriptions? workerOverviewSubscriptions = null,
+        WorkableRealtimeEventSubscriptions? eventSubscriptions = null)
         => new(
             provider.GetRequiredService<IWorkSystemRegistry>(),
             new RecordingHubContext(clients),
             logger,
             new WorkableViewQueryAdapter(),
-            new WorkableRealtimeEventSubscriptions(),
+            eventSubscriptions ?? new WorkableRealtimeEventSubscriptions(),
             subscriptions,
             workerOverviewSubscriptions ?? new WorkableRealtimeWorkerOverviewSubscriptions(),
             new TestHostApplicationLifetime(),
@@ -481,9 +755,11 @@ public sealed class WorkableRealtimeBroadcasterShould
             {
                 DiagnosticsPublishInterval = TimeSpan.FromSeconds(1),
             }),
+            new WorkableSignalRJsonPayloadSerializer(Options.Create(new JsonHubProtocolOptions())),
             timerFactory,
             new WorkableRealtimeBroadcastLaneRunner(
-                Microsoft.Extensions.Logging.Abstractions.NullLogger<WorkableRealtimeBroadcastLaneRunner>.Instance));
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<WorkableRealtimeBroadcastLaneRunner>.Instance),
+            new WorkableSignalRRegistration());
 
     private static WorkableRealtimeBroadcaster CreateBatchingBroadcaster(int maxBatchSize)
         => new(
@@ -502,8 +778,10 @@ public sealed class WorkableRealtimeBroadcasterShould
                 LiveTimeWindow = TimeSpan.FromMilliseconds(1),
                 MinimumTimeWindow = TimeSpan.FromMilliseconds(1),
             }),
+            new WorkableSignalRJsonPayloadSerializer(Options.Create(new JsonHubProtocolOptions())),
             null!,
-            null!);
+            null!,
+            new WorkableSignalRRegistration());
 
     private static async Task InvokeAsync(object target, string methodName, params object?[] arguments)
         => await InvokeTask(target, methodName, arguments);
@@ -516,6 +794,27 @@ public sealed class WorkableRealtimeBroadcasterShould
         Assert.NotNull(method);
         return Assert.IsAssignableFrom<Task>(method.Invoke(target, arguments));
     }
+
+    private static T InvokeStatic<T>(string methodName, params object?[] arguments)
+    {
+        var method = typeof(WorkableRealtimeBroadcaster).GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Single(candidate =>
+                candidate.Name == methodName &&
+                candidate.GetParameters().Length == arguments.Length);
+        return Assert.IsType<T>(method.Invoke(null, arguments));
+    }
+
+    private static WorkableRealtimeViewSubscription ViewSubscription(WorkViewCriteria criteria)
+        => new(
+            "connection",
+            "subscription",
+            WorkSystemId.New(),
+            "diagnostics",
+            criteria,
+            "group",
+            0,
+            0,
+            Authorization());
 
     private static async Task<object> InvokeWithResult(
         object target,
@@ -555,6 +854,14 @@ public sealed class WorkableRealtimeBroadcasterShould
             new WorkActor("realtime-broadcaster-test", "Realtime Broadcaster Test"),
             [InternalWorkAuthorizationGroups.SystemAdministrator],
             readableDefinitionIds: null);
+
+    private static WorkAuthorizationSnapshot NoReadAuthorization()
+        => WorkAuthorizationSnapshot.CreateForSystem(
+            systemName: null,
+            new WorkActor("realtime-hidden-test", "Realtime Hidden Test"),
+            groups: [],
+            readableDefinitionIds: [],
+            isAuthenticated: true);
 
     private static WorkEvent CreateEvent(string eventType)
         => new(
@@ -780,5 +1087,101 @@ public sealed class WorkableRealtimeBroadcasterShould
         public CancellationToken ApplicationStopped => this.stopped.Token;
 
         public void StopApplication() => this.stopping.Cancel();
+    }
+
+    private static IWorkSystemDiagnostics CreateDiagnostics(int thresholdMultiple)
+    {
+        var activeCount = thresholdMultiple == 0 ? 0 : 1;
+        var age = TimeSpan.FromSeconds(thresholdMultiple);
+        return new FixedDiagnostics(
+            new WorkSystemReadModelDiagnostics(
+                thresholdMultiple,
+                0,
+                0,
+                0,
+                0,
+                TimeSpan.Zero,
+                null,
+                null,
+                null),
+            new WorkSystemRetentionDiagnostics(
+                0,
+                0,
+                0,
+                null,
+                age,
+                0,
+                false,
+                null,
+                TimeSpan.Zero,
+                0,
+                0,
+                null,
+                null),
+            new WorkSystemConcurrencyDiagnostics(activeCount, age, 0),
+            new WorkSystemDurabilityDiagnostics(
+                activeCount,
+                age,
+                activeCount,
+                age,
+                null,
+                null,
+                0,
+                0,
+                0,
+                0,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                [],
+                null,
+                null,
+                null,
+                null));
+    }
+
+    private sealed class FixedDiagnostics(
+        WorkSystemReadModelDiagnostics readModel,
+        WorkSystemRetentionDiagnostics retention,
+        WorkSystemConcurrencyDiagnostics concurrency,
+        WorkSystemDurabilityDiagnostics durability) : IWorkSystemDiagnostics
+    {
+        public WorkSystemQueueDiagnostics Queue { get; } = new(0, null, null, null, null, 0, null, null);
+
+        public WorkSystemReadModelDiagnostics ReadModel { get; } = readModel;
+
+        public WorkSystemRetentionDiagnostics Retention { get; } = retention;
+
+        public WorkSystemConcurrencyDiagnostics Concurrency { get; } = concurrency;
+
+        public WorkSystemDurabilityDiagnostics Durability { get; } = durability;
+
+        public WorkSystemIdempotencyDiagnostics Idempotency { get; } = new(0, null);
+    }
+
+    private sealed class DiagnosticsSession(IWorkSystemDiagnostics diagnostics) : IWorkSystemSession
+    {
+        public string? SystemName => null;
+
+        public WorkSystemState SystemState => WorkSystemState.Started;
+
+        public WorkSystemCapabilities Capabilities => WorkSystemCapabilities.None;
+
+        public IWorkSystemDiagnostics Diagnostics { get; } = diagnostics;
+
+        public IWorkCatalog Catalog => throw new NotSupportedException();
+
+        public IWorkQueueService Queue => throw new NotSupportedException();
+
+        public IWorkerOperations Workers => throw new NotSupportedException();
+
+        public IWorkQueryService Query => throw new NotSupportedException();
+
+        public IWorkEventStream Events => throw new NotSupportedException();
+
+        public IWorkChangeStream Changes => throw new NotSupportedException();
     }
 }

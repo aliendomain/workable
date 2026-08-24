@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Workable;
 
 namespace Workable.Tests;
@@ -86,6 +87,123 @@ public sealed class WorkableRealtimeWorkflowViewsShould
         var component = Assert.Single(result.Components).Value;
         Assert.Equal("error", component.Status);
         Assert.Contains("built-in Workable", component.Error);
+    }
+
+    [Fact]
+    public async Task RejectOversizedWorkflowChildSamplesAsComponentErrors()
+    {
+        var result = await WorkableRealtimeWorkflowViews.Query(
+            new UnsupportedWorkSystem(),
+            Authorization,
+            "workflow-runs",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "runs",
+                    "workflowRuns",
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        childSampleSize = WorkflowRunViewAdapter.MaximumChildSampleSize + 1,
+                    })),
+            ]),
+            CancellationToken.None);
+
+        var component = Assert.Single(result.Components).Value;
+        Assert.Equal("error", component.Status);
+        Assert.Contains("between 0 and 25", component.Error);
+    }
+
+    [Theory]
+    [InlineData("[]", "JSON object")]
+    [InlineData("{\"unsupported\":true}", "not supported")]
+    [InlineData("{\"includeFinal\":\"yes\"}", "must be a boolean")]
+    [InlineData("{\"definitionName\":\" \"}", "non-empty string")]
+    [InlineData("{\"childSampleSize\":\"3\"}", "must be an integer")]
+    [InlineData("{\"skip\":-1}", "non-negative skip")]
+    [InlineData("{\"take\":101}", "take between 1 and 100")]
+    public async Task RejectMalformedWorkflowRunListOptions(string json, string expectedError)
+    {
+        using var document = JsonDocument.Parse(json);
+        var result = await WorkableRealtimeWorkflowViews.Query(
+            new UnsupportedWorkSystem(),
+            Authorization,
+            "workflow-runs",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("runs", "workflowRuns", document.RootElement.Clone()),
+            ]),
+            CancellationToken.None);
+
+        var component = Assert.Single(result.Components).Value;
+        Assert.Equal("error", component.Status);
+        Assert.Contains(expectedError, component.Error);
+    }
+
+    [Fact]
+    public async Task AcceptMissingWorkflowRunListOptionsBeforeQueryingTheSystem()
+    {
+        var result = await WorkableRealtimeWorkflowViews.Query(
+            new UnsupportedWorkSystem(),
+            Authorization,
+            "workflow-runs",
+            new WorkViewCriteria(Components: [new WorkComponentRequest("runs", "workflowRuns")]),
+            CancellationToken.None);
+
+        var component = Assert.Single(result.Components).Value;
+        Assert.Equal("error", component.Status);
+        Assert.Contains("built-in Workable", component.Error);
+    }
+
+    [Fact]
+    public void ScopeWorkflowEventPreflightToRequestedDefinitions()
+    {
+        var filter = WorkableRealtimeWorkflowViews.CreateEventFilter(new WorkViewCriteria(Components:
+        [
+            new WorkComponentRequest(
+                "runs",
+                "workflowRuns",
+                JsonSerializer.SerializeToElement(new { definitionName = " orders.workflow " })),
+        ]));
+
+        Assert.Equal(WorkEventDefinitionKind.Workflow, filter.DefinitionKind);
+        Assert.Equal(["orders.workflow"], Assert.IsAssignableFrom<IEnumerable<string>>(filter.DefinitionNames));
+    }
+
+    [Fact]
+    public void LeaveWorkflowEventPreflightUnscopedWithoutComponents()
+    {
+        var filter = WorkableRealtimeWorkflowViews.CreateEventFilter(new WorkViewCriteria());
+
+        Assert.Equal(WorkEventDefinitionKind.Workflow, filter.DefinitionKind);
+        Assert.Null(filter.DefinitionNames);
+    }
+
+    [Fact]
+    public async Task ReturnAComponentErrorForAnUnknownWorkflowRun()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddWorkableSystem(_ => { });
+        await using var provider = services.BuildServiceProvider();
+        await using var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var runId = Guid.NewGuid();
+
+        var result = await WorkableRealtimeWorkflowViews.Query(
+            system,
+            Authorization,
+            "workflow-run",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "run",
+                    "workflowRun",
+                    JsonSerializer.SerializeToElement(new { runId })),
+            ]),
+            CancellationToken.None);
+
+        var component = Assert.Single(result.Components).Value;
+        Assert.Equal("error", component.Status);
+        Assert.Contains(runId.ToString("D"), component.Error);
     }
 
     [Fact]

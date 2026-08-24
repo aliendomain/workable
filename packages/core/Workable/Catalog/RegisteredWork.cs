@@ -116,10 +116,12 @@ internal sealed record RegisteredWorkRuntimePlan(
         WorkerOptions options,
         WorkConfiguration configuration)
     {
-        var errors = WorkConfigurationValidator.Validate(configuration);
+        var errors = WorkConfigurationValidator.ValidateWorkerOptions(options)
+            .Concat(WorkConfigurationValidator.Validate(configuration))
+            .ToArray();
         return new RegisteredWorkRuntimePlan(
             options,
             configuration,
-            errors.Count == 0 ? [] : errors);
+            errors.Length == 0 ? [] : errors);
     }
 }

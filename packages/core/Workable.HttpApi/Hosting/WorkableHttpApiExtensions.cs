@@ -1,13 +1,8 @@
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
-using System.Net;
 
 namespace Workable;
 
@@ -21,30 +16,31 @@ public static class WorkableHttpApiExtensions
     /// </summary>
     /// <param name="endpoints">The endpoint route builder to configure.</param>
     /// <param name="prefix">The route prefix under which Workable HTTP endpoints should be exposed.</param>
+    /// <param name="authorizationPolicy">
+    /// Optional host-defined authorization policy for this mapping. When omitted, the host's default policy applies.
+    /// </param>
+    /// <param name="useHostFallbackPolicy">
+    /// Whether to leave the endpoints without authorization metadata so the host's fallback policy applies.
+    /// </param>
     /// <returns>The same endpoint route builder for chaining.</returns>
     /// <exception cref="InvalidOperationException">Thrown when any registered system does not require authorization.</exception>
     public static IEndpointRouteBuilder MapWorkableApi(
         this IEndpointRouteBuilder endpoints,
-        string prefix = "/workable")
+        string prefix = "/workable",
+        string? authorizationPolicy = null,
+        bool useHostFallbackPolicy = false)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
+        ValidateHostAuthorizationSelection(authorizationPolicy, useHostFallbackPolicy);
         EnsureAllSystemsRequireAuthorization(endpoints.ServiceProvider.GetRequiredService<IWorkSystemRegistry>());
-
-        if (ShouldMapDebugRoutes(endpoints.ServiceProvider))
-        {
-            var debugGroup = endpoints.MapGroup(prefix);
-            RequireOuterGate(debugGroup, endpoints.ServiceProvider);
-            WorkableHttpDebugRoutes.Map(debugGroup);
-            var namedDebugGroup = endpoints.MapGroup($"{prefix}/systems/{{systemName}}");
-            RequireOuterGate(namedDebugGroup, endpoints.ServiceProvider);
-            WorkableHttpDebugRoutes.Map(namedDebugGroup);
-        }
 
         var hostGroup = CreateProtectedGroup(
             endpoints,
             prefix,
-            requireBuiltInSurfaceAccess: false);
+            requireBuiltInSurfaceAccess: false,
+            authorizationPolicy: authorizationPolicy,
+            useHostFallbackPolicy: useHostFallbackPolicy);
         hostGroup.MapGet("/host", async (
             WorkableHttpTopologyResolver topology,
             WorkableHttpRequestAccessContext requestAccess,
@@ -54,7 +50,9 @@ public static class WorkableHttpApiExtensions
         var group = CreateProtectedGroup(
             endpoints,
             prefix,
-            requireBuiltInSurfaceAccess: true);
+            requireBuiltInSurfaceAccess: true,
+            authorizationPolicy: authorizationPolicy,
+            useHostFallbackPolicy: useHostFallbackPolicy);
         var executionDiagnosticsAvailable =
             endpoints.ServiceProvider.GetService<IWorkExecutionDiagnosticsRepository>() is not null;
         MapWorkableApiRoutes(group, executionDiagnosticsAvailable);
@@ -62,7 +60,9 @@ public static class WorkableHttpApiExtensions
         var namedGroup = CreateProtectedGroup(
             endpoints,
             $"{prefix}/systems/{{systemName}}",
-            requireBuiltInSurfaceAccess: true);
+            requireBuiltInSurfaceAccess: true,
+            authorizationPolicy: authorizationPolicy,
+            useHostFallbackPolicy: useHostFallbackPolicy);
         MapWorkableApiRoutes(namedGroup, executionDiagnosticsAvailable);
 
         return endpoints;
@@ -71,10 +71,12 @@ public static class WorkableHttpApiExtensions
     private static RouteGroupBuilder CreateProtectedGroup(
         IEndpointRouteBuilder endpoints,
         string prefix,
-        bool requireBuiltInSurfaceAccess)
+        bool requireBuiltInSurfaceAccess,
+        string? authorizationPolicy,
+        bool useHostFallbackPolicy)
     {
         var group = endpoints.MapGroup(prefix);
-        ApplyTransportAuthorization(group, endpoints.ServiceProvider);
+        ApplyHostAuthorization(group, authorizationPolicy, useHostFallbackPolicy);
         if (requireBuiltInSurfaceAccess)
         {
             RequireBuiltInSurfaceAccess(group);
@@ -84,6 +86,38 @@ public static class WorkableHttpApiExtensions
         RequireAuthenticated(group);
         HandleAuthorizationDenied(group);
         return group;
+    }
+
+    private static void ApplyHostAuthorization(
+        RouteGroupBuilder group,
+        string? authorizationPolicy,
+        bool useHostFallbackPolicy)
+    {
+        if (authorizationPolicy is not null)
+        {
+            group.RequireAuthorization(authorizationPolicy);
+        }
+        else if (!useHostFallbackPolicy)
+        {
+            group.RequireAuthorization();
+        }
+    }
+
+    private static void ValidateHostAuthorizationSelection(
+        string? authorizationPolicy,
+        bool useHostFallbackPolicy)
+    {
+        if (authorizationPolicy is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(authorizationPolicy);
+        }
+
+        if (authorizationPolicy is not null && useHostFallbackPolicy)
+        {
+            throw new ArgumentException(
+                "A named authorization policy and the host fallback policy cannot both be selected.",
+                nameof(useHostFallbackPolicy));
+        }
     }
 
     private static void MapWorkableApiRoutes(
@@ -113,41 +147,37 @@ public static class WorkableHttpApiExtensions
             }
             catch (WorkSystemAccessDeniedException denied)
             {
+                var systemName = context.HttpContext.Request.RouteValues.TryGetValue("systemName", out var routeValue)
+                    ? Convert.ToString(routeValue)
+                    : null;
+                if (denied.Permission == WorkSystemPermission.AccessSystem &&
+                    !string.IsNullOrWhiteSpace(systemName))
+                {
+                    return WorkableHttpRouteResults.SystemNotFound(systemName);
+                }
+
                 return WorkableHttpRouteResults.AuthorizationDenied(denied);
             }
         });
-    }
-
-    private static void ApplyTransportAuthorization(RouteGroupBuilder group, IServiceProvider services)
-    {
-        var transportScheme = services
-            .GetService<IOptions<WorkableAspNetCoreAuthorizationOptions>>()
-            ?.Value
-            .TransportAuthenticationScheme;
-
-        if (string.IsNullOrWhiteSpace(transportScheme))
-        {
-            return;
-        }
-
-        group.RequireAuthorization(new AuthorizationPolicyBuilder(transportScheme)
-            .RequireAuthenticatedUser()
-            .Build());
     }
 
     private static void RequireAuthenticated(RouteGroupBuilder group)
     {
         ((IEndpointConventionBuilder)group).Add(endpointBuilder =>
         {
-            var next = endpointBuilder.RequestDelegate
-                ?? throw new InvalidOperationException("Workable HTTP API endpoint did not provide a request delegate.");
+            var next = endpointBuilder.RequestDelegate!;
             endpointBuilder.RequestDelegate = async httpContext =>
             {
                 if (!HttpMethods.IsOptions(httpContext.Request.Method) &&
                     !await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
                 {
-                    await WorkableHttpRouteResults.AuthenticationRequired().ExecuteAsync(httpContext);
+                    await WorkableHttpRouteResults.ChallengeAuthentication(httpContext);
                     return;
+                }
+
+                if (!HttpMethods.IsOptions(httpContext.Request.Method))
+                {
+                    await WorkableAspNetCoreAuthentication.PrepareAuthorizationSnapshotAsync(httpContext);
                 }
 
                 await next(httpContext);
@@ -158,9 +188,9 @@ public static class WorkableHttpApiExtensions
     private static void RequireOuterGate(RouteGroupBuilder group, IServiceProvider services)
     {
         var requiredGroups = services
-            .GetService<IOptions<WorkableHttpApiOptions>>()
-            ?.Value
-            ?.SurfaceAccessGroups
+            .GetRequiredService<IOptions<WorkableHttpApiOptions>>()
+            .Value
+            .SurfaceAccessGroups
             ?.Where(group => !string.IsNullOrWhiteSpace(group))
             .Select(group => group.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -172,8 +202,7 @@ public static class WorkableHttpApiExtensions
 
         ((IEndpointConventionBuilder)group).Add(endpointBuilder =>
         {
-            var next = endpointBuilder.RequestDelegate
-                ?? throw new InvalidOperationException("Workable HTTP API endpoint did not provide a request delegate.");
+            var next = endpointBuilder.RequestDelegate!;
             endpointBuilder.RequestDelegate = async httpContext =>
             {
                 if (HttpMethods.IsOptions(httpContext.Request.Method))
@@ -183,9 +212,9 @@ public static class WorkableHttpApiExtensions
                 }
 
                 var principal = await WorkableAspNetCoreAuthentication.GetAuthenticatedPrincipalAsync(httpContext);
-                if (principal?.Identity?.IsAuthenticated != true)
+                if (principal is null)
                 {
-                    await WorkableHttpRouteResults.AuthenticationRequired().ExecuteAsync(httpContext);
+                    await WorkableHttpRouteResults.ChallengeAuthentication(httpContext);
                     return;
                 }
 
@@ -207,8 +236,7 @@ public static class WorkableHttpApiExtensions
     {
         ((IEndpointConventionBuilder)group).Add(endpointBuilder =>
         {
-            var next = endpointBuilder.RequestDelegate
-                ?? throw new InvalidOperationException("Workable HTTP API endpoint did not provide a request delegate.");
+            var next = endpointBuilder.RequestDelegate!;
             endpointBuilder.RequestDelegate = async httpContext =>
             {
                 if (HttpMethods.IsOptions(httpContext.Request.Method))
@@ -223,21 +251,23 @@ public static class WorkableHttpApiExtensions
                     return;
                 }
 
+                var systemName = httpContext.Request.RouteValues.TryGetValue("systemName", out var routeValue)
+                    ? Convert.ToString(routeValue)
+                    : null;
+                var isNamedSystem = !string.IsNullOrWhiteSpace(systemName);
                 var requestAccess = httpContext.RequestServices.GetRequiredService<WorkableHttpRequestAccessContext>();
                 if (!await requestAccess.IsBuiltInSurfaceAllowed(system, httpContext.RequestAborted))
                 {
-                    await WorkableHttpRouteResults.SystemSurfaceAccessDenied(system.Name).ExecuteAsync(httpContext);
+                    await (isNamedSystem
+                        ? WorkableHttpRouteResults.SystemNotFound(systemName)
+                        : WorkableHttpRouteResults.SystemSurfaceAccessDenied(system.Name)).ExecuteAsync(httpContext);
                     return;
                 }
 
-                if (httpContext.Request.RouteValues.TryGetValue("systemName", out var routeValue) &&
-                    !string.IsNullOrWhiteSpace(Convert.ToString(routeValue)) &&
+                if (isNamedSystem &&
                     !await requestAccess.HasAnySystemAccess(system, httpContext.RequestAborted))
                 {
-                    await WorkableHttpRouteResults.AuthorizationDenied(new WorkSystemAccessDeniedException(
-                        WorkSystemPermission.AccessSystem,
-                        system.Id,
-                        system.Name)).ExecuteAsync(httpContext);
+                    await WorkableHttpRouteResults.SystemNotFound(systemName).ExecuteAsync(httpContext);
                     return;
                 }
 
@@ -278,39 +308,4 @@ public static class WorkableHttpApiExtensions
             $"Workable HTTP API requires authorization-enabled systems. The following systems do not require authorization: {string.Join(", ", unsecuredSystems)}.");
     }
 
-    private static bool ShouldMapDebugRoutes(IServiceProvider services)
-    {
-        var environment = services.GetService<IWebHostEnvironment>();
-        if (environment?.IsDevelopment() == true)
-        {
-            return true;
-        }
-
-        var configuration = services.GetService<IConfiguration>();
-        var configuredUrls = GetConfiguredUrls(configuration).ToArray();
-        return configuredUrls.Length > 0 && configuredUrls.All(IsLoopbackUrl);
-    }
-
-    private static IEnumerable<string> GetConfiguredUrls(IConfiguration? configuration)
-    {
-        return new[]
-        {
-            configuration?["ASPNETCORE_URLS"],
-            configuration?["URLS"],
-            configuration?["urls"],
-        }
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .SelectMany(value => value!.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-    }
-
-    private static bool IsLoopbackUrl(string value)
-    {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
-        {
-            return false;
-        }
-
-        return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
-            IPAddress.TryParse(uri.Host, out var address) && IPAddress.IsLoopback(address);
-    }
 }

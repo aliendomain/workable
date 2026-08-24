@@ -73,7 +73,7 @@ internal sealed class WorkQueueAcceptanceCoordinator(
                     [WorkMessage.Info("workable.concurrency.capacity_reached", "Concurrency capacity has been reached for this work group.", "configuration.coordination.concurrency.maximumCapacity")]));
             }
 
-            var reservedWorker = reservation.Worker ?? throw new InvalidOperationException("Accepted concurrency queue reservation did not include a worker.");
+            var reservedWorker = reservation.Worker!;
             var outcome = WorkQueueOutcome.Accepted(
                 workerId,
                 reservation.Status == WorkConcurrencyReservationStatus.Deferred
@@ -115,7 +115,7 @@ internal sealed class WorkQueueAcceptanceCoordinator(
         WorkflowProvenance? workflowProvenance)
     {
         var idempotencyRequest = runtimePlan.Configuration.Coordination.IsPersistentIdempotencyEnabled
-            ? new WorkQueueDurabilityIdempotency(input?.SubjectId ?? throw new InvalidOperationException("Persistent idempotent queue acceptance requires a subject id."))
+            ? new WorkQueueDurabilityIdempotency(input!.SubjectId!.Value)
             : null;
 
         return PreparedWorkQueueAcceptance.Persistent(durability.CreateRequest(
@@ -141,7 +141,7 @@ internal sealed class WorkQueueAcceptanceCoordinator(
             ? durability.CreateIdempotencyRequest(
                 workerId,
                 registeredWork,
-                input?.SubjectId ?? throw new InvalidOperationException("Persistent idempotent queue acceptance requires a subject id."),
+                input!.SubjectId!.Value,
                 runtimePlan.Options,
                 requestContext,
                 now)

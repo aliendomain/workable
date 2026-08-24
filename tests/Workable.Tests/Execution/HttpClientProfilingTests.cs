@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
@@ -238,6 +239,46 @@ public sealed class HttpClientProfilingTests
         Assert.NotNull(captured);
         Assert.StartsWith("/", captured, StringComparison.Ordinal);
         Assert.Equal(2_048, captured.Length);
+    }
+
+    [Fact]
+    public void SampledRequestConsumesOrReleasesExactlyOneReservation()
+    {
+        var profile = new WorkProfile("sampled-request", maximumAutomaticInstrumentationNodes: 4);
+        var context = new WorkProfilingContext(WorkSystemId.New(), profile);
+        var gate = (IWorkAutomaticProfileSamplingGate)profile;
+        var sampledRequestType = typeof(WorkableHttpClientProfilingObserver).GetNestedType(
+            "SampledRequest",
+            BindingFlags.NonPublic)!;
+        object Create(IWorkAutomaticProfileSamplingGate? samplingGate)
+            => Activator.CreateInstance(
+                sampledRequestType,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                args: [context, samplingGate],
+                culture: null)!;
+        var tryStart = sampledRequestType.GetMethod("TryStartReservedTiming")!
+            .MakeGenericMethod(typeof(object));
+
+        var withoutReservation = Create(null);
+        var missingArguments = new object?[] { "timing", (Func<object>)(() => new object()), null, null };
+        Assert.False(Assert.IsType<bool>(tryStart.Invoke(withoutReservation, missingArguments)));
+        Assert.Null(missingArguments[2]);
+        ((IDisposable)withoutReservation).Dispose();
+
+        Assert.True(gate.TryReserveAutomaticNodeForSampling("http.client"));
+        var consumed = Create(gate);
+        var firstArguments = new object?[] { "timing", (Func<object>)(() => new object()), null, null };
+        Assert.True(Assert.IsType<bool>(tryStart.Invoke(consumed, firstArguments)));
+        Assert.NotNull(firstArguments[2]);
+        var secondArguments = new object?[] { "timing", (Func<object>)(() => new object()), null, null };
+        Assert.False(Assert.IsType<bool>(tryStart.Invoke(consumed, secondArguments)));
+        ((IDisposable)consumed).Dispose();
+
+        Assert.True(gate.TryReserveAutomaticNodeForSampling("http.client"));
+        var released = Create(gate);
+        ((IDisposable)released).Dispose();
+        ((IDisposable)released).Dispose();
     }
 
     [Fact]
@@ -719,6 +760,85 @@ public sealed class HttpClientProfilingTests
     }
 
     [Fact]
+    public void StatusTagParserAcceptsEverySupportedTelemetryRepresentation()
+    {
+        var values = new (object Value, int Expected)[]
+        {
+            ((byte)1, 1),
+            ((sbyte)-2, -2),
+            ((short)-3, -3),
+            ((ushort)4, 4),
+            (5, 5),
+            ((uint)6, 6),
+            ((long)-7, -7),
+            ((ulong)8, 8),
+            (HttpStatusCode.Accepted, 202),
+            ("203", 203),
+        };
+        foreach (var (value, expected) in values)
+        {
+            using var activity = new Activity("status-tag");
+            activity.SetTag("current", value);
+            Assert.Equal(expected, InvokeGetInt32Tag(activity, "current", "legacy"));
+        }
+    }
+
+    [Fact]
+    public void StatusTagParserRejectsOverflowAndUsesLegacyFallback()
+    {
+        using var activity = new Activity("status-tag");
+        activity.SetTag("legacy", 204);
+        Assert.Equal(204, InvokeGetInt32Tag(activity, "current", "legacy"));
+
+        activity.SetTag("current", uint.MaxValue);
+        Assert.Null(InvokeGetInt32Tag(activity, "current", "legacy"));
+        activity.SetTag("current", long.MaxValue);
+        Assert.Null(InvokeGetInt32Tag(activity, "current", "legacy"));
+        activity.SetTag("current", ulong.MaxValue);
+        Assert.Null(InvokeGetInt32Tag(activity, "current", "legacy"));
+        activity.SetTag("current", "not-a-number");
+        Assert.Null(InvokeGetInt32Tag(activity, "current", "legacy"));
+    }
+
+    [Fact]
+    public void UriSanitizerCoversRelativeAuthorityIpv6UserInfoAndFragmentShapes()
+    {
+        Assert.Null(WorkableHttpClientProfilingObserver.CaptureUriForBenchmark(null));
+        Assert.Null(WorkableHttpClientProfilingObserver.CaptureUriForBenchmark(string.Empty));
+        Assert.Null(WorkableHttpClientProfilingObserver.CaptureUriForBenchmark("?secret=value"));
+        Assert.Equal(
+            "/orders",
+            WorkableHttpClientProfilingObserver.CaptureUriForBenchmark("/orders?secret=value"));
+        Assert.Equal(
+            "/orders",
+            WorkableHttpClientProfilingObserver.CaptureUriForBenchmark("/orders#fragment"));
+        Assert.Null(WorkableHttpClientProfilingObserver.CaptureUriForBenchmark("//example.test/orders"));
+        Assert.Equal(
+            "https://example.test/orders",
+            WorkableHttpClientProfilingObserver.CaptureUriForBenchmark(
+                "https://user:password@example.test/orders?secret=value"));
+        Assert.Equal(
+            "https://[2001:db8::1]:8443/orders",
+            WorkableHttpClientProfilingObserver.CaptureUriForBenchmark(
+                "https://[2001:db8::1]:8443/orders?secret=value"));
+        Assert.Equal(
+            "https://example.test/orders",
+            WorkableHttpClientProfilingObserver.CaptureUriForBenchmark(
+                "https://example.test/orders"));
+        Assert.Null(WorkableHttpClientProfilingObserver.CaptureUriForBenchmark(
+            $"https://{new string('a', 10_000)}"));
+        Assert.StartsWith(
+            "https://example.test/",
+            WorkableHttpClientProfilingObserver.CaptureUriForBenchmark(
+                $"https://example.test/{new string('p', 10_000)}"),
+            StringComparison.Ordinal);
+        Assert.Equal(
+            2_048,
+            WorkableHttpClientProfilingObserver.CaptureUriForBenchmark(
+                $"/{new string('r', 10_000)}")?.Length);
+    }
+
+    [Fact]
     public void ThrowingStringTagValuesCannotEscapeTheHttpDiagnosticsCallbacks()
     {
         var systemId = WorkSystemId.New();
@@ -920,6 +1040,11 @@ public sealed class HttpClientProfilingTests
             }
         }
     }
+
+    private static int? InvokeGetInt32Tag(Activity activity, string currentName, string legacyName)
+        => (int?)typeof(WorkableHttpClientProfilingObserver)
+            .GetMethod("GetInt32Tag", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [activity, currentName, legacyName]);
 
     private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment
     {

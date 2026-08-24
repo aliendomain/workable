@@ -1,3 +1,4 @@
+using System.Reflection;
 using Workable;
 
 namespace Workable.Tests;
@@ -68,6 +69,52 @@ public sealed class WorkflowExecutionSupportShould
 
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.Equal(1, Volatile.Read(ref createdHandles));
+    }
+
+    [Fact]
+    public async Task FirstOutstandingWaitOverloadReturnsTheFirstUnsuccessfulCompletion()
+    {
+        var workerId = WorkerId.New();
+        var completion = await WorkflowExecutionSupport.WaitForOutstanding(
+            new[]
+            {
+                (
+                    "failed",
+                    (IWorkerHandle)new TestWorkerHandle(
+                        WorkQueueOutcome.Accepted(workerId),
+                        workerId,
+                        Task.FromResult(new WorkCompletion(WorkCompletionStatus.Failed, null, null, [])))),
+            },
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowRunStatus.Blocked, completion.Status);
+    }
+
+    [Fact]
+    public void ChildCompletionOverridesAndNestedStepFlatteningPreserveTheirShapes()
+    {
+        Assert.Equal(
+            WorkflowRunStatus.Failed,
+            WorkflowExecutionSupport.CreateChildRunCompletion(
+                WorkCompletionStatus.Canceled,
+                WorkflowRunStatus.Failed).Status);
+
+        var flatten = typeof(WorkflowExecutionSupport).GetMethod(
+            "FlattenSteps",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        var nested = new WorkflowStepDefinition[]
+        {
+            new ParallelWorkflowStepDefinition("parallel",
+            [
+                new BranchWorkflowStepDefinition("branch",
+                [
+                    Dispatch("child", "flatten.child"),
+                ]),
+            ]),
+        };
+        var flattened = Assert.IsAssignableFrom<IEnumerable<WorkflowStepDefinition>>(
+            flatten.Invoke(null, [nested]));
+        Assert.Equal(["parallel", "branch", "child"], flattened.Select(step => step.Name));
     }
 
     [Fact]
@@ -270,6 +317,8 @@ public sealed class WorkflowExecutionSupportShould
     [InlineData("{\"items\":[]}", "items", "workable.workflow.dispatch_each.source_pointer_not_found")]
     [InlineData("{\"items\":[]}", "/missing", "workable.workflow.dispatch_each.source_pointer_not_found")]
     [InlineData("{\"items\":[]}", "/items/2", "workable.workflow.dispatch_each.source_pointer_not_found")]
+    [InlineData("{\"items\":[]}", "/items/not-a-number", "workable.workflow.dispatch_each.source_pointer_not_found")]
+    [InlineData("{\"items\":[]}", "/items/-1", "workable.workflow.dispatch_each.source_pointer_not_found")]
     [InlineData("{\"items\":{}}", "/items", "workable.workflow.dispatch_each.source_output_not_array")]
     public void RejectDispatchEachOutputsThatCannotResolveToAnArray(
         string? json,
@@ -281,7 +330,15 @@ public sealed class WorkflowExecutionSupportShould
             [json is null ? null : WorkOutput.FromJson(json)]);
 
         Assert.Empty(expansion.Inputs);
-        Assert.Equal(expectedCode, Assert.Single(expansion.Messages).Code);
+        var message = Assert.Single(expansion.Messages);
+        Assert.Equal(expectedCode, message.Code);
+        if (expectedCode == "workable.workflow.dispatch_each.source_output_invalid_json")
+        {
+            Assert.Equal(
+                "Workflow step 'dispatch-each' could not expand source step 'source' because the source output was not valid JSON.",
+                message.Text);
+            Assert.DoesNotContain("byte position", message.Text, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -337,7 +394,11 @@ public sealed class WorkflowExecutionSupportShould
             CancellationToken.None);
 
         Assert.False(result.IsSuccessful);
-        Assert.Equal(rejection.Messages, result.Messages);
+        var message = Assert.Single(result.Messages);
+        Assert.Equal("workable.workflow.child_cancel_rejected", message.Code);
+        Assert.Equal("A workflow child rejected cancellation.", message.Text);
+        Assert.DoesNotContain(workerId.ToString(), message.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(rejection.Messages, rejected => result.Messages.Contains(rejected));
         Assert.Single(workers.Executions);
     }
 
@@ -374,6 +435,37 @@ public sealed class WorkflowExecutionSupportShould
 
         Assert.True(result.IsSuccessful);
         Assert.Equal([1L, 2L], workers.Executions.Select(execution => execution.Worker.Revision));
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(WorkerState.Canceled, true)]
+    [InlineData(WorkerState.Canceling, true)]
+    [InlineData(WorkerState.Running, false)]
+    public async Task ReconcileNotFoundChildCancellationAgainstAuthoritativeState(
+        WorkerState? authoritativeState,
+        bool expectedSuccess)
+    {
+        var workerId = WorkerId.New();
+        var run = CreateRunWithOutstandingWorkers(workerId);
+        var workers = new RecordingWorkerOperations(new Dictionary<WorkerId, Queue<WorkActionOutcome>>
+        {
+            [workerId] = new([WorkActionOutcome.NotFound(WorkAction.Cancel, workerId)]),
+        });
+        var lookupCount = 0;
+
+        var result = await WorkflowExecutionSupport.CancelOutstandingChildren(
+            run,
+            new TestWorkSystemSession(workers),
+            (_, _) => Task.FromResult(Interlocked.Increment(ref lookupCount) == 1
+                ? CreateSnapshot(workerId, WorkerState.Running)
+                : authoritativeState is { } state
+                    ? CreateSnapshot(workerId, state)
+                    : null),
+            CancellationToken.None);
+
+        Assert.Equal(expectedSuccess, result.IsSuccessful);
+        Assert.Single(workers.Executions);
     }
 
     [Fact]
@@ -480,6 +572,49 @@ public sealed class WorkflowExecutionSupportShould
                 Assert.Equal(1, execution.Worker.Revision);
                 Assert.Equal(WorkAction.Start, execution.Action);
             });
+    }
+
+    [Fact]
+    public async Task ResumeOutstandingChildrenHandlesEveryReturnedWorkerState()
+    {
+        var terminalStates = new[]
+        {
+            WorkerState.Running,
+            WorkerState.Waiting,
+            WorkerState.Retrying,
+            WorkerState.Completed,
+            WorkerState.Failed,
+            WorkerState.Queued,
+        };
+        var workerIds = terminalStates.ToDictionary(state => state, _ => WorkerId.New());
+        var missingWorkerId = WorkerId.New();
+        var run = CreateRunWithOutstandingWorkers([.. workerIds.Values, missingWorkerId]);
+        var outcomes = workerIds.ToDictionary(
+            item => item.Value,
+            item => new Queue<WorkActionOutcome>([
+                WorkActionOutcome.Conflict(
+                    WorkAction.Start,
+                    CreateSnapshot(item.Value, item.Key),
+                    []),
+            ]));
+        outcomes[missingWorkerId] = new([
+            WorkActionOutcome.Unauthorized(WorkAction.Start, missingWorkerId),
+        ]);
+        var snapshots = workerIds.ToDictionary(
+            item => item.Value,
+            item => new Queue<WorkerSnapshot?>(item.Key == WorkerState.Queued
+                ? [CreateSnapshot(item.Value, WorkerState.Paused), CreateSnapshot(item.Value, WorkerState.Running)]
+                : [CreateSnapshot(item.Value, WorkerState.Paused)]));
+        snapshots[missingWorkerId] = new([CreateSnapshot(missingWorkerId, WorkerState.Paused)]);
+        var workers = new RecordingWorkerOperations(outcomes);
+
+        await WorkflowExecutionSupport.ResumeOutstandingChildren(
+            run,
+            new TestWorkSystemSession(workers),
+            CreateSnapshotSource(snapshots),
+            CancellationToken.None);
+
+        Assert.Equal(workerIds.Count + 1, workers.Executions.Count);
     }
 
     private static RegisteredWorkflow CreateWorkflow(params WorkflowStepDefinition[] steps)

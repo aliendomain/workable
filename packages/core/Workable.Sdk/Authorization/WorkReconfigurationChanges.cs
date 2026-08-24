@@ -11,7 +11,13 @@ public sealed record WorkWorkerReconfigurationChanges(
     WorkTransientRetryConfiguration? TransientRetry = null,
     WorkFailedWorkerConfiguration? FailedWorker = null,
     WorkLoggingConfiguration? Logging = null,
-    WorkRetentionConfiguration? Retention = null);
+    WorkRetentionConfiguration? Retention = null)
+{
+    /// <summary>
+    /// Gets the requested override for how automatic instrumentation is retained.
+    /// </summary>
+    public WorkProfileCaptureMode? ProfilingCaptureMode { get; init; }
+}
 
 /// <summary>
 /// Describes definition-level configuration changes as surfaced to authorization requirements.

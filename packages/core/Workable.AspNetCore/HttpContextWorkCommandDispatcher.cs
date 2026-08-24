@@ -47,7 +47,7 @@ public sealed class HttpContextWorkCommandDispatcher(
     /// <param name="options">Optional dispatch behavior overrides.</param>
     /// <param name="cancellationToken">A token that cancels the dispatch operation.</param>
     /// <returns>The dispatch result.</returns>
-    public Task<WorkDispatchResult<TResponse>> Dispatch<TRequest, TResponse>(
+    public async Task<WorkDispatchResult<TResponse>> Dispatch<TRequest, TResponse>(
         string? systemName,
         string workName,
         TRequest request,
@@ -60,14 +60,18 @@ public sealed class HttpContextWorkCommandDispatcher(
         var httpContext = httpContextAccessor.HttpContext;
         if (httpContext is null)
         {
-            return Task.FromResult(CreateRequestContextUnavailableResult<TResponse>());
+            return CreateRequestContextUnavailableResult<TResponse>();
         }
 
+        if (await WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(httpContext))
+        {
+            await WorkableAspNetCoreAuthentication.PrepareAuthorizationSnapshotAsync(httpContext);
+        }
         var requestContext = requestContexts.Create(
             httpContext,
             WorkInvocationChannel.HttpApi,
             description);
-        return commands.Dispatch<TRequest, TResponse>(
+        return await commands.Dispatch<TRequest, TResponse>(
             systemName,
             workName,
             request,

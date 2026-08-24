@@ -176,6 +176,7 @@ public sealed class WorkableHttpQueryAdapterShould
         var adapter = new WorkableHttpQueryAdapter();
         var handle = await session.Queue.Enqueue(definition.Name);
 
+        Assert.Null(await adapter.DefinitionInfo(session, system, "http.query.adapter.unknown"));
         Assert.Null(await adapter.WorkerConfiguration(session, system, WorkerId.New()));
         Assert.Null(await adapter.WorkerIterationOverview(session, WorkerId.New(), sequence: 1));
         Assert.Null(await adapter.WorkerIterationOverview(session, RequiredWorkerId(handle), sequence: 99));

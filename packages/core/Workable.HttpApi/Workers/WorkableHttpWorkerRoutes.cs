@@ -1,6 +1,9 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
+using System.Text.Json;
+using HttpJsonOptions = Microsoft.AspNetCore.Http.Json.JsonOptions;
 
 namespace Workable;
 
@@ -78,16 +81,48 @@ internal static class WorkableHttpWorkerRoutes
 
         group.MapPost("/workers/{workerId:guid}/reconfigure", async (
             Guid workerId,
-            WorkableHttpWorkerReconfigurationRequest request,
+            JsonElement requestBody,
             HttpContext httpContext,
             WorkableHttpTopologyResolver topology,
             WorkableHttpWorkerAdapter workers,
             IWorkRequestContextFactory requestContexts,
+            IOptions<HttpJsonOptions> jsonOptions,
             CancellationToken cancellationToken) =>
         {
             if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
             {
                 return notFound;
+            }
+
+            WorkableHttpWorkerReconfigurationRequest request;
+            try
+            {
+                request = WorkableHttpReconfigurationJson.ParseWorker(
+                    requestBody,
+                    jsonOptions.Value.SerializerOptions);
+            }
+            catch (WorkableHttpReconfigurationValidationException exception)
+            {
+                return Results.BadRequest(new
+                {
+                    Messages = new[]
+                    {
+                        WorkMessage.Error("workable.http.reconfiguration.invalid", exception.Message, "request"),
+                    },
+                });
+            }
+            catch (JsonException)
+            {
+                return Results.BadRequest(new
+                {
+                    Messages = new[]
+                    {
+                        WorkMessage.Error(
+                            "workable.http.reconfiguration.invalid",
+                            "The worker reconfiguration request contains invalid JSON values.",
+                            "request"),
+                    },
+                });
             }
 
             var session = await WorkableHttpRequestContext.CreateSession(

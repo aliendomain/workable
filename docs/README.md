@@ -18,7 +18,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 - [Getting Started](guides/getting-started.md): package split, work author setup, host setup, queueing work, and the preferred ASP.NET Core dispatcher path for custom HTTP endpoints.
 - [Implementing Work](guides/implementing-work.md): write executor code, use `IWorkExecutionContext`, and understand failure, cancellation, pause, and interruption behavior.
 - [Iteration Status Streams](guides/iteration-status-streams.md): publish ordered per-iteration progress, subscribe in process or through SignalR, and resume safely with replay cursors.
-- [Microsoft Entra Authentication](guides/entra-authentication.md): configure Entra bearer-token authentication and claim mapping for Workable surfaces.
+- [Microsoft Entra Authentication](guides/entra-authentication.md): connect host-owned Entra authentication, explicit existing schemes, endpoint policies, SignalR token transport, and claim mapping to Workable surfaces.
 - [Registration](guides/registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.
 - [Workflows](guides/workflows.md): register multi-step orchestrations that dispatch existing work definitions, fan out from typed outputs, run named parallel branches, and join on completion.
 - [Queueing](guides/queueing.md): queue work by name, pass input, set queue options, and await completion.
@@ -58,7 +58,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 - [Views](concepts/views.md): understand the shared component-view contract used by HTTP and SignalR, and how to use it directly for a custom UI.
 - [Observability](concepts/observability.md): subscribe to work events, filters, payloads, and buffered delivery behavior.
 - [Diagnostics](concepts/diagnostics.md): understand queue rejection, read-model lag, retention lag, and system warning signals.
-- [Profiling](concepts/profiling.md): capture per-iteration profile trees with required instrumentation identities, automatically time SQL and outbound HTTP dependencies, filter those sources in the admin UI, bound automatic growth, and temporarily bypass that bound by work type or actor from the admin UI or HTTP API.
+- [Profiling](concepts/profiling.md): capture per-iteration profile trees with required instrumentation identities, automatically time SQL and outbound HTTP dependencies, filter those sources in the admin UI, bound automatic growth, and temporarily bypass that bound globally, by work type, or for one worker from the admin UI; actor-scoped rules remain available through HTTP.
 
 ## Package Docs
 

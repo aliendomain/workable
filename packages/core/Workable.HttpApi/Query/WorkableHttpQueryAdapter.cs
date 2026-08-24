@@ -6,6 +6,22 @@ namespace Workable;
 public sealed class WorkableHttpQueryAdapter : WorkableViewQueryAdapter
 {
     /// <summary>
+    /// Initializes an HTTP query adapter without an exception logger.
+    /// </summary>
+    public WorkableHttpQueryAdapter()
+    {
+    }
+
+    /// <summary>
+    /// Initializes an HTTP query adapter with logging for unexpected component failures.
+    /// </summary>
+    /// <param name="logger">The logger that receives unexpected component failures.</param>
+    public WorkableHttpQueryAdapter(Microsoft.Extensions.Logging.ILogger<WorkableViewQueryAdapter> logger)
+        : base(logger)
+    {
+    }
+
+    /// <summary>
     /// Builds the HTTP work-info payload for a visible definition.
     /// </summary>
     /// <param name="session">The authorized session used to read the definition and worker rollup.</param>

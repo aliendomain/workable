@@ -8,10 +8,13 @@ import {
   isSafeMethod,
 } from "./admin-security/config.ts";
 import {
+  createExpiredEntraTargetTokenCookies,
   validateEntraTargetTokenConfiguration,
 } from "./admin-security/entra-downstream.ts";
+import { isAllowedEntraUser } from "./admin-security/entra.ts";
 import {
   createExpiredSessionCookie,
+  createLogoutTombstoneCookies,
   createSignedAdminSessionCookie,
   readAdminSessionState,
   sessionSecret,
@@ -32,6 +35,7 @@ import {
 
 export {
   createEntraAuthorizationResponse,
+  createExpiredEntraTransactionCookies,
   completeEntraLogin,
   getAdminAuthProvider,
 } from "./admin-security/entra.ts";
@@ -65,6 +69,12 @@ export function authenticateAdminRequest(
     return authenticatedIdentity("anonymous", "anonymous");
   }
 
+  if (settings.authProvider === "basic" && !settings.basicAuthEnabled) {
+    return serviceUnavailable(
+      "Workable admin UI Basic authentication is disabled. Set basicAuth.enabled to true or WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED=true to enable it explicitly."
+    );
+  }
+
   if (
     settings.authProvider === "entra" &&
     (!settings.entraId.tenantId || !settings.entraId.clientId || !sessionSecret(settings))
@@ -81,8 +91,24 @@ export function authenticateAdminRequest(
 
   const session = readAdminSessionState(headers, settings);
   if (session.identity) {
-    const renewedCookie = request && shouldRenewAdminSession(session.expiresAt, settings)
-      ? createSignedAdminSessionCookie(session.identity, request, settings)
+    if (
+      session.identity.provider === "entra" &&
+      !isAllowedEntraUser(session.identity.email ?? "", settings)
+    ) {
+      return securityFailure(
+        403,
+        "Microsoft Entra ID user is not allowed to access this admin UI.",
+        { "set-cookie": createExpiredSessionCookie(settings) },
+        createExpiredEntraTargetTokenCookies(headers, settings.isProduction)
+      );
+    }
+
+    const renewedCookie = request && shouldRenewAdminSession(
+      session.expiresAt,
+      session.absoluteExpiresAt,
+      settings
+    )
+      ? createSignedAdminSessionCookie(session.identity, request, settings, session)
       : null;
 
     return authenticatedIdentity(
@@ -90,7 +116,8 @@ export function authenticateAdminRequest(
       "session",
       session.identity.provider,
       session.identity.email,
-      renewedCookie?.ok ? renewedCookie.header : undefined
+      renewedCookie?.ok ? renewedCookie.header : undefined,
+      session.identity.entraSubject
     );
   }
 
@@ -106,7 +133,8 @@ export function authenticateAdminRequest(
       {
         ...(basicAuthentication.headers ?? {}),
         "set-cookie": createExpiredSessionCookie(settings),
-      }
+      },
+      createExpiredEntraTargetTokenCookies(headers, settings.isProduction)
     );
   }
 
@@ -115,6 +143,9 @@ export function authenticateAdminRequest(
     "Authentication is required for the Workable admin UI.",
     session.shouldClear
       ? { "set-cookie": createExpiredSessionCookie(settings) }
+      : undefined,
+    session.shouldClear
+      ? createExpiredEntraTargetTokenCookies(headers, settings.isProduction)
       : undefined
   );
 }
@@ -122,31 +153,43 @@ export function authenticateAdminRequest(
 export function verifyAdminCredentials(
   userName: string,
   password: string,
-  env: AdminSecurityEnvironment = process.env
+  env: AdminSecurityEnvironment = process.env,
+  headers?: Headers
 ): AdminSecurityResult {
   const settings = getAdminSecuritySettings(env);
   if (settings.configError) {
     return serviceUnavailable(settings.configError);
   }
 
-  return verifyBasicCredentials(userName, password, settings);
+  return verifyBasicCredentials(userName, password, settings, headers);
 }
 
 export function createAdminSessionCookie(
   userName: string,
   request: Request,
   env: AdminSecurityEnvironment = process.env,
-  provider?: AdminAuthProvider
+  provider?: AdminAuthProvider,
+  entraSubject?: string,
+  sessionStartedAt?: number
 ): AdminSessionCookieResult {
   const settings = getAdminSecuritySettings(env);
   if (settings.configError) {
     return serviceUnavailable(settings.configError);
   }
 
+  const selectedProvider = provider ?? settings.authProvider;
+  if (selectedProvider === "basic" && !settings.basicAuthEnabled) {
+    return serviceUnavailable(
+      "Workable admin UI Basic authentication is disabled. Set basicAuth.enabled to true or WORKABLE_ADMIN_UI_BASIC_AUTH_ENABLED=true to enable it explicitly."
+    );
+  }
+
   return createSignedAdminSessionCookie(
     {
       name: userName,
-      provider: provider ?? settings.authProvider,
+      provider: selectedProvider,
+      entraSubject,
+      sessionStartedAt,
     },
     request,
     settings
@@ -157,6 +200,13 @@ export function createExpiredAdminSessionCookie(
   env: AdminSecurityEnvironment = process.env
 ) {
   return createExpiredSessionCookie(getAdminSecuritySettings(env));
+}
+
+export function createAdminLogoutTombstoneCookies(
+  request: Request,
+  env: AdminSecurityEnvironment = process.env
+) {
+  return createLogoutTombstoneCookies(request, getAdminSecuritySettings(env));
 }
 
 export function validateUnsafeRequestOrigin(request: Request): AdminSecurityResult {
@@ -241,7 +291,11 @@ export function getMaxProxyBodyBytes(env: AdminSecurityEnvironment = process.env
 }
 
 export function failureHeaders(failure: AdminSecurityFailure) {
-  return failure.headers ?? {};
+  const headers = new Headers(failure.headers);
+  for (const cookie of failure.setCookieHeaders ?? []) {
+    headers.append("set-cookie", cookie);
+  }
+  return headers;
 }
 
 function parseAllowedApiUrls(settings: ReturnType<typeof getAdminSecuritySettings>) {

@@ -10,11 +10,11 @@ public static class WorkableMcpExtensions
     private const string JsonSchemaContentTypeSuffix = "+json";
 
     /// <summary>
-    /// Projects MCP-eligible work definitions visible to the current caller into tool descriptors.
+    /// Projects MCP-eligible work definitions discoverable by the current caller into tool descriptors.
     /// </summary>
     /// <param name="session">The authorized work-system session to inspect.</param>
     /// <param name="options">Optional descriptor-projection settings.</param>
-    /// <returns>The MCP tool descriptors for work definitions the caller may read and invoke through MCP.</returns>
+    /// <returns>The MCP tool descriptors discoverable by the caller. Invocation remains independently authorized.</returns>
     public static IReadOnlyList<WorkableMcpToolDescriptor> GetMcpToolDescriptors(
         this IWorkSystemSession session,
         WorkableMcpToolCatalogOptions? options = null)
@@ -22,8 +22,7 @@ public static class WorkableMcpExtensions
         ArgumentNullException.ThrowIfNull(session);
 
         options ??= WorkableMcpToolCatalogOptions.Default;
-        return [.. session.Catalog.Definitions
-            .Where(definition => definition.Configuration.Invocation.Allows(WorkInvocationChannel.Mcp))
+        return [.. session.Discovery.ListInvocableBy(WorkInvocationChannel.Mcp)
             .Select(definition => CreateDescriptor(definition, options))
             .OfType<WorkableMcpToolDescriptor>()
             .OrderBy(descriptor => descriptor.Category, StringComparer.OrdinalIgnoreCase)
@@ -95,7 +94,7 @@ public static class WorkableMcpExtensions
     }
 
     private static WorkableMcpToolDescriptor? CreateDescriptor(
-        WorkDefinition definition,
+        WorkDefinitionDescriptor definition,
         WorkableMcpToolCatalogOptions options)
     {
         var inputSchema = HasJsonSchema(definition.InputSchema)

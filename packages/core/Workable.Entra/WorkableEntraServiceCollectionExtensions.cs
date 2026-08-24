@@ -1,25 +1,45 @@
-using System.Security.Claims;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Http;
+using System.Linq;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.IdentityModel.Tokens;
-using System.Linq;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Workable;
 
 /// <summary>
-/// Registers Microsoft Entra authentication and Workable claim-mapping integration for ASP.NET Core hosts.
+/// Integrates host-authenticated Microsoft Entra identities with Workable ASP.NET Core authorization.
 /// </summary>
 public static class WorkableEntraServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds Workable Entra authentication using values from configuration.
+    /// Adds Workable integration for the host's existing Microsoft Entra authentication configuration.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
-    /// <param name="configuration">The configuration section containing Entra settings.</param>
+    /// <returns>The same service collection for chaining.</returns>
+    public static IServiceCollection AddWorkableEntraAuthorization(
+        this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        if (FindRegistration(services) is not null)
+        {
+            return services;
+        }
+
+        return services.AddWorkableEntraAuthorization(new WorkableEntraAuthorizationOptions());
+    }
+
+    /// <summary>
+    /// Adds Workable Entra integration using values from configuration.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="configuration">The configuration section containing Workable Entra integration settings.</param>
     /// <returns>The same service collection for chaining.</returns>
     /// <exception cref="InvalidOperationException">Thrown when the configured Entra options are invalid.</exception>
+    /// <remarks>
+    /// After Workable Entra integration is registered, a configuration section containing none of the recognized
+    /// integration keys is ensure-only and preserves the existing option set.
+    /// Authentication settings such as tenant, issuer, audience, token validation, and JWT events belong to the host's
+    /// authentication registration and are not read from this configuration section.
+    /// </remarks>
     public static IServiceCollection AddWorkableEntraAuthorization(
         this IServiceCollection services,
         IConfiguration configuration)
@@ -27,12 +47,18 @@ public static class WorkableEntraServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        if (FindRegistration(services) is not null &&
+            !WorkableEntraAuthorizationOptions.HasConfiguredValues(configuration))
+        {
+            return services;
+        }
+
         return services.AddWorkableEntraAuthorization(
             WorkableEntraAuthorizationOptions.FromConfiguration(configuration));
     }
 
     /// <summary>
-    /// Adds Workable Entra authentication using an imperative options callback.
+    /// Adds Workable Entra integration using an imperative options callback.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
     /// <param name="configure">The callback that configures Entra options.</param>
@@ -55,173 +81,41 @@ public static class WorkableEntraServiceCollectionExtensions
         WorkableEntraAuthorizationOptions options)
     {
         options.ThrowIfInvalid();
-        var audiences = options.GetAudiences();
-
-        services
-            .AddAuthentication()
-            .AddJwtBearer(options.AuthenticationScheme, jwt =>
-            {
-                jwt.Authority = options.Authority;
-                jwt.Audience = options.Audience;
-                jwt.TokenValidationParameters = new TokenValidationParameters
-                {
-                    ValidateAudience = true,
-                    ValidAudiences = audiences,
-                    ValidateIssuer = true,
-                    ValidateIssuerSigningKey = true,
-                    ValidateLifetime = true,
-                };
-                jwt.Events = new JwtBearerEvents
-                {
-                    OnMessageReceived = context =>
-                    {
-                        if (TryGetSignalRAccessToken(context.HttpContext, options, out var accessToken))
-                        {
-                            context.Token = accessToken;
-                        }
-
-                        return Task.CompletedTask;
-                    },
-                };
-            });
-
-        services.AddAuthorization();
-        services.AddWorkableAspNetCoreAuthorization(authorization =>
+        var registration = FindRegistration(services);
+        if (registration is not null)
         {
-            authorization.TransportAuthenticationScheme = options.AuthenticationScheme;
-            authorization.ActorIdClaimTypes = AddUnique(
-                authorization.ActorIdClaimTypes,
-                "oid",
-                "sub");
-            authorization.ActorNameClaimTypes = AddUnique(
-                authorization.ActorNameClaimTypes,
-                "name",
-                "preferred_username");
-            authorization.ActorEmailClaimTypes = AddUnique(
-                authorization.ActorEmailClaimTypes,
-                "email",
-                "preferred_username",
-                "upn");
+            registration.Options = options;
+            return services;
+        }
 
-            var groupClaimTypes = authorization.GroupClaimTypes.ToList();
-            if (options.MapScopesToWorkableGroups)
-            {
-                AddUnique(groupClaimTypes, WorkableEntraAuthorizationDefaults.ScopeClaimType);
-            }
-            else
-            {
-                RemoveAll(groupClaimTypes, WorkableEntraAuthorizationDefaults.ScopeClaimType);
-            }
-
-            if (options.MapAppRolesToWorkableGroups)
-            {
-                AddUnique(
-                    groupClaimTypes,
-                    WorkableEntraAuthorizationDefaults.RolesClaimType,
-                    WorkableEntraAuthorizationDefaults.RoleClaimType,
-                    ClaimTypes.Role);
-            }
-            else
-            {
-                RemoveAll(
-                    groupClaimTypes,
-                    WorkableEntraAuthorizationDefaults.RolesClaimType,
-                    WorkableEntraAuthorizationDefaults.RoleClaimType,
-                    ClaimTypes.Role);
-            }
-
-            if (options.MapGroupsToWorkableGroups)
-            {
-                AddUnique(groupClaimTypes, WorkableEntraAuthorizationDefaults.GroupsClaimType);
-            }
-            else
-            {
-                RemoveAll(groupClaimTypes, WorkableEntraAuthorizationDefaults.GroupsClaimType);
-            }
-
-            authorization.GroupClaimTypes = groupClaimTypes;
-            authorization.GroupClaimValueSeparators = AddUnique(
-                authorization.GroupClaimValueSeparators,
-                ',',
-                ' ');
-        });
+        registration = new WorkableEntraAuthorizationRegistration(options);
+        services.AddSingleton(registration);
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<
+            IWorkActorClaimsMapper,
+            WorkableEntraActorClaimsMapper>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<
+            IWorkAuthorizationGroupClaimMapper,
+            WorkableEntraAuthorizationGroupClaimMapper>());
+        services.AddWorkableAspNetCoreAuthorization(authorization =>
+            ConfigureAuthorization(authorization, registration.Options));
 
         return services;
     }
 
-    private static bool TryGetSignalRAccessToken(
-        HttpContext httpContext,
-        WorkableEntraAuthorizationOptions options,
-        out string? accessToken)
+    private static WorkableEntraAuthorizationRegistration? FindRegistration(IServiceCollection services)
+        => services
+            .Where(descriptor => descriptor.ServiceType == typeof(WorkableEntraAuthorizationRegistration))
+            .Select(descriptor => descriptor.ImplementationInstance)
+            .OfType<WorkableEntraAuthorizationRegistration>()
+            .SingleOrDefault();
+
+    private static void ConfigureAuthorization(
+        WorkableAspNetCoreAuthorizationOptions authorization,
+        WorkableEntraAuthorizationOptions options)
     {
-        accessToken = null;
-        if (!options.AllowSignalRAccessTokensFromQueryString ||
-            HasBearerAuthorizationHeader(httpContext) ||
-            !httpContext.Request.Query.TryGetValue(options.SignalRAccessTokenQueryStringName, out var values))
+        if (options.AuthenticationScheme is not null)
         {
-            return false;
-        }
-
-        var candidate = values.FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(candidate))
-        {
-            return false;
-        }
-
-        foreach (var path in options.GetSignalRAccessTokenQueryStringPaths()
-            .Where(path => httpContext.Request.Path.StartsWithSegments(new PathString(path))))
-        {
-            accessToken = candidate;
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool HasBearerAuthorizationHeader(HttpContext httpContext)
-    {
-        var authorization = httpContext.Request.Headers.Authorization.ToString();
-        if (string.IsNullOrWhiteSpace(authorization))
-        {
-            return false;
-        }
-
-        return authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static IReadOnlyList<string> AddUnique(
-        IReadOnlyList<string> existing,
-        params string[] values)
-    {
-        var merged = existing.ToList();
-        AddUnique(merged, values);
-        return merged;
-    }
-
-    private static IReadOnlyList<char> AddUnique(
-        IReadOnlyList<char> existing,
-        params char[] values)
-    {
-        var merged = existing.ToList();
-        foreach (var value in values.Where(value => !merged.Contains(value)))
-        {
-            merged.Add(value);
-        }
-
-        return merged;
-    }
-
-    private static void AddUnique(List<string> target, params string[] values)
-    {
-        foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)))
-        {
-            if (!target.Contains(value, StringComparer.OrdinalIgnoreCase))
-            {
-                target.Add(value);
-            }
+            authorization.TransportAuthenticationScheme = options.AuthenticationScheme;
         }
     }
-
-    private static void RemoveAll(List<string> target, params string[] values)
-        => target.RemoveAll(candidate => values.Contains(candidate, StringComparer.OrdinalIgnoreCase));
 }

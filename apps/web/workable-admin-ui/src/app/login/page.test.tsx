@@ -7,15 +7,20 @@ import {
 } from "@/test/render";
 
 test("login page rejects unsafe next paths before passing them to Entra login", async () => {
-  const markup = await renderLoginPage({
+  const protocolRelativeMarkup = await renderLoginPage({
     error: " Please sign in again. ",
     next: "//evil.test/admin",
   });
+  const backslashMarkup = await renderLoginPage({
+    next: "/\\evil.test/admin",
+  });
 
-  assertMarkupIncludes(markup, "Session expired");
-  assertMarkupIncludes(markup, "Please sign in again.");
-  assertMarkupIncludes(markup, "/api/auth/entra/login?next=%2F");
-  assertMarkupExcludes(markup, "evil.test");
+  assertMarkupIncludes(protocolRelativeMarkup, "Session expired");
+  assertMarkupIncludes(protocolRelativeMarkup, "Please sign in again.");
+  assertMarkupIncludes(protocolRelativeMarkup, "/api/auth/entra/login?next=%2F");
+  assertMarkupExcludes(protocolRelativeMarkup, "evil.test");
+  assertMarkupIncludes(backslashMarkup, "/api/auth/entra/login?next=%2F");
+  assertMarkupExcludes(backslashMarkup, "evil.test");
 });
 
 test("login page uses the first search parameter value and preserves safe next paths", async () => {

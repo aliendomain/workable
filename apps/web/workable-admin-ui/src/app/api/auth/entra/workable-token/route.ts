@@ -28,9 +28,10 @@ export async function GET(request: Request) {
   return response;
 }
 
-function secureJsonHeaders(headers: Record<string, string> = {}) {
-  return {
-    ...headers,
-    ...noStoreHeaders,
-  };
+function secureJsonHeaders(headers: HeadersInit = {}) {
+  const result = new Headers(headers);
+  for (const [name, value] of Object.entries(noStoreHeaders)) {
+    result.set(name, value);
+  }
+  return result;
 }

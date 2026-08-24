@@ -34,14 +34,14 @@ internal static class WorkableHttpProfilingRoutes
                 return notFound;
             }
 
-            await EnsureDiagnosticsAccess(system, requestAccess, httpContext.RequestAborted);
+            await EnsureControlSystemAccess(system, requestAccess, httpContext.RequestAborted);
+            var requestContext = await WorkableHttpRequestContext.Create(
+                httpContext,
+                system,
+                requestContexts,
+                request.Description);
             try
             {
-                var requestContext = await WorkableHttpRequestContext.Create(
-                    httpContext,
-                    system,
-                    requestContexts,
-                    request.Description);
                 var created = rules.CreateProfileCaptureRule(
                     request.DefinitionName,
                     request.ActorId,
@@ -76,7 +76,7 @@ internal static class WorkableHttpProfilingRoutes
                 return notFound;
             }
 
-            await EnsureDiagnosticsAccess(system, requestAccess, httpContext.RequestAborted);
+            await EnsureControlSystemAccess(system, requestAccess, httpContext.RequestAborted);
             return rules.DeleteProfileCaptureRule(ruleId)
                 ? Results.NoContent()
                 : Results.NotFound();
@@ -110,6 +110,20 @@ internal static class WorkableHttpProfilingRoutes
         {
             throw new WorkSystemAccessDeniedException(
                 WorkSystemPermission.ViewDiagnostics,
+                system.Id,
+                system.Name);
+        }
+    }
+
+    private static async ValueTask EnsureControlSystemAccess(
+        IWorkSystem system,
+        WorkableHttpRequestAccessContext requestAccess,
+        CancellationToken cancellationToken)
+    {
+        if (!(await requestAccess.DescribeAccess(system, cancellationToken)).CanControlSystem)
+        {
+            throw new WorkSystemAccessDeniedException(
+                WorkSystemPermission.ControlSystem,
                 system.Id,
                 system.Name);
         }

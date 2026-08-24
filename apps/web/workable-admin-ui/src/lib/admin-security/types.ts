@@ -7,6 +7,7 @@ export type AdminIdentity = {
   scheme: "anonymous" | "basic" | "session" | "entra";
   provider?: AdminAuthProvider;
   email?: string;
+  entraSubject?: string;
 };
 
 export type AdminSecurityFailure = {
@@ -14,6 +15,7 @@ export type AdminSecurityFailure = {
   status: number;
   error: string;
   headers?: Record<string, string>;
+  setCookieHeaders?: readonly string[];
 };
 
 export type AdminSecuritySuccess = {
@@ -29,7 +31,11 @@ export type TargetUrlResult =
   | { ok: false; error: string };
 
 export type AdminSessionCookieResult =
-  | { ok: true; header: string }
+  | {
+      ok: true;
+      header: string;
+      identity: import("./session.ts").AdminSessionIdentity;
+    }
   | AdminSecurityFailure;
 
 export function authenticatedIdentity(
@@ -37,7 +43,8 @@ export function authenticatedIdentity(
   scheme: AdminIdentity["scheme"],
   provider?: AdminAuthProvider,
   email?: string,
-  sessionCookieHeader?: string
+  sessionCookieHeader?: string,
+  entraSubject?: string
 ): AdminSecuritySuccess {
   return {
     ok: true,
@@ -46,6 +53,7 @@ export function authenticatedIdentity(
       scheme,
       provider,
       email,
+      entraSubject,
     },
     sessionCookieHeader,
   };
@@ -54,13 +62,15 @@ export function authenticatedIdentity(
 export function securityFailure(
   status: number,
   error: string,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  setCookieHeaders?: readonly string[]
 ): AdminSecurityFailure {
   return {
     ok: false,
     status,
     error,
     headers,
+    setCookieHeaders,
   };
 }
 

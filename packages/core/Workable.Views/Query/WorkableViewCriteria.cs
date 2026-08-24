@@ -6,7 +6,7 @@ namespace Workable;
 /// Requests an arbitrary set of named components without binding to a built-in view name.
 /// </summary>
 /// <param name="Scope">Optional system scope applied to each requested component.</param>
-/// <param name="Components">The components to materialize.</param>
+/// <param name="Components">The components to materialize, limited to 32 requests with unique non-empty ids.</param>
 public sealed record WorkComponentCriteria(
     WorkSystemCriteria? Scope = null,
     IReadOnlyList<WorkComponentRequest>? Components = null);
@@ -27,7 +27,8 @@ public sealed record WorkSingleComponentCriteria(
 /// </summary>
 /// <param name="Scope">Optional system scope applied to the view.</param>
 /// <param name="Components">
-/// Optional component overrides. When omitted, the named view uses its built-in default component composition.
+/// Optional component overrides, limited to 32 requests with unique non-empty ids. When omitted, the named view
+/// uses its built-in default component composition.
 /// </param>
 public sealed record WorkViewCriteria(
     WorkSystemCriteria? Scope = null,

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using Workable;
 
 namespace Workable.Tests;
@@ -70,6 +71,103 @@ public sealed class WorkerRetentionSchedulerShould
             new[] { first.Id, second.Id }.OrderBy(id => id.Value).ToArray(),
             call.WorkerIds.OrderBy(id => id.Value).ToArray());
         Assert.Equal(2, scheduler.Diagnostics.TotalPurgedCount);
+    }
+
+    [Fact]
+    public async Task BatchDueWorkersFromOneDefinitionWithThatDefinitionScope()
+    {
+        var index = new WorkerIndex();
+        var workers = new Dictionary<WorkerId, WorkerRecord>();
+        var purged = new TaskCompletionSource<(IReadOnlyList<WorkerId>, WorkDefinitionId?)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var scheduler = new WorkerRetentionScheduler(
+            index,
+            WorkSystemRetentionConfiguration.Default,
+            (workerIds, definitionId) =>
+            {
+                purged.TrySetResult((workerIds, definitionId));
+                foreach (var workerId in workerIds)
+                {
+                    index.Forget(workers[workerId]);
+                }
+
+                return workerIds.Count;
+            });
+        var definitionId = WorkDefinitionId.New();
+        var first = CreateWorker("retention.same-definition", purgeInterval: TimeSpan.FromTicks(1), definitionId: definitionId);
+        var second = CreateWorker("retention.same-definition", purgeInterval: TimeSpan.FromTicks(1), definitionId: definitionId);
+        workers[first.Id] = first;
+        workers[second.Id] = second;
+        index.Register(first);
+        index.Register(second);
+        scheduler.Schedule(first);
+        scheduler.Schedule(second);
+
+        scheduler.Start();
+        scheduler.Start();
+        var call = await purged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await scheduler.Stop(CancellationToken.None);
+
+        Assert.Equal(2, call.Item1.Count);
+        Assert.Equal(definitionId, call.Item2);
+    }
+
+    [Fact]
+    public async Task IgnoreAStaleDueEntryAfterItsWorkerWasForgotten()
+    {
+        var purgeCount = 0;
+        using var scheduler = new WorkerRetentionScheduler(
+            new WorkerIndex(),
+            WorkSystemRetentionConfiguration.Default,
+            (workerIds, _) =>
+            {
+                Interlocked.Add(ref purgeCount, workerIds.Count);
+                return workerIds.Count;
+            });
+        var worker = CreateWorker("retention.forgotten", purgeInterval: TimeSpan.FromTicks(1));
+        scheduler.Schedule(worker);
+        scheduler.Forget(worker.Id);
+
+        scheduler.Start();
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        await scheduler.Stop(CancellationToken.None);
+
+        Assert.Equal(0, Volatile.Read(ref purgeCount));
+        Assert.Equal(0, scheduler.Diagnostics.TrackedFinalWorkerCount);
+    }
+
+    [Fact]
+    public void PrivateRetentionOrderingHandlesEmptyCountsMissingDefinitionsAndNullEntries()
+    {
+        using var scheduler = new WorkerRetentionScheduler(
+            new WorkerIndex(),
+            WorkSystemRetentionConfiguration.Default,
+            (_, _) => 0);
+        var take = typeof(WorkerRetentionScheduler).GetMethod(
+            "TakeOldestFinalWorkers",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<WorkerId>>(take.Invoke(scheduler, [null, 0])));
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<WorkerId>>(take.Invoke(
+            scheduler,
+            [(WorkDefinitionId?)WorkDefinitionId.New(), 1])));
+
+        var entryType = typeof(WorkerRetentionScheduler).GetNestedType(
+            "FinalWorkerRetentionEntry",
+            BindingFlags.NonPublic)!;
+        var entry = Activator.CreateInstance(
+            entryType,
+            DateTimeOffset.UtcNow,
+            WorkerId.New(),
+            WorkDefinitionId.New(),
+            1L)!;
+        var comparerType = typeof(WorkerRetentionScheduler).GetNestedType(
+            "FinalWorkerRetentionEntryComparer",
+            BindingFlags.NonPublic)!;
+        var comparer = comparerType.GetProperty("Instance", BindingFlags.Static | BindingFlags.Public)!.GetValue(null)!;
+        var compare = comparerType.GetMethod("Compare")!;
+        Assert.Equal(0, compare.Invoke(comparer, [entry, entry]));
+        Assert.Equal(-1, compare.Invoke(comparer, [null, entry]));
+        Assert.Equal(1, compare.Invoke(comparer, [entry, null]));
     }
 
     [Fact]
@@ -232,7 +330,8 @@ public sealed class WorkerRetentionSchedulerShould
         bool final = true,
         TimeSpan? purgeInterval = null,
         DateTimeOffset? createdAt = null,
-        WorkerId? workerId = null)
+        WorkerId? workerId = null,
+        WorkDefinitionId? definitionId = null)
     {
         var configuration = WorkConfiguration.Default with
         {
@@ -242,7 +341,10 @@ public sealed class WorkerRetentionSchedulerShould
                 MaximumFinalWorkers = 10,
             },
         };
-        var definition = WorkDefinition.Create(definitionName, configuration: configuration);
+        var definition = WorkDefinition.Create(
+            definitionName,
+            id: definitionId,
+            configuration: configuration);
         var timestamp = createdAt ?? DateTimeOffset.UtcNow;
         var worker = new WorkerRecord(
             workerId ?? WorkerId.New(),

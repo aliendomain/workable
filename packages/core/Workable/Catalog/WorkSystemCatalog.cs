@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 internal sealed class WorkSystemCatalog : IWorkCatalog
@@ -19,7 +20,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
     private readonly bool executionDiagnosticsRepositoryAvailable;
     private readonly WorkerOptions? implicitDefaultWorkerOptions;
     private readonly WorkSystemAuthorizationConfiguration authorizationConfiguration;
-    private readonly ILogger? authorizationLogger;
+    private readonly ILogger authorizationLogger;
     private readonly WorkChangeStream? changes;
 
     public WorkSystemCatalog(
@@ -35,11 +36,11 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         this.executionDiagnosticsRepositoryAvailable = executionDiagnosticsRepositoryAvailable;
         this.implicitDefaultWorkerOptions = implicitDefaultWorkerOptions;
         this.authorizationConfiguration = authorizationConfiguration ?? WorkSystemAuthorizationConfiguration.Default;
-        this.authorizationLogger = authorizationLogger;
+        this.authorizationLogger = authorizationLogger ?? NullLogger.Instance;
         this.changes = changes;
         foreach (var registeredWork in work)
         {
-            var effectiveWork = SnapshotChildExecution(this.ApplyImplicitDefaultOptions(registeredWork));
+            var effectiveWork = this.PrepareWork(registeredWork);
             this.ValidateAuthorization(effectiveWork);
             this.work.Add(effectiveWork);
         }
@@ -99,7 +100,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
                 throw new InvalidOperationException("Work definitions cannot be added after the catalog is frozen.");
             }
 
-            var effectiveWork = SnapshotChildExecution(this.ApplyImplicitDefaultOptions(registeredWork));
+            var effectiveWork = this.PrepareWork(registeredWork);
             this.ValidateAuthorization(effectiveWork);
             this.work.Add(effectiveWork);
             this.RebuildIndexes();
@@ -133,6 +134,16 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
             if (registeredWork.Definition.Revision != definition.Revision)
             {
                 return Task.FromResult(WorkDefinitionReconfigurationOutcome.Conflict(registeredWork.Definition, definition.Revision));
+            }
+
+            if (changes.DefaultOptions is null && changes.Configuration is null)
+            {
+                return Task.FromResult(WorkDefinitionReconfigurationOutcome.Invalid(
+                    registeredWork.Definition,
+                    [WorkMessage.Error(
+                        "workable.definition.reconfiguration.empty",
+                        "Definition reconfiguration requires at least one change.",
+                        "changes")]));
             }
 
             var updatedOptions = changes.DefaultOptions ?? registeredWork.Definition.DefaultOptions;
@@ -169,8 +180,8 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
 
             this.work[index] = registeredWork.WithDefinition(updatedDefinition);
             this.RebuildIndexes();
-            this.changes?.Publish(WorkChangeKey.System());
-            this.changes?.Publish(WorkChangeKey.Definition(updatedDefinition.Name));
+            this.changes?.Publish(WorkChangeKey.System().ScopeToDefinition(updatedDefinition.Name));
+            this.changes?.Publish(WorkChangeKey.Definition(updatedDefinition.Name).ScopeToDefinition(updatedDefinition.Name));
             return Task.FromResult(WorkDefinitionReconfigurationOutcome.Accepted(updatedDefinition));
         }
     }
@@ -180,6 +191,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         WorkConfiguration configuration)
     {
         var messages = new List<WorkMessage>();
+        messages.AddRange(WorkConfigurationValidator.ValidateWorkerOptions(options, "defaultOptions"));
         messages.AddRange(WorkConfigurationValidator.Validate(configuration));
         messages.AddRange(WorkConfigurationValidator.ValidatePersistenceStore(configuration, this.persistenceStoreAvailable));
         messages.AddRange(WorkConfigurationValidator.ValidateExecutionDiagnosticsRepository(configuration, this.executionDiagnosticsRepositoryAvailable));
@@ -365,6 +377,15 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
         });
     }
 
+    private RegisteredWork PrepareWork(RegisteredWork registeredWork)
+    {
+        var effectiveWork = SnapshotChildExecution(this.ApplyImplicitDefaultOptions(registeredWork));
+        var snapshot = effectiveWork.Definition.SnapshotMetadata();
+        return ReferenceEquals(snapshot, effectiveWork.Definition)
+            ? effectiveWork
+            : effectiveWork.WithDefinition(snapshot);
+    }
+
     private static RegisteredWork SnapshotChildExecution(RegisteredWork registeredWork)
     {
         var childExecution = registeredWork.Definition.Configuration.ChildExecution.Snapshot();
@@ -416,7 +437,7 @@ internal sealed class WorkSystemCatalog : IWorkCatalog
 
             return $"{entry.Group} ({string.Join(", ", grants)})";
         });
-        this.authorizationLogger?.LogWarning(
+        this.authorizationLogger.LogWarning(
             "Work '{WorkName}' configures constrained operate requirements for groups that already receive unconditional system-level operate access: {ShadowedGroups}. Those work-level constraints will never restrict callers in those groups.",
             registeredWork.Definition.Name,
             string.Join(", ", descriptions));

@@ -59,11 +59,6 @@ internal sealed class WorkProfileCaptureRuleStore
     {
         definitionName = Normalize(definitionName);
         actorId = Normalize(actorId);
-        if (definitionName is null && actorId is null)
-        {
-            throw new ArgumentException("A profile capture rule must match a work definition, an actor id, or both.");
-        }
-
         ValidateSelectorLength(definitionName, "work definition");
         ValidateSelectorLength(actorId, "actor id");
 
@@ -155,6 +150,11 @@ internal sealed class WorkProfileCaptureRuleStore
             {
                 reserved = TryReserveMerged(definitionRules, actorRules, now);
             }
+        }
+
+        if (reserved is null)
+        {
+            reserved = TryReserve(index.Global, now);
         }
 
         return reserved is null ? null : new WorkProfileCaptureRuleLease(this, reserved);
@@ -288,23 +288,31 @@ internal sealed class WorkProfileCaptureRuleStore
 
     private sealed class RuleIndex
     {
-        public static RuleIndex Empty { get; } = new([], [], []);
+        public static RuleIndex Empty { get; } = new([], [], [], RuleBucket.Empty);
 
         private readonly Dictionary<RuleSelector, RuleBucket> specific;
         private readonly Dictionary<string, RuleBucket> definitionOnly;
         private readonly Dictionary<string, RuleBucket> actorOnly;
+        private readonly RuleBucket global;
 
         private RuleIndex(
             Dictionary<RuleSelector, RuleBucket> specific,
             Dictionary<string, RuleBucket> definitionOnly,
-            Dictionary<string, RuleBucket> actorOnly)
+            Dictionary<string, RuleBucket> actorOnly,
+            RuleBucket global)
         {
             this.specific = specific;
             this.definitionOnly = definitionOnly;
             this.actorOnly = actorOnly;
+            this.global = global;
         }
 
-        public bool IsEmpty => this.specific.Count == 0 && this.definitionOnly.Count == 0 && this.actorOnly.Count == 0;
+        public bool IsEmpty => this.specific.Count == 0 &&
+            this.definitionOnly.Count == 0 &&
+            this.actorOnly.Count == 0 &&
+            this.global.IsEmpty;
+
+        public RuleBucket Global => this.global;
 
         public RuleBucket GetSpecific(string definitionName, string actorId)
             => this.specific.GetValueOrDefault(new RuleSelector(definitionName, actorId)) ?? RuleBucket.Empty;
@@ -328,6 +336,10 @@ internal sealed class WorkProfileCaptureRuleStore
             else if (rule.ActorId is not null)
             {
                 this.GetActorOnly(rule.ActorId).Reset();
+            }
+            else
+            {
+                this.global.Reset();
             }
         }
 
@@ -362,7 +374,9 @@ internal sealed class WorkProfileCaptureRuleStore
                     group => group.Key,
                     group => new RuleBucket(Order(group)),
                     StringComparer.Ordinal);
-            return new RuleIndex(specific, definitionOnly, actorOnly);
+            var global = new RuleBucket(Order(active.Where(rule =>
+                rule.DefinitionName is null && rule.ActorId is null)));
+            return new RuleIndex(specific, definitionOnly, actorOnly, global);
         }
 
         private static RuleState[] Order(IEnumerable<RuleState> rules)

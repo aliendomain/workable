@@ -8,6 +8,35 @@ namespace Workable.Tests;
 public sealed class WorkflowCommandDispatcherShould
 {
     [Fact]
+    public void FormatTheDefensiveDefaultSystemNotFoundResult()
+    {
+        var createNotFound = typeof(WorkflowCommandDispatcher).GetMethod(
+            "CreateSystemNotFoundResult",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Expected workflow system-not-found result factory.");
+        var result = Assert.IsType<WorkflowCommandResult>(createNotFound.Invoke(null, [null]));
+
+        Assert.Equal(WorkflowCommandStatus.SystemNotFound, result.Status);
+        Assert.Equal("The default Workable system is not registered.", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void PreserveAnErrorCodeWhenItsMessageTextIsBlank()
+    {
+        var createResult = typeof(WorkflowCommandDispatcher)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(method => method.Name == "CreateResult" && method.GetParameters().Length == 5);
+        var message = new WorkMessage("workflow.blank", WorkMessageSeverity.Error, " ");
+
+        var result = Assert.IsType<WorkflowCommandResult>(createResult.Invoke(
+            null,
+            [WorkflowCommandStatus.Invalid, null, null, null, new[] { message }]));
+
+        Assert.Equal("workflow.blank", result.ErrorCode);
+        Assert.Null(result.ErrorMessage);
+    }
+
+    [Fact]
     public async Task StartWorkflowAndPreserveRequestContext()
     {
         WorkflowCommandCapture? captured = null;
@@ -153,6 +182,63 @@ public sealed class WorkflowCommandDispatcherShould
     }
 
     [Fact]
+    public async Task RedactStartedRunForOperateOnlyCallerInAcceptedAndCompletedResults()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var provider = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.AddWork(
+                    WorkDefinition.Create("workflow.command.operate-only.child"),
+                    async (_, _, cancellationToken) =>
+                    {
+                        started.TrySetResult();
+                        await release.Task.WaitAsync(cancellationToken);
+                        return WorkExecutionResult.Success();
+                    });
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("workflow.command.operate-only.running"),
+                    workflow => workflow.DispatchWork(
+                        "dispatch",
+                        WorkDefinition.Create("workflow.command.operate-only.child")),
+                    authorization => authorization.AllowOperateToKnownAuthenticatedUsers());
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("workflow.command.operate-only.completed"),
+                    workflow => workflow.Join("complete"),
+                    authorization => authorization.AllowOperateToKnownAuthenticatedUsers());
+            })
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var dispatcher = provider.GetRequiredService<IWorkflowCommandDispatcher>();
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("operate-only-user"),
+            isAuthenticated: true);
+
+        var accepted = await dispatcher.Start(
+            "workflow.command.operate-only.running",
+            requestContext,
+            new WorkflowCommandOptions(WorkDispatchCompletion.ReturnAfterAccepted));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var completed = await dispatcher.Start(
+            "workflow.command.operate-only.completed",
+            requestContext);
+        release.TrySetResult();
+
+        Assert.Equal(WorkflowCommandStatus.Accepted, accepted.Status);
+        Assert.NotNull(accepted.RunId);
+        Assert.Equal(WorkflowRunStatus.Running, accepted.RunStatus);
+        Assert.Null(accepted.Run);
+        Assert.Equal(WorkflowCommandStatus.Completed, completed.Status);
+        Assert.NotNull(completed.RunId);
+        Assert.Equal(WorkflowRunStatus.Completed, completed.RunStatus);
+        Assert.Null(completed.Run);
+    }
+
+    [Fact]
     public async Task AcceptedWorkflowCanReachBlockedStateWhenChildFails()
     {
         await using var provider = new ServiceCollection()
@@ -192,7 +278,8 @@ public sealed class WorkflowCommandDispatcherShould
         Assert.Equal(WorkflowCommandStatus.Accepted, result.Status);
         Assert.Equal(WorkflowRunStatus.Running, result.RunStatus);
         Assert.Equal(WorkflowRunStatus.Blocked, blocked!.Status);
-        Assert.Contains(blocked.Messages, message => message.Code == "workflow.command.child.failed");
+        Assert.Contains(blocked.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(blocked.Messages, message => message.Code == "workflow.command.child.failed");
     }
 
     [Fact]
@@ -218,7 +305,7 @@ public sealed class WorkflowCommandDispatcherShould
         Assert.Equal(WorkflowCommandStatus.Failed, result.Status);
         Assert.NotNull(result.RunId);
         Assert.Equal(WorkflowRunStatus.Failed, result.RunStatus);
-        Assert.Equal("workable.definition.not_found", result.ErrorCode);
+        Assert.Equal("workable.workflow.child_dispatch_rejected", result.ErrorCode);
     }
 
     [Fact]
@@ -265,7 +352,9 @@ public sealed class WorkflowCommandDispatcherShould
                 builder.AddWorkflow(
                     WorkflowDefinition.Create("workflow.command.secured"),
                     workflow => workflow.DispatchWork("dispatch", WorkDefinition.Create("workflow.command.secured.child")),
-                    authorize: auth => auth.AllowOperateToGroups("workflow.ops"));
+                    authorize: auth => auth
+                        .AllowReadToKnownAuthenticatedUsers()
+                        .AllowOperateToGroups("workflow.ops"));
             })
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
@@ -482,6 +571,33 @@ public sealed class WorkflowCommandDispatcherShould
     }
 
     [Fact]
+    public async Task RejectUnsupportedWorkflowActionWithoutExecutingIt()
+    {
+        await using var provider = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.command.invalid-action"),
+                workflow => workflow.Join("complete")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var dispatcher = provider.GetRequiredService<IWorkflowCommandDispatcher>();
+        var runId = WorkflowRunId.New();
+
+        var result = await dispatcher.Execute(
+            runId,
+            (WorkflowRunAction)999,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkflowCommandStatus.Invalid, result.Status);
+        Assert.Equal(runId, result.RunId);
+        Assert.Null(result.RunStatus);
+        Assert.Null(result.Run);
+        Assert.Equal("workable.workflow.dispatch.action.invalid", result.ErrorCode);
+        Assert.Contains("999", result.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ReturnActionInvalidWhenRunIsFinal()
     {
         await using var provider = new ServiceCollection()
@@ -638,19 +754,48 @@ public sealed class WorkflowCommandDispatcherShould
         Assert.Equal(expected, actual);
     }
 
-    [Theory]
-    [InlineData(WorkflowRunAction.Start, (int)WorkflowAction.Start)]
-    [InlineData(WorkflowRunAction.Pause, (int)WorkflowAction.Pause)]
-    [InlineData(WorkflowRunAction.Cancel, (int)WorkflowAction.Cancel)]
-    [InlineData((WorkflowRunAction)999, (int)WorkflowAction.Cancel)]
-    public void MapWorkflowRunActions(WorkflowRunAction source, int expectedValue)
+    [Fact]
+    public void RedactUnhandledExceptionsFromCommandRunAndStepProjections()
     {
-        var actual = InvokePrivate<WorkflowAction>(
-            "ToWorkflowAction",
-            [typeof(WorkflowRunAction)],
-            source);
+        var now = DateTimeOffset.UtcNow;
+        var secret = new WorkMessage(
+            "workable.workflow.execution_exception",
+            WorkMessageSeverity.Error,
+            "secret workflow failure",
+            Metadata: new Dictionary<string, object?>
+            {
+                ["exceptionStackTrace"] = "secret stack",
+            });
+        var snapshot = new WorkflowRunSnapshot(
+            WorkflowRunId.New(),
+            "workflow.command.redaction",
+            WorkflowRunStatus.Failed,
+            null,
+            [new WorkflowStepRunSnapshot(
+                "dispatch",
+                WorkflowStepKind.DispatchWork,
+                WorkflowStepRunStatus.Failed,
+                [],
+                now,
+                now,
+                [secret])],
+            now,
+            now,
+            now,
+            [secret],
+            []);
 
-        Assert.Equal((WorkflowAction)expectedValue, actual);
+        var projected = InvokePrivate<WorkflowCommandRun>(
+            "ToCommandRun",
+            [typeof(WorkflowRunSnapshot)],
+            snapshot);
+
+        var runMessage = Assert.Single(projected.Messages);
+        var stepMessage = Assert.Single(Assert.Single(projected.Steps).Messages);
+        Assert.Equal("Workflow execution failed with an unhandled exception.", runMessage.Text);
+        Assert.Null(runMessage.Metadata);
+        Assert.Equal(runMessage, stepMessage);
+        Assert.DoesNotContain("secret", runMessage.Text, StringComparison.OrdinalIgnoreCase);
     }
 
     private static T InvokePrivate<T>(

@@ -673,6 +673,9 @@ export type WorkWorkerOverviewWorker = {
   workflowRunId?: { value: string } | null;
   identifiers?: WorkTypedValue[];
   configDifferenceCount: number;
+  profilingEnabled: boolean;
+  profilingCaptureMode: "Bounded" | "Full";
+  canToggleFullProfileCapture?: boolean;
 };
 
 export type WorkflowRunStatus =

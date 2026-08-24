@@ -92,20 +92,33 @@ public sealed class WorkflowCommandDispatcher(
         var runId = handle.RunId;
         if ((options?.Completion ?? WorkDispatchCompletion.WaitForCompletion) == WorkDispatchCompletion.ReturnAfterAccepted)
         {
+            var acceptedSnapshot = runId is { } acceptedRunId ? runtime.Get(acceptedRunId) : null;
+            var acceptedRun = acceptedSnapshot is not null &&
+                await runtime.GetVisible(acceptedSnapshot.Id, requestContext, cancellationToken) is not null
+                    ? acceptedSnapshot
+                    : null;
             return CreateResult(
                 WorkflowCommandStatus.Accepted,
                 runId,
-                run: runId is { } acceptedRunId ? runtime.Get(acceptedRunId) : null,
+                runStatus: acceptedSnapshot?.Status,
+                run: acceptedRun,
                 handle.StartOutcome.Messages);
         }
 
         var completion = await handle.WaitForCompletion(cancellationToken);
-        var completedRun = completion.Run ?? (runId is { } completedRunId ? runtime.Get(completedRunId) : null);
+        var completedSnapshot = completion.Run ?? (runId is { } completedRunId ? runtime.Get(completedRunId) : null);
+        var completedRun = completedSnapshot is not null &&
+            await runtime.GetVisible(completedSnapshot.Id, requestContext, cancellationToken) is not null
+                ? completedSnapshot
+                : null;
         return CreateResult(
             ToCommandStatus(completion.Status),
             runId,
+            completedSnapshot?.Status,
             completedRun,
-            completion.Messages);
+            WorkMessageAccessFilter.Apply(
+                completion.Messages,
+                canReadRetainedDetails: false));
     }
 
     /// <summary>
@@ -136,17 +149,24 @@ public sealed class WorkflowCommandDispatcher(
         ArgumentNullException.ThrowIfNull(requestContext);
         cancellationToken.ThrowIfCancellationRequested();
 
+        if (!TryToWorkflowAction(action, out var workflowAction))
+        {
+            return CreateInvalidActionResult(runId, action);
+        }
+
         if (!TryResolveRuntime(workSystems, systemName, out var runtime, out var systemNotFound))
         {
             return systemNotFound;
         }
 
-        var outcome = await runtime.Execute(runId, ToWorkflowAction(action), requestContext, cancellationToken);
+        var outcome = await runtime.Execute(runId, workflowAction, requestContext, cancellationToken);
         return CreateResult(
             ToCommandStatus(outcome.Status),
             outcome.RunId,
             outcome.Run,
-            outcome.Messages);
+            WorkMessageAccessFilter.Apply(
+                outcome.Messages,
+                canReadRetainedDetails: false));
     }
 
     private static bool TryResolveRuntime(
@@ -189,6 +209,25 @@ public sealed class WorkflowCommandDispatcher(
         return CreateResult(
             WorkflowCommandStatus.SystemNotFound,
             runId: null,
+            runStatus: null,
+            run: null,
+            messages);
+    }
+
+    private static WorkflowCommandResult CreateInvalidActionResult(
+        WorkflowRunId runId,
+        WorkflowRunAction action)
+    {
+        var messages = new[]
+        {
+            WorkMessage.Error(
+                "workable.workflow.dispatch.action.invalid",
+                $"Workflow action '{action}' is not supported.",
+                "action"),
+        };
+        return CreateResult(
+            WorkflowCommandStatus.Invalid,
+            runId,
             runStatus: null,
             run: null,
             messages);
@@ -238,7 +277,7 @@ public sealed class WorkflowCommandDispatcher(
             snapshot.CreatedAt,
             snapshot.StartedAt,
             snapshot.CompletedAt,
-            snapshot.Messages);
+            WorkMessageAccessFilter.Apply(snapshot.Messages, canReadRetainedDetails: false));
 
     private static WorkflowCommandStep ToCommandStep(WorkflowStepRunSnapshot snapshot)
         => new(
@@ -248,7 +287,7 @@ public sealed class WorkflowCommandDispatcher(
             snapshot.WorkerIds,
             snapshot.StartedAt,
             snapshot.CompletedAt,
-            snapshot.Messages);
+            WorkMessageAccessFilter.Apply(snapshot.Messages, canReadRetainedDetails: false));
 
     private static WorkflowCommandStatus ToCommandStatus(WorkflowStartStatus status)
         => status switch
@@ -285,12 +324,17 @@ public sealed class WorkflowCommandDispatcher(
             _ => WorkflowCommandStatus.Invalid,
         };
 
-    private static WorkflowAction ToWorkflowAction(WorkflowRunAction action)
-        => action switch
+    private static bool TryToWorkflowAction(
+        WorkflowRunAction action,
+        out WorkflowAction workflowAction)
+    {
+        workflowAction = action switch
         {
             WorkflowRunAction.Start => WorkflowAction.Start,
             WorkflowRunAction.Pause => WorkflowAction.Pause,
             WorkflowRunAction.Cancel => WorkflowAction.Cancel,
-            _ => WorkflowAction.Cancel,
+            _ => default,
         };
+        return action is WorkflowRunAction.Start or WorkflowRunAction.Pause or WorkflowRunAction.Cancel;
+    }
 }

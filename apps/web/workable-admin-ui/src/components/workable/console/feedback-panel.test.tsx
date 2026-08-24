@@ -6,6 +6,7 @@ import {
   FeedbackBanner,
   FeedbackPanel,
 } from "@/components/workable/console/feedback-panel";
+import { renderDom } from "@/test/dom";
 import {
   assertMarkupIncludes,
   countMarkupOccurrences,
@@ -51,6 +52,30 @@ test("feedback banners cover tone, dismissal, error alias, and empty-message pat
   assertMarkupIncludes(error, "Denied");
   assertMarkupIncludes(error, "Access issue");
   assertMarkupIncludes(error, "text-[var(--status-danger-text)]");
+});
+
+test("feedback banner auto-dismisses after its configured delay", async () => {
+  let dismissCount = 0;
+  const result = await renderDom(
+    <FeedbackBanner
+      autoDismissAfterMs={10}
+      message="Capture updated"
+      onDismiss={() => {
+        dismissCount += 1;
+      }}
+      title="Success"
+      tone="success"
+    />
+  );
+
+  try {
+    await result.waitFor(() => {
+      assert.equal(result.queryByText("Capture updated"), null);
+    });
+    assert.equal(dismissCount, 1);
+  } finally {
+    await result.restore();
+  }
 });
 
 test("error panel uses the default title and hides when no errors are active", () => {

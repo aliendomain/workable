@@ -54,7 +54,7 @@ That keeps multi-system discovery on the public contract without forcing consume
 - `Start(...)`
 - `Stop(...)`
 
-`IWorkSystemSession` exposes the same operational facets but binds them to one `WorkRequestContext` up front. It also carries `SystemName` and `SystemState` so a transport or UI can hold onto one caller-scoped view of the system.
+`IWorkSystemSession` exposes the same operational facets plus a redacted `Discovery` catalog, and binds them to one `WorkRequestContext` up front. It also carries `SystemName` and `SystemState` so a transport or UI can hold onto one caller-scoped view of the system.
 
 Use the root system when the caller is trusted, in-process, and not user-scoped. Use a session when request identity, origin, or authorization matters.
 
@@ -75,9 +75,9 @@ IWorkSystemSession session = await workSystem.CreateSession(
 WorkerQueryResult workers = await session.Query.Workers(cancellationToken: cancellationToken);
 ```
 
-That session-bound model is the most important mental model in this package: the same catalog, queue, worker, query, event, iteration-status, change-stream, and diagnostics contracts still exist, but they can now be filtered or rejected according to the bound caller.
+That session-bound model is the most important mental model in this package: discovery, catalog, queue, worker, query, event, iteration-status, change-stream, and diagnostics contracts can be filtered or rejected according to the bound caller. `Discovery` returns redacted `WorkDefinitionDescriptor` values; `Catalog` continues to require Read and returns complete `WorkDefinition` values.
 
-For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also part of that bound caller state. Workable uses it together with a known actor to evaluate rules such as `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, and `AllowOperationsToKnownAuthenticatedUsers(...)`.
+For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also part of that bound caller state. Workable uses it together with a known actor to evaluate rules such as `AllowDiscoverToKnownAuthenticatedUsers()`, `AllowReadToKnownAuthenticatedUsers()`, `AllowOperateToKnownAuthenticatedUsers()`, `AllowQueueToKnownAuthenticatedUsers()`, and `AllowOperationsToKnownAuthenticatedUsers(...)`.
 
 ## Access Introspection
 
@@ -94,11 +94,15 @@ For trusted in-process callers, `WorkRequestContext.IsAuthenticated` is also par
   - whether the caller can start or stop the system lifecycle
 - `CanReadAllWork`
 - `CanOperateAllWork`
+- `CanDiscoverAllWork`
 - `TotalDefinitionCount`
+- `DiscoverableDefinitionCount`
 - `ReadableDefinitionCount`
 - `OperableDefinitionCount`
+- `ReadableWorkflowDefinitionCount`
+- `OperableWorkflowDefinitionCount`
 
-That is the right contract for capability negotiation, custom UI feature gating, or system-list endpoints that need to describe more than a boolean.
+That is the right contract for capability negotiation, custom UI feature gating, or system-list endpoints that need to describe more than a boolean. Empty work catalogs do not infer Discover-all access; workflow counts let legitimate workflow-only access qualify independently.
 
 ## System Boundary Vs Work Boundary
 
@@ -112,11 +116,23 @@ System-boundary authorization answers:
 
 Work-boundary authorization answers:
 
+- may this caller discover this definition and its schemas?
 - may this caller read this definition and its workers?
 - may this caller queue this definition?
 - may this caller pause, cancel, push, purge, or reconfigure this worker?
 
 System-boundary failures are where `WorkSystemAuthorizationRequiredException` and `WorkSystemAccessDeniedException` live. Work-boundary failures generally stay inside structured outcomes like `WorkQueueOutcome` and `WorkActionOutcome`.
+
+## Discovery Surface
+
+`IWorkDiscoveryCatalog` exposes redacted `WorkDefinitionDescriptor` values through `IWorkSystemSession.Discovery`:
+
+- `Definitions`
+- `ListByCategory(...)`
+- `ListInvocableBy(...)` for one invocation channel
+- `TryGet(...)` by name
+
+Descriptors contain name, description, category, schemas, and tool-oriented metadata. They deliberately omit runtime configuration, authorization requirements, defaults, versions, workers, and retained execution data. Workable snapshots host-supplied metadata collections once when a definition enters the runtime catalog; discovery descriptors reuse that immutable catalog snapshot instead of copying it on every lookup. Read and operate permission imply discovery, while explicit Discover permission grants this surface without granting the full catalog or operational surfaces.
 
 ## Catalog Surface
 
@@ -132,6 +148,8 @@ System-boundary failures are where `WorkSystemAuthorizationRequiredException` an
 
 `Reconfigure(...)` is optimistic-concurrency based through `WorkDefinitionVersion`. It changes the defaults used for future workers, not workers that already exist.
 
+Caller-scoped transports should prefer `IWorkSystemSession.ReconfigureDefinition(name, revision, changes)`. The session operation resolves a discoverable target without requiring the complete Read-filtered catalog, so a caller with definition-reconfiguration permission can operate without receiving the full `WorkDefinition`. Its default interface implementation preserves compatibility for custom sessions by using `Catalog`; custom systems that support operate-without-read should override it.
+
 ## Queue Surface
 
 `IWorkQueueService` accepts work by definition name, with either raw `WorkInput` or typed CLR input.
@@ -144,6 +162,8 @@ Queueing always returns an `IWorkerHandle`, even when the request is rejected. T
 
 - immediate admission through `WorkQueueOutcome`
 - eventual execution completion through `WaitForCompletion()`
+
+On an authorized session, the completion preserves status and safe messages. Its output and retained `WorkerSnapshot` require Read permission. Raw unhandled-exception text and metadata require Read or diagnostics access.
 
 That is why the same queue API works for fire-and-forget, request/response, and operator tooling.
 
@@ -173,6 +193,8 @@ See [Workflows](../guides/workflows.md#starting-from-in-process-code) for exampl
 
 Single-worker operations are revision-aware through `WorkerVersion`. The concise `Execute(worker, action, cancellationToken)` overload remains available, while `Execute(worker, WorkerActionRequest, cancellationToken)` adds an optional per-action `Reason`. The session still supplies caller identity and transport provenance; the action request supplies what should happen and why.
 
+Bulk results count and return only candidates that pass the caller's authoritative operation requirements. Candidates rejected by retained-state constraints are omitted rather than returned as unauthorized worker ids. Nested worker snapshots still require Read independently.
+
 ```csharp
 await session.Workers.Execute(
     worker.Version,
@@ -184,7 +206,7 @@ await session.Workers.Execute(
 
 For running work stopped by an accepted explicit cancel action, the sanitized action context is available to executor code through `IWorkExecutionContext.CancellationRequestContext`. Its `Actor` identifies the caller when known, and its `Description` contains the action reason. Workable establishes that value before canceling the execution token. It remains `null` for pause, shutdown interruption, and lease loss.
 
-Bulk operations intentionally report one `WorkActionOutcome` per matched worker instead of collapsing the whole batch into one coarse result.
+Bulk operations intentionally report one `WorkActionOutcome` per authorized matched worker instead of collapsing the whole batch into one coarse result. Candidates that fail retained-state operation requirements are omitted from both outcomes and the matched count.
 
 This surface is for existing workers. Changing defaults for future workers belongs on `IWorkCatalog.Reconfigure(...)`.
 

@@ -2,10 +2,10 @@
 
 Workable supports authorization at two levels:
 
-- work-definition authorization controls who can read or operate individual work definitions
+- work-definition authorization controls who can discover, read, or operate individual work definitions
 - system authorization controls who can discover a system when they have actual access to it, view diagnostics, control lifecycle, or manage temporary profiling capture rules
 
-The model is request-context based. Callers create or receive a `WorkRequestContext`, Workable creates an `IWorkSystemSession`, and that session exposes the caller-scoped catalog, queue, worker operations, query service, event stream, and diagnostics.
+The model is request-context based. Callers create or receive a `WorkRequestContext`, Workable creates an `IWorkSystemSession`, and that session exposes caller-scoped discovery, catalog, queue, worker operations, query service, event stream, and diagnostics surfaces.
 
 ## Security Model
 
@@ -14,6 +14,7 @@ Systems are authorization-enabled by default. Most hosts do not need to call `Re
 When authorization is enabled on a system:
 
 - work with no authorization configured is closed by default
+- discovery surfaces expose only redacted definition descriptors the caller may discover
 - read surfaces filter out work the caller cannot read
 - queueing and worker operations return unauthorized outcomes when the caller cannot operate the target work
 - diagnostics, retained profile telemetry, full-capture selection, and profiling capture-rule management require system-level diagnostics permission
@@ -29,7 +30,7 @@ services.AddWorkableSystem(builder =>
 });
 ```
 
-This opt-out only applies to direct in-process use of the core runtime. The current transport adapters still require authorization-enabled systems, and their mapping methods throw when that precondition is not met. See the transport adapter docs for the exact mapping behavior and constraints.
+This opt-out only applies to direct in-process use of the core runtime. The current transport adapters do not expose open systems. HTTP rejects a mapping that would cover one, MCP rejects an open requested system, and SignalR rejects an open system when a hub method requests it without preventing secured systems in the same host from using realtime. See the transport adapter docs for the exact behavior and constraints.
 
 When `RequireAuthorization(false)` is set:
 
@@ -41,24 +42,26 @@ Current adapter behavior is intentionally stricter than the core runtime:
 
 - `Workable.HttpApi` requires authenticated callers and authorization-enabled systems
 - `Workable.Mcp` requires authenticated callers and authorization-enabled systems
-- `Workable.SignalR` requires authenticated callers and authorization-enabled systems
+- `Workable.SignalR` requires authenticated callers and exposes only authorization-enabled systems
 
 ## Work Authorization
 
 Each `WorkDefinition` carries non-null authorization metadata:
 
+- discover groups
 - read groups
 - operate groups
-- whether operate access is also allowed to known authenticated users
+- whether discover, read, or operate access is also allowed to known authenticated users
 - the source of each permission set: `None`, `Attribute`, or `Fluent`
 
-That metadata is visible through catalog and definition queries so callers can inspect what a work definition requires.
+That authorization metadata is visible through the full read-authorized catalog and definition queries so readers can inspect what a work definition requires. The redacted discovery catalog does not expose authorization requirements.
 
 ### Attribute-Based Authorization
 
 ```csharp
 [WorkMetadata("billing.invoice.sync", "Billing")]
 [WorkAuthorization(
+    DiscoverGroups = ["billing.catalog"],
     ReadGroups = ["billing.read", "billing.admin"],
     OperateGroups = ["billing.ops", "billing.admin"])]
 public sealed class SyncInvoicesWork : IWorkExecutor
@@ -84,15 +87,38 @@ services.AddWorkableSystem(builder =>
 });
 ```
 
-You can also configure the two surfaces independently:
+`RequireGroups(...)` clears explicit Discover grants and replaces the Read and Operate requirements with the supplied groups, including removing previously configured known-authenticated-user grants. The resulting Read and Operate audiences still receive effective discovery. Use the surface-specific helpers when grants should be composed instead.
+
+You can also configure the three requirements independently:
 
 ```csharp
 builder.AddWork<SyncInvoicesWork>(
     configure: null,
     authorize: auth => auth
+        .AllowDiscoverToGroups("billing.catalog")
         .AllowReadToGroups("billing.read", "billing.admin")
         .AllowOperateToGroups("billing.ops", "billing.admin"));
 ```
+
+Discovery exposes a redacted `WorkDefinitionDescriptor`: name, description, category, input/output schemas, and `WorkDefinitionMetadata`. It does not expose runtime configuration, authorization metadata, workers, inputs, outputs, results, history, queries, or events. Read and operate access each imply discovery, so callers who already have either permission do not need a redundant discover grant.
+
+Use explicit discovery for schema-only consumers:
+
+```csharp
+builder.AddWork<SyncInvoicesWork>(
+    configure: null,
+    authorize: auth => auth.AllowDiscoverToKnownAuthenticatedUsers());
+```
+
+To let every authenticated caller that resolves to a known `WorkActor` discover the definition, its schemas, and its retained data without granting any operation permission, configure the read side explicitly:
+
+```csharp
+builder.AddWork<SyncInvoicesWork>(
+    configure: null,
+    authorize: auth => auth.AllowReadToKnownAuthenticatedUsers());
+```
+
+`AllowReadToKnownAuthenticatedUsers()` can be combined with `AllowReadToGroups(...)`; either audience may then satisfy the read requirement. It does not allow queueing, worker actions, or reconfiguration.
 
 `AllowOperateToGroups(...)` remains the convenience grant for the full work-operation surface: queueing, worker actions, worker reconfiguration, and definition reconfiguration.
 
@@ -154,11 +180,11 @@ services.AddWorkableSystem(builder =>
 });
 ```
 
-This capability is currently available through the fluent builder API, not through `WorkAuthorizationAttribute`.
+Known-authenticated-user grants and constrained operate requirements are available through the fluent builder API, not through `WorkAuthorizationAttribute`. The attribute supports `DiscoverGroups`, `ReadGroups`, and `OperateGroups`.
 
 This rule is intentionally narrower than "authenticated transport request." The caller must be authenticated and the request context must carry a known actor with at least one non-blank identity field such as `Id`, `Name`, or `Email`.
 
-For ASP.NET Core transports and custom endpoints that use `IWorkRequestContextFactory`, Workable sets this automatically from `HttpContext`. For trusted direct in-process callers that build `WorkRequestContext` values manually, the caller is responsible for setting `isAuthenticated: true` when that meaning is intended.
+For built-in ASP.NET Core transports and custom endpoints that use the HTTP-context dispatchers, Workable sets this automatically from `HttpContext`. A lower-level direct `IWorkRequestContextFactory` call reads the already-selected principal, so callers using an explicit transport scheme initialize it through `WorkableAspNetCoreAuthentication.EnsureAuthenticatedAsync(...)` first. For trusted direct in-process callers that build `WorkRequestContext` values manually, the caller is responsible for setting `isAuthenticated: true` when that meaning is intended.
 
 Fluent authorization overrides attribute authorization.
 
@@ -261,7 +287,11 @@ builder.AddWorkflow(
         .AllowOperateToGroups("workflow.ops"));
 ```
 
-Starting a workflow checks workflow operate permission.
+Workflow execution enforces the operation grant, not only the coarse Operate audience metadata. Starting a new run requires `Queue`; resume requires `Start`; pause requires `Pause`; and cancel requires `Cancel`. `AllowOperate...` grants the full set, while the finer-grained builder methods can separate those audiences. Queue and worker-action requirement callbacks apply to workflows as well, using the proposed or retained workflow input respectively.
+
+Read remains independent from workflow execution. Both Read and operation grants imply discovery, but a caller does not need Read merely to perform an allowed workflow operation. Hidden workflow names and run ids use the same not-found outcome as nonexistent targets; discoverable targets can still return unauthorized for a missing operation grant.
+
+Operation permission does not imply permission to read retained state. Start and action results return the run id, command/action status, and safe operation messages to an operate-only caller, but omit the workflow-run snapshot. Worker actions, queue completions, and definition reconfiguration follow the same rule: authoritative `Worker` or `Definition` snapshots require Read, and queue completion `Output`/`RawOutput` also require Read, while definition reconfiguration still returns the current `Revision`. Raw unhandled-exception text and metadata require Read or diagnostics access. Operator projections compute `AvailableActions` by intersecting lifecycle-valid actions with the caller's exact `Start`, `Pause`, and `Cancel` grants; a Read-only view therefore does not advertise controls the caller cannot execute.
 
 Declared workflow child dispatch uses the workflow's accepted execution authority rather than the initiating actor's direct permission on each child definition. This does not grant the actor permission to queue those child definitions outside the workflow.
 
@@ -279,11 +309,19 @@ Stored child-worker request contexts do not retain precomputed authorization sna
 
 If code later creates a new `IWorkSystemSession` from a stored workflow-run or worker `WorkRequestContext`, Workable asynchronously resolves groups for the retained actor through the configured `IWorkAuthorizationGroupProvider` when no authorization snapshot is present. This path does not require an active HTTP request.
 
-### Read And Operate Rules
+### Discover, Read, And Operate Rules
+
+Discover permission affects:
+
+- the redacted `IWorkSystemSession.Discovery` definition catalog
+- definition names, descriptions, categories, input/output schemas, and tool-oriented metadata
+- MCP work-tool descriptor projection
+
+Read and operate access both imply discovery. Explicit discovery does not imply either read or operate access.
 
 Read permission affects:
 
-- catalog definition listing
+- catalog definition and schema listing
 - work-definition queries
 - worker and iteration queries
 - work-key and iteration-key queries
@@ -296,6 +334,10 @@ Operate permission affects:
 - worker actions
 - worker reconfiguration
 - definition reconfiguration
+
+Use `AllowReadToGroups(...)` and/or `AllowReadToKnownAuthenticatedUsers()` to configure the read audience independently of those operate permissions.
+
+Use `AllowDiscoverToGroups(...)` and/or `AllowDiscoverToKnownAuthenticatedUsers()` when a caller needs only redacted definition and schema discovery.
 
 `AllowOperateToGroups(...)` and `AllowOperateToKnownAuthenticatedUsers()` are the easy full-surface grants. The finer-grained helpers participate in that same overall operate surface:
 
@@ -438,16 +480,17 @@ Once `WorkableHttpApiOptions.SurfaceAccessGroups` contains at least one group, e
 - built-in surface access for that system
 - some actual Workable access inside that system
 
-Named built-in routes such as `/workable/systems/{systemName}/...` also require both built-in surface access and actual system access. The built-in surface gate is checked first, then the normal system access rules apply inside the selected system.
+Named built-in routes such as `/workable/systems/{systemName}/...` also require both built-in surface access and actual system access. The built-in surface gate is checked first, then the normal system access rules apply inside the selected system. A named system that fails either check uses the same not-found response as an unknown name so the route cannot enumerate registered systems.
 
 Granular system permissions are:
 
 - `AllowDiagnosticsToGroups(...)`
-  - controls `IWorkSystemSession.Diagnostics`, transport diagnostics routes/views, and listing, creating, or deleting temporary profiling capture rules
+  - controls `IWorkSystemSession.Diagnostics`, transport diagnostics routes/views, and listing temporary profiling capture rules
   - controls whether profile data is present in authorized worker queries, iteration queries, queue completions, worker-action outcomes, and system-stop results
   - is also required when an authorized queue request or definition reconfiguration explicitly selects full profile capture
 - `AllowControlSystemToGroups(...)`
   - controls starting and stopping the system lifecycle
+  - controls creating or deleting temporary profiling and persistent execution-diagnostics capture rules
 - `AllowBuiltInHttpApiToGroups(...)`
   - grants access to the built-in `MapWorkableApi(...)` HTTP surface for that system without also granting administrator semantics
 - `AllowReadAllWorkToGroups(...)`
@@ -470,9 +513,13 @@ Hosts can inspect system access explicitly through `IWorkSystem`.
   - whether the caller can start or stop the system lifecycle
 - `CanReadAllWork`
 - `CanOperateAllWork`
-- total, readable, and operable definition counts
+- `CanDiscoverAllWork`
+- total, discoverable, readable, and operable work-definition counts
+- readable and operable workflow-definition counts
 
-`(await DescribeAccess(...)).HasAnyAccess()` answers whether the caller has enough real access for the system to appear in transport discovery or to be selected by name through transport adapters.
+`(await DescribeAccess(...)).HasAnyAccess()` answers whether the caller has enough real access for the system to appear in transport discovery or to be selected by name through transport adapters. An empty catalog does not imply all-definition discovery, while legitimate workflow-only access still qualifies through the workflow counts.
+
+The in-process `WorkSystemAccessSummary.TotalDefinitionCount` is the complete registered count. Transport adapters may redact that value for callers without `CanDiscoverAllWork`; the built-in HTTP host descriptor reports the discoverable count in its `totalDefinitionCount` field so it does not reveal how many hidden definitions exist.
 
 This is especially useful for custom UIs, capability negotiation, or host-specific feature gating before a caller attempts the broader session surface.
 
@@ -485,11 +532,13 @@ These are different from `WorkQueueOutcome.Unauthorized` or `WorkActionOutcome.U
 
 ## Microsoft Entra Target Apps
 
-Use `Workable.Entra` when the hosted application should accept Microsoft Entra ID bearer tokens for Workable-facing surfaces.
+Use `Workable.Entra` when the hosted application already authenticates Microsoft Entra identities and Workable-facing surfaces should interpret their actor and group claims.
 
 See [Microsoft Entra Authentication](../guides/entra-authentication.md) for the dedicated setup guide and option reference.
 
-In Workable terms, Entra is an authentication and group-mapping strategy, not a separate authorization model. It validates bearer tokens, maps selected Entra claims into Workable groups, and then Workable evaluates its normal system and work authorization rules against those group values.
+In Workable terms, Entra authentication remains owned by the host. `Workable.Entra` maps selected claims from the authenticated principal into Workable groups, and then Workable evaluates its normal system and work authorization rules against those group values.
+
+ASP.NET Core endpoint authorization and Workable authorization are separate gates. A host default, named, or fallback policy can reject a request before a Workable adapter runs; after the request reaches Workable, system and work rules still decide what the selected actor and groups may do. Selecting an existing authentication scheme for Workable changes its actor/group principal but does not bypass a host endpoint policy or grant Workable permissions.
 
 ## How It Applies
 
@@ -529,7 +578,7 @@ For the built-in `Workable.HttpApi` adapter, those group and access resolutions 
 
 That cache is intentionally request-scoped and assumes normal sequential pipeline use. It should not be treated as safe for parallel mutation by multiple concurrent authorization tasks inside one HTTP request without adding synchronization.
 
-The request context can also carry `IsAuthenticated`. Workable uses that together with the resolved actor to evaluate `AllowOperateToKnownAuthenticatedUsers()`. Canonical authorization snapshots retain this authentication state and include it in their read-visibility fingerprint so delayed projection work cannot elevate or discard it while replaying the snapshot.
+The request context can also carry `IsAuthenticated`. Workable uses that together with the resolved actor to evaluate known-authenticated-user discover, read, and operate grants, including `AllowDiscoverToKnownAuthenticatedUsers()`, `AllowReadToKnownAuthenticatedUsers()`, and `AllowOperateToKnownAuthenticatedUsers()`. Canonical authorization snapshots retain this authentication state and include it in their read-visibility fingerprint so delayed projection work cannot elevate or discard it while replaying the snapshot.
 
 SignalR needs one extra step because broadcasts happen after the original request is gone. On subscribe:
 

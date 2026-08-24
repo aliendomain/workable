@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Reflection;
 using System.Security.Claims;
@@ -5,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -18,6 +20,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Workable;
 
 namespace Workable.Tests;
@@ -43,6 +46,66 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task HostEndpointReportsRealtimeDisabledUntilSignalRIsMapped()
+    {
+        using var host = await CreateHost(addSignalR: true, mapSignalR: false);
+        var client = host.GetTestClient();
+
+        var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
+
+        Assert.NotNull(response);
+        Assert.Equal(WorkRealtimeCapability.Disabled, response.Capabilities.Realtime);
+    }
+
+    [Fact]
+    public async Task RejectHostProtocolConfigurationIncompatibleWithTheDefaultPayloadSerializer()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CreateHost(
+            addSignalR: true,
+            configureServicesAfterSignalR: services =>
+                services.Configure<HubOptions<WorkableRealtimeHub>>(options =>
+                    options.SupportedProtocols = ["messagepack"])));
+
+        Assert.Contains("default Workable SignalR payload serializer", exception.Message);
+        Assert.Contains("only the 'json' protocol", exception.Message);
+    }
+
+    [Fact]
+    public async Task RejectMissingOrMultipleProtocolsWithTheDefaultPayloadSerializer()
+    {
+        foreach (var protocols in new IList<string>?[]
+        {
+            null,
+            new[] { "json", "messagepack" },
+        })
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CreateHost(
+                addSignalR: true,
+                configureServicesAfterSignalR: services =>
+                    services.Configure<HubOptions<WorkableRealtimeHub>>(options =>
+                        options.SupportedProtocols = protocols)));
+
+            Assert.Contains("only the 'json' protocol", exception.Message);
+        }
+    }
+
+    [Fact]
+    public async Task AcceptHostProtocolConfigurationWhenTheHostOwnsPayloadSerialization()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServicesAfterSignalR: services =>
+            {
+                services.AddSingleton<IWorkableSignalRPayloadSerializer, HostOwnedPayloadSerializer>();
+                services.Configure<HubOptions<WorkableRealtimeHub>>(options =>
+                    options.SupportedProtocols = ["messagepack"]);
+            });
+
+        Assert.IsType<HostOwnedPayloadSerializer>(
+            host.Services.GetRequiredService<IWorkableSignalRPayloadSerializer>());
+    }
+
+    [Fact]
     public async Task HostEndpointReportsRealtimeEnabledWhenSignalRIsRegistered()
     {
         using var host = await CreateHost(addSignalR: true);
@@ -55,6 +118,30 @@ public sealed class WorkableSignalRTests
         Assert.True(capabilities.Realtime.Enabled);
         Assert.Equal("signalr", capabilities.Realtime.Transport);
         Assert.Equal("/workable/realtime", capabilities.Realtime.HubPath);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HostEndpointUsesAHostRealtimeCapabilityProviderRegardlessOfRegistrationOrder(
+        bool registerAfterSignalR)
+    {
+        static void RegisterHostProvider(IServiceCollection services)
+            => services.AddSingleton<IWorkRealtimeCapabilityProvider>(
+                new HostRealtimeCapabilityProvider());
+
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: registerAfterSignalR ? null : RegisterHostProvider,
+            configureServicesAfterSignalR: registerAfterSignalR ? RegisterHostProvider : null);
+        var client = host.GetTestClient();
+
+        var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
+
+        Assert.NotNull(response);
+        Assert.Equal(
+            new WorkRealtimeCapability(true, "host-realtime", "/host/realtime"),
+            response.Capabilities.Realtime);
     }
 
     [Fact]
@@ -84,6 +171,24 @@ public sealed class WorkableSignalRTests
         Assert.NotNull(response);
 
         Assert.Equal("/custom/realtime", response.Capabilities.Realtime.HubPath);
+        Assert.Equal(
+            "/workable/realtime",
+            host.Services.GetRequiredService<IOptions<WorkableSignalROptions>>().Value.HubPath);
+    }
+
+    [Fact]
+    public async Task HostEndpointAdvertisesTheExplicitPrimaryMappingInsteadOfAnAlias()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            hubPath: "/primary/realtime",
+            aliasHubPath: "/alias/realtime");
+        var client = host.GetTestClient();
+
+        var response = await client.GetFromJsonAsync<WorkableHttpHostDescriptor>("/workable/host", JsonOptions());
+
+        Assert.NotNull(response);
+        Assert.Equal("/primary/realtime", response.Capabilities.Realtime.HubPath);
     }
 
     [Fact]
@@ -147,8 +252,8 @@ public sealed class WorkableSignalRTests
         var completed = await ReadUntil(
             events.Reader,
             workEvent => workEvent.EventType == "worker.completed");
-        var debugSubscription = Assert.Single(eventSubscriptions.GetDebugSubscriptions(system));
-        var filter = debugSubscription.Filter ?? throw new InvalidOperationException("Expected filtered event subscription.");
+        var subscriptionSnapshot = Assert.Single(eventSubscriptions.GetSubscriptionSnapshots(system));
+        var filter = subscriptionSnapshot.Filter ?? throw new InvalidOperationException("Expected filtered event subscription.");
 
         Assert.Equal(handle.WorkerId, completed.WorkerId);
         Assert.Equal("worker.completed", completed.EventType);
@@ -441,10 +546,11 @@ public sealed class WorkableSignalRTests
         await using var connection = CreateConnection(host);
         await connection.StartAsync();
 
+        using var streamCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var messages = await ReadStream(connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
             "StreamIterationStatus",
             [worker.Id.Value.ToString("D"), iterationSequence, 0L, null],
-            CancellationToken.None));
+            streamCancellation.Token));
         var message = Assert.Single(messages);
         var gap = Assert.IsType<WorkableRealtimeIterationStatusGap>(message.Gap);
 
@@ -483,6 +589,57 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task IterationStatusSignalRReaderMapsAReplayGapRaisedWhileOpeningTheStream()
+    {
+        var iteration = new WorkerIterationReference(WorkerId.New(), 2);
+        var gap = new WorkIterationStatusGapException(
+            iteration,
+            afterSequence: 3,
+            firstAvailableSequence: 5,
+            lastAvailableSequence: 8);
+
+        var messages = await ReadStream(WorkableRealtimeHub.ReadIterationStatus(
+            new ReplayGapIterationStatusStream(gap),
+            iteration,
+            afterSequence: 3,
+            CancellationToken.None,
+            CancellationToken.None));
+        var message = Assert.Single(messages);
+        var payload = Assert.IsType<WorkableRealtimeIterationStatusGap>(message.Gap);
+
+        Assert.Equal(WorkableRealtimeIterationStatusMessage.GapKind, message.Kind);
+        Assert.Equal(iteration.WorkerId, payload.WorkerId);
+        Assert.Equal(3, payload.RequestedAfterSequence);
+        Assert.Equal(5, payload.FirstAvailableSequence);
+        Assert.Equal(8, payload.LastAvailableSequence);
+    }
+
+    [Fact]
+    public async Task IterationStatusSignalRReaderOpensAndReadsARawStatusStream()
+    {
+        var iteration = new WorkerIterationReference(WorkerId.New(), 1);
+        await using var stream = new WorkIterationStatusStream(WorkSystemId.New(), workSystemName: null);
+        stream.Begin(iteration, "signalr.raw.status");
+        stream.Publish(
+            iteration,
+            "signalr.raw.status",
+            WorkIterationStatusUpdate.FromValue("progress", 42));
+        stream.Complete(iteration);
+
+        var messages = await ReadStream(WorkableRealtimeHub.ReadIterationStatus(
+            stream,
+            iteration,
+            afterSequence: 0,
+            CancellationToken.None,
+            CancellationToken.None));
+        var message = Assert.Single(messages);
+
+        Assert.Equal(WorkableRealtimeIterationStatusMessage.StatusKind, message.Kind);
+        Assert.Equal("progress", message.Status?.Type);
+        Assert.Equal(42, message.Status?.Data?.GetInt32());
+    }
+
+    [Fact]
     public void IterationStatusSignalRSubscriptionMapsAMissingRawStreamToAClientSafeError()
     {
         var iteration = new WorkerIterationReference(WorkerId.New(), 3);
@@ -509,6 +666,33 @@ public sealed class WorkableSignalRTests
 
         Assert.Contains("limit of 1", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("active status subscriptions", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IterationStatusSignalRSubscriptionRedactsCustomStreamArgumentFailures()
+    {
+        const string SensitiveMessage = "status-store-password=secret";
+        var iteration = new WorkerIterationReference(WorkerId.New(), 3);
+        var stream = new ThrowingIterationStatusStream(new ArgumentOutOfRangeException("cursor", SensitiveMessage));
+
+        var exception = Assert.Throws<Microsoft.AspNetCore.SignalR.HubException>(() =>
+            WorkableRealtimeHub.SubscribeIterationStatus(stream, iteration, afterSequence: 0));
+
+        Assert.Contains("could not be opened", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(SensitiveMessage, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IterationStatusSignalRSubscriptionRejectsNegativeCursorsBeforeCallingTheStream()
+    {
+        var iteration = new WorkerIterationReference(WorkerId.New(), 3);
+        var stream = new ThrowingIterationStatusStream(new InvalidOperationException("The stream was called."));
+
+        var exception = Assert.Throws<Microsoft.AspNetCore.SignalR.HubException>(() =>
+            WorkableRealtimeHub.SubscribeIterationStatus(stream, iteration, afterSequence: -1));
+
+        Assert.Contains("cursor cannot be negative", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stream was called", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -548,8 +732,8 @@ public sealed class WorkableSignalRTests
         var completed = await ReadUntil(
             events.Reader,
             workEvent => workEvent.EventType == "worker.completed");
-        var debugSubscription = Assert.Single(eventSubscriptions.GetDebugSubscriptions(system));
-        var filter = debugSubscription.Filter ?? throw new InvalidOperationException("Expected filtered event subscription.");
+        var subscriptionSnapshot = Assert.Single(eventSubscriptions.GetSubscriptionSnapshots(system));
+        var filter = subscriptionSnapshot.Filter ?? throw new InvalidOperationException("Expected filtered event subscription.");
         var key = Assert.Single(Required(filter.Keys));
 
         Assert.Equal(accepted.WorkerId, completed.WorkerId);
@@ -957,6 +1141,55 @@ public sealed class WorkableSignalRTests
         Assert.NotEqual(other.WorkerId?.Value, worker.GetProperty("id").GetProperty("value").GetGuid());
     }
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task MyWorkersWatcherUsesEntraOidRegardlessOfInboundMapping(
+        bool mapInboundClaims,
+        bool explicitlySelectScheme)
+    {
+        using var host = await CreateEntraSignalRHost(mapInboundClaims, explicitlySelectScheme);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var oidWorker = await EnqueueEntraWorker(
+            system,
+            new WorkActor(EntraJwtTestSupport.ActorObjectId, "Entra User"));
+        var subjectWorker = await EnqueueEntraWorker(
+            system,
+            new WorkActor(EntraJwtTestSupport.ActorSubjectId, "Pairwise Subject"));
+        Assert.True(oidWorker.QueueOutcome.IsAccepted);
+        Assert.True(subjectWorker.QueueOutcome.IsAccepted);
+        var token = EntraJwtTestSupport.CreateToken(
+            new Claim("oid", EntraJwtTestSupport.ActorObjectId),
+            new Claim("sub", EntraJwtTestSupport.ActorSubjectId),
+            new Claim("name", "Entra User"),
+            new Claim(
+                WorkableEntraAuthorizationDefaults.ScopeClaimType,
+                $"{WorkableEntraAuthorizationDefaults.ReadScope} {WorkableEntraAuthorizationDefaults.ExecuteScope}"));
+        await using var connection = CreateConnection(host, token);
+        const string subscriptionId = "entra-my-workers";
+        var views = Channel.CreateUnbounded<WorkComponentQueryResult>();
+        CaptureRealtimeViews(connection, subscriptionId, views);
+        await connection.StartAsync();
+
+        await connection.InvokeAsync("WatchMyWorkers", subscriptionId, null, null);
+
+        var subscription = Assert.Single(host.Services
+            .GetRequiredService<WorkableRealtimeViewSubscriptions>()
+            .GetSubscriptionSnapshots(system));
+        var component = Assert.Single(subscription.Criteria.Components!);
+        var options = Assert.IsType<JsonElement>(component.Options);
+        Assert.Equal(EntraJwtTestSupport.ActorObjectId, options.GetProperty("actorId").GetString());
+        var initial = await ReadUntil(views.Reader, view => view.Components.ContainsKey("workerGrid"));
+        var grid = Assert.IsType<JsonElement>(initial.Components["workerGrid"].Data);
+        var worker = Assert.Single(grid.GetProperty("workers").EnumerateArray());
+
+        Assert.Equal(1, grid.GetProperty("totalCount").GetInt32());
+        Assert.Equal(oidWorker.WorkerId?.Value, worker.GetProperty("id").GetProperty("value").GetGuid());
+        Assert.NotEqual(subjectWorker.WorkerId?.Value, worker.GetProperty("id").GetProperty("value").GetGuid());
+    }
+
     [Fact]
     public async Task MyWorkersWatcherPublishesCurrentIterationSequenceWithoutIterationPayloads()
     {
@@ -1019,7 +1252,7 @@ public sealed class WorkableSignalRTests
             connection.InvokeAsync("WatchMyWorkers", "missing-actor", null, null));
 
         Assert.Contains("stable actor id", exception.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(subscriptions.GetSubscriptionSnapshots(system));
     }
 
     [Fact]
@@ -1616,7 +1849,7 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task WorkerOverviewWatcherKeepsItsSubscriptionWhenTheWorkerDoesNotExistYet()
+    public async Task WorkerOverviewWatcherDoesNotRetainItsSubscriptionWhenTheWorkerDoesNotExist()
     {
         using var host = await CreateHost(addSignalR: true);
         var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
@@ -1635,13 +1868,8 @@ public sealed class WorkableSignalRTests
             new WorkWorkerOverviewRealtimeCriteria(WorkerControls: WorkComponentShapes.Standard),
             null);
 
-        var subscription = Assert.Single(subscriptions.GetDebugSubscriptions(system));
-        Assert.Equal(subscriptionId, subscription.SubscriptionId);
-        Assert.Equal(workerId, subscription.WorkerId);
+        Assert.Empty(subscriptions.GetSubscriptionSnapshots(system));
         await AssertNoItem(updates.Reader, TimeSpan.FromMilliseconds(250));
-
-        await connection.InvokeAsync("UnwatchWorkerOverview", subscriptionId, null);
-        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
     }
 
     [Fact]
@@ -1700,14 +1928,14 @@ public sealed class WorkableSignalRTests
             new WorkWorkerOverviewRealtimeCriteria(),
             null);
         await TestEventually.Until(() =>
-            viewSubscriptions.GetDebugSubscriptions(system).Count == 1 &&
-            workerSubscriptions.GetDebugSubscriptions(system).Count == 1);
+            viewSubscriptions.GetSubscriptionSnapshots(system).Count == 1 &&
+            workerSubscriptions.GetSubscriptionSnapshots(system).Count == 1);
 
         await connection.InvokeAsync("UnwatchWorkers", "workers-subscription", null);
         await connection.InvokeAsync("UnwatchWorkerOverview", "worker-subscription", null);
 
-        Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
-        Assert.Empty(workerSubscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(viewSubscriptions.GetSubscriptionSnapshots(system));
+        Assert.Empty(workerSubscriptions.GetSubscriptionSnapshots(system));
     }
 
     [Fact]
@@ -1742,7 +1970,7 @@ public sealed class WorkableSignalRTests
 
         await hub.UnwatchView(subscriptionId);
 
-        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(subscriptions.GetSubscriptionSnapshots(system));
         Assert.Single(groups.Removes);
     }
 
@@ -1781,7 +2009,7 @@ public sealed class WorkableSignalRTests
 
         await hub.UnwatchWorkerOverview(subscriptionId);
 
-        Assert.Empty(subscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(subscriptions.GetSubscriptionSnapshots(system));
         Assert.Single(groups.Removes);
     }
 
@@ -1806,16 +2034,328 @@ public sealed class WorkableSignalRTests
             new WorkWorkerOverviewRealtimeCriteria(),
             null);
         await TestEventually.Until(() =>
-            events.GetDebugSubscriptions(system).Count == 1 &&
-            views.GetDebugSubscriptions(system).Count == 1 &&
-            workers.GetDebugSubscriptions(system).Count == 1);
+            events.GetSubscriptionSnapshots(system).Count == 1 &&
+            views.GetSubscriptionSnapshots(system).Count == 1 &&
+            workers.GetSubscriptionSnapshots(system).Count == 1);
 
         await connection.StopAsync();
 
         await TestEventually.Until(() =>
-            events.GetDebugSubscriptions(system).Count == 0 &&
-            views.GetDebugSubscriptions(system).Count == 0 &&
-            workers.GetDebugSubscriptions(system).Count == 0);
+            events.GetSubscriptionSnapshots(system).Count == 0 &&
+            views.GetSubscriptionSnapshots(system).Count == 0 &&
+            workers.GetSubscriptionSnapshots(system).Count == 0);
+    }
+
+    [Fact]
+    public async Task HubDisconnectReleasesEverySubscriptionKindAfterConnectionCancellation()
+    {
+        using var host = await CreateHost(addSignalR: true);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var events = host.Services.GetRequiredService<WorkableRealtimeEventSubscriptions>();
+        var views = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
+        var workers = host.Services.GetRequiredService<WorkableRealtimeWorkerOverviewSubscriptions>();
+        var groups = new RecordingSignalRGroupManager { HonorCancellationOnRemove = true };
+        var session = await Session(system);
+        const string connectionId = "canceled-disconnect";
+
+        var eventWatch = events.WatchEvents(
+            connectionId, groups, system, session.Catalog, new WorkableRealtimeEventCriteria(),
+            RealtimeAuthorization(), CancellationToken.None);
+        var eventAdd = await groups.WaitForAdd();
+        events.SetStreaming(eventAdd.GroupName, isStreaming: true);
+        await eventWatch;
+        await views.WatchView(
+            connectionId, groups, system, "view", "overview", new WorkViewCriteria(),
+            RealtimeAuthorization(), CancellationToken.None);
+        _ = await groups.WaitForAdd();
+        var workerWatch = workers.Watch(
+            connectionId, groups, system, "worker", WorkerId.New(),
+            new WorkWorkerOverviewRealtimeCriteria(), RealtimeAuthorization(), CancellationToken.None);
+        var workerAdd = await groups.WaitForAdd();
+        workers.SetStreaming(workerAdd.GroupName, isStreaming: true);
+        await workerWatch;
+
+        using var hub = ActivatorUtilities.CreateInstance<WorkableRealtimeHub>(host.Services);
+        var context = new CancelableHubCallerContext(connectionId, host.Services, CreateTransportPrincipal());
+        hub.Context = context;
+        hub.Groups = groups;
+        context.Abort();
+
+        await hub.OnDisconnectedAsync(null);
+
+        Assert.Empty(events.GetSubscriptionSnapshots(system));
+        Assert.Empty(views.GetSubscriptionSnapshots(system));
+        Assert.Empty(workers.GetSubscriptionSnapshots(system));
+        Assert.Empty(groups.Removes);
+    }
+
+    [Fact]
+    public async Task WatchersDoNotRetainSubscriptionsWithoutAnAuthorizedRealtimeSource()
+    {
+        using var host = await CreateHost(addSignalR: true, groups: ["unrelated"]);
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var events = host.Services.GetRequiredService<WorkableRealtimeEventSubscriptions>();
+        var views = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
+        var workers = host.Services.GetRequiredService<WorkableRealtimeWorkerOverviewSubscriptions>();
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var eventError = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchEvents", new WorkableRealtimeEventCriteria(), null));
+        var viewError = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView", "unauthorized-view", "overview", null, null));
+        var workerError = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchWorkerOverview", "unauthorized-worker", WorkerId.New().Value.ToString("D"), null, null));
+
+        Assert.Contains("authorized realtime data source", eventError.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("authorized realtime data source", viewError.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("authorized realtime data source", workerError.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(events.GetSubscriptionSnapshots(system));
+        Assert.Empty(views.GetSubscriptionSnapshots(system));
+        Assert.Empty(workers.GetSubscriptionSnapshots(system));
+    }
+
+    [Fact]
+    public async Task RejectInvalidOrUnproducibleSubscriptionsBeforeTheyConsumeCapacity()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            groups: ["transport.read"],
+            configureWorkable: builder =>
+            {
+                builder.AddWork(
+                    WorkDefinition.Create("signalr.hidden"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization.RequireGroups(["hidden.read"], ["hidden.operate"]));
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("signalr.category.visible", category: "signalr.visible"),
+                    SuccessfulWork);
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var events = host.Services.GetRequiredService<WorkableRealtimeEventSubscriptions>();
+        var subscriptions = host.Services.GetRequiredService<WorkableRealtimeViewSubscriptions>();
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        var unknownView = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView", "unknown", "not-a-view", null, null));
+        var invalidComponent = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView",
+            "invalid-component",
+            "overview",
+            new WorkViewCriteria(Components: [new WorkComponentRequest("bad", "not-a-component")]),
+            null));
+        var oversizedComponents = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView",
+            "oversized-components",
+            "overview",
+            new WorkViewCriteria(Components: Enumerable
+                .Range(0, WorkableViewQueryAdapter.MaximumComponentsPerRequest + 1)
+                .Select(index => new WorkComponentRequest($"component-{index}", "system"))
+                .ToArray()),
+            null));
+        var duplicateComponents = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView",
+            "duplicate-components",
+            "overview",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest("workers", "workers"),
+                new WorkComponentRequest("WORKERS", "throughput"),
+            ]),
+            null));
+        var hiddenScope = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView",
+            "hidden-scope",
+            "workers",
+            new WorkViewCriteria(new WorkSystemCriteria(DefinitionName: "signalr.hidden")),
+            null));
+        var emptyCategoryScope = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView",
+            "empty-category-scope",
+            "workers",
+            new WorkViewCriteria(new WorkSystemCriteria(Category: "signalr.missing.category")),
+            null));
+        var contradictoryScope = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView",
+            "contradictory-scope",
+            "workers",
+            new WorkViewCriteria(new WorkSystemCriteria(
+                DefinitionName: "signalr.category.visible",
+                Category: "signalr.missing.category")),
+            null));
+        var malformedWorkflowView = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchView",
+            "malformed-workflow",
+            "workflow-runs",
+            new WorkViewCriteria(Components:
+            [
+                new WorkComponentRequest(
+                    "runs",
+                    "workflowRuns",
+                    JsonSerializer.SerializeToElement(new { childSampleSize = "many" })),
+            ]),
+            null));
+        var malformedEvents = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(EventTypes: [" "]),
+            null));
+        var undefinedKeyKind = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(Keys:
+            [
+                new WorkableRealtimeEventKeyCriteria((WorkKeyKind)999, "tenant", "west"),
+            ]),
+            null));
+
+        Assert.Contains("Unknown view", unknownView.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Unknown component", invalidComponent.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot contain more than 32", oversizedComponents.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Component ids must be unique", duplicateComponents.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("authorized realtime data source", hiddenScope.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("authorized realtime data source", emptyCategoryScope.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("authorized realtime data source", contradictoryScope.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("must be an integer", malformedWorkflowView.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot be empty", malformedEvents.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("defined WorkKeyKind", undefinedKeyKind.Message, StringComparison.OrdinalIgnoreCase);
+        var catalog = (await Session(system)).Catalog;
+        Assert.True(WorkableRealtimeHub.HasReadableWorkScope(
+            catalog,
+            new WorkSystemCriteria(
+                DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "signalr.worker" })));
+        Assert.True(WorkableRealtimeHub.HasReadableWorkScope(
+            catalog,
+            new WorkSystemCriteria(Category: "signalr.visible")));
+        Assert.True(WorkableRealtimeHub.HasReadableWorkScope(catalog, scope: null));
+        Assert.True(WorkableRealtimeHub.HasReadableWorkScope(
+            catalog,
+            new WorkSystemCriteria(
+                DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "  ",
+                    "signalr.worker",
+                    "signalr.missing",
+                })));
+        Assert.True(WorkableRealtimeHub.HasReadableWorkScope(
+            catalog,
+            new WorkSystemCriteria(
+                DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "signalr.worker",
+                    "signalr.category.visible",
+                },
+                DefinitionName: "signalr.category.visible")));
+        Assert.False(WorkableRealtimeHub.HasReadableWorkScope(
+            catalog,
+            new WorkSystemCriteria(Category: "signalr.missing.category")));
+        Assert.False(WorkableRealtimeHub.HasReadableWorkScope(
+            catalog,
+            new WorkSystemCriteria(DefinitionName: "signalr.missing")));
+        Assert.False(WorkableRealtimeHub.HasReadableWorkScope(
+            catalog,
+            new WorkSystemCriteria(
+                DefinitionName: "signalr.category.visible",
+                Category: "signalr.missing.category")));
+        Assert.False(WorkableRealtimeHub.HasReadableWorkScope(
+            catalog,
+            new WorkSystemCriteria(
+                DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase))));
+        Assert.Empty(subscriptions.GetSubscriptionSnapshots(system));
+        Assert.Empty(events.GetSubscriptionSnapshots(system));
+    }
+
+    [Fact]
+    public void ValidateRealtimeHubScopeAndActorHelperBoundaries()
+    {
+        var componentMethod = typeof(WorkableRealtimeHub).GetMethod(
+            "AllComponentsRequireReadableWorkScope",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected component scope helper.");
+        var actorMethod = typeof(WorkableRealtimeHub).GetMethod(
+            "RequireActorId",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected actor id helper.");
+        var actorMatchMethod = typeof(WorkableRealtimeHub).GetMethod(
+            "ActorIdsMatch",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected actor comparison helper.");
+        var iterationMethod = typeof(WorkableRealtimeHub).GetMethod(
+            "ValidateIterationStatusArguments",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected iteration argument helper.");
+
+        Assert.False((bool)componentMethod.Invoke(null, [null])!);
+        Assert.False((bool)componentMethod.Invoke(null, [Array.Empty<WorkComponentRequest>()])!);
+        Assert.True((bool)componentMethod.Invoke(null,
+            [new[] { new WorkComponentRequest("workers", " workers ") }])!);
+        foreach (var type in new[]
+        {
+            "system",
+            "systemDiagnostics",
+            "queueDiagnostics",
+            "readModelDiagnostics",
+            "retentionDiagnostics",
+            "concurrencyDiagnostics",
+            "durabilityDiagnostics",
+            "idempotencyDiagnostics",
+        })
+        {
+            Assert.False((bool)componentMethod.Invoke(null,
+                [new[] { new WorkComponentRequest(type, $" {type.ToUpperInvariant()} ") }])!);
+        }
+
+        Assert.Equal("actor-1", actorMethod.Invoke(null, [new WorkActor(" actor-1 ")]));
+        var missingActor = Assert.Throws<TargetInvocationException>(
+            () => actorMethod.Invoke(null, [new WorkActor(" ")]));
+        Assert.IsType<HubException>(missingActor.InnerException);
+
+        Assert.True((bool)actorMatchMethod.Invoke(null, [" actor-1 ", "actor-1"])!);
+        Assert.False((bool)actorMatchMethod.Invoke(null, [null, "actor-1"])!);
+        Assert.False((bool)actorMatchMethod.Invoke(null, [" ", "actor-1"])!);
+        Assert.False((bool)actorMatchMethod.Invoke(null, ["Actor-1", "actor-1"])!);
+
+        iterationMethod.Invoke(null, [1L, 0L]);
+        foreach (var arguments in new[] { new object[] { 0L, 0L }, [1L, -1L] })
+        {
+            var invalidIteration = Assert.Throws<TargetInvocationException>(
+                () => iterationMethod.Invoke(null, arguments));
+            Assert.IsType<HubException>(invalidIteration.InnerException);
+        }
+    }
+
+    [Fact]
+    public void RejectNonAuthorizingDefaultAndNamedSystemsDuringHubResolution()
+    {
+        using var provider = new ServiceCollection()
+            .AddWorkableSystem(_ => { })
+            .AddWorkableSystem("remote", _ => { })
+            .BuildServiceProvider();
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        using var hub = new WorkableRealtimeHub(
+            registry,
+            groupResolver: null!,
+            requestContexts: null!,
+            views: null!,
+            payloads: null!,
+            eventSubscriptions: null!,
+            viewSubscriptions: null!,
+            workerOverviewSubscriptions: null!);
+        var resolve = typeof(WorkableRealtimeHub).GetMethod(
+            "ResolveSystem",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected realtime system resolver.");
+
+        var defaultFailure = Assert.Throws<TargetInvocationException>(() =>
+            resolve.Invoke(hub, [null]));
+        var namedFailure = Assert.Throws<TargetInvocationException>(() =>
+            resolve.Invoke(hub, ["remote"]));
+        var missingFailure = Assert.Throws<TargetInvocationException>(() =>
+            resolve.Invoke(hub, ["missing"]));
+
+        Assert.Contains("does not require authorization", Assert.IsType<HubException>(defaultFailure.InnerException).Message);
+        Assert.Contains("was not found", Assert.IsType<HubException>(namedFailure.InnerException).Message);
+        Assert.Contains("was not found", Assert.IsType<HubException>(missingFailure.InnerException).Message);
     }
 
     [Fact]
@@ -2380,14 +2920,14 @@ public sealed class WorkableSignalRTests
             null));
 
         Assert.Contains("diagnostics permission", exception.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(viewSubscriptions.GetSubscriptionSnapshots(system));
 
         var session = await Session(system);
         _ = await session.Queue.Enqueue("signalr.worker");
         var rejected = await session.Queue.Enqueue("signalr.worker");
 
         Assert.False(rejected.QueueOutcome.IsAccepted);
-        Assert.Empty(viewSubscriptions.GetDebugSubscriptions(system));
+        Assert.Empty(viewSubscriptions.GetSubscriptionSnapshots(system));
     }
 
     [Fact]
@@ -2411,7 +2951,109 @@ public sealed class WorkableSignalRTests
             new WorkableRealtimeEventCriteria(),
             "remote"));
 
-        Assert.Contains("system-level access", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("remote", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("not found", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("access", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task OpenSystemDoesNotPreventSignalRForSecuredSystems()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            mapHttpApi: false,
+            configureServices: services => services.AddWorkableSystem("open", builder =>
+            {
+                builder.StartWithHost();
+                builder.RequireAuthorization(false);
+            }));
+        await using var connection = CreateConnection(host);
+        await connection.StartAsync();
+
+        await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() => connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(),
+            "open"));
+
+        Assert.Contains("open", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("not found", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("authorization", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task UseTheHttpRequestScopeForScopedHostActorMappers()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureServices: services =>
+            {
+                services.AddScoped<ScopedActorMarker>();
+                services.AddScoped<IWorkActorClaimsMapper, ScopedActorClaimsMapper>();
+                services.AddSingleton<IWorkAuthorizationGroupProvider, EmptyAuthorizationGroupProvider>();
+                services.AddWorkableSystem("scoped-host-services", builder =>
+                {
+                    builder.StartWithHost();
+                    builder.RequireAuthorization();
+                    builder.ConfigureTransportSystemAuthorization();
+                    builder.AddAuthorizedTransportWork(
+                        WorkDefinition.Create("signalr.scoped-host-services"),
+                        SuccessfulWork);
+                });
+            });
+        await using var connection = CreateConnection(host);
+
+        await connection.StartAsync();
+        await connection.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(),
+            "scoped-host-services");
+    }
+
+    [Fact]
+    public async Task ResolveHostIdentityActorAndClaimMappingsOncePerLongPollingConnection()
+    {
+        var resolutions = new ConnectionResolutionCounter();
+        var principal = CreateTransportPrincipal();
+        using var host = await CreateHost(
+            addSignalR: true,
+            principal: principal,
+            configureWorkable: builder => builder.AddAuthorizedTransportWork(
+                WorkDefinition.Create("signalr.connection-snapshot-stream"),
+                (context, _, _) =>
+                {
+                    context.Status.Publish("progress", "complete");
+                    return Task.FromResult(WorkExecutionResult.Success());
+                }),
+            configureServices: services =>
+            {
+                services.AddSingleton(resolutions);
+                services.AddScoped<IWorkClaimsIdentitySelector, CountingIdentitySelector>();
+                services.AddScoped<IWorkActorClaimsMapper, CountingActorMapper>();
+                services.AddScoped<IWorkAuthorizationGroupClaimMapper, CountingGroupMapper>();
+            });
+        var system = host.Services.GetRequiredService<IWorkSystemRegistry>().Default;
+        var completion = await (await (await Session(system))
+                .Queue
+                .Enqueue("signalr.connection-snapshot-stream"))
+            .WaitForCompletion();
+        var worker = completion.Worker ?? throw new InvalidOperationException("Expected a completed worker.");
+        var iterationSequence = worker.LastIterationSequence
+            ?? throw new InvalidOperationException("Expected a completed iteration.");
+        await using var connection = CreateConnection(host);
+
+        await connection.StartAsync();
+        using var streamCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var messages = await ReadStream(connection.StreamAsyncCore<WorkableRealtimeIterationStatusMessage>(
+            "StreamIterationStatus",
+            [worker.Id.Value.ToString("D"), iterationSequence, 0L, null],
+            streamCancellation.Token));
+
+        Assert.Contains(messages, message =>
+            message.Kind == WorkableRealtimeIterationStatusMessage.CompletedKind);
+        Assert.Equal(1, resolutions.IdentitySelections);
+        Assert.Equal(1, resolutions.ActorMappings);
+        Assert.Equal(principal.Claims.Count(), resolutions.ClaimMappings);
     }
 
     private static async Task<IHost> CreateHost(
@@ -2422,7 +3064,14 @@ public sealed class WorkableSignalRTests
         bool authenticated = true,
         IEnumerable<string>? groups = null,
         Action<IServiceCollection>? configureServices = null,
-        ClaimsPrincipal? principal = null)
+        ClaimsPrincipal? principal = null,
+        string? aliasHubPath = null,
+        bool mapSignalR = true,
+        string? authorizationPolicy = null,
+        bool useHostFallbackPolicy = false,
+        bool mapHttpApi = true,
+        bool useSignalRAccessTokenMiddleware = true,
+        Action<IServiceCollection>? configureServicesAfterSignalR = null)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -2460,6 +3109,7 @@ public sealed class WorkableSignalRTests
                             configureSignalR?.Invoke(options);
                         });
                     }
+                    configureServicesAfterSignalR?.Invoke(services);
                 });
                 web.Configure(app =>
                 {
@@ -2473,13 +3123,31 @@ public sealed class WorkableSignalRTests
                     }
 
                     app.UseRouting();
+                    if (useSignalRAccessTokenMiddleware)
+                    {
+                        app.UseWorkableSignalRAccessTokens();
+                    }
                     app.UseAuthorization();
                     app.UseEndpoints(endpoints =>
                     {
-                        endpoints.MapWorkableApi("/workable");
-                        if (addSignalR)
+                        if (mapHttpApi)
                         {
-                            endpoints.MapWorkableSignalR(hubPath);
+                            endpoints.MapWorkableApi("/workable");
+                        }
+                        if (addSignalR && mapSignalR)
+                        {
+                            endpoints.MapWorkableSignalR(
+                                hubPath,
+                                authorizationPolicy: authorizationPolicy,
+                                useHostFallbackPolicy: useHostFallbackPolicy);
+                            if (aliasHubPath is not null)
+                            {
+                                endpoints.MapWorkableSignalR(
+                                    aliasHubPath,
+                                    advertise: false,
+                                    authorizationPolicy: authorizationPolicy,
+                                    useHostFallbackPolicy: useHostFallbackPolicy);
+                            }
                         }
                     });
                 });
@@ -2490,10 +3158,104 @@ public sealed class WorkableSignalRTests
         return host;
     }
 
-    private static HubConnection CreateConnection(IHost host, string? accessToken = null)
+    private sealed class HostRealtimeCapabilityProvider : IWorkRealtimeCapabilityProvider
+    {
+        public WorkRealtimeCapability GetCapability()
+            => new(true, "host-realtime", "/host/realtime");
+    }
+
+    private sealed class ScopedActorMarker
+    {
+        public string ActorId { get; } = Guid.NewGuid().ToString("D");
+    }
+
+    private sealed class ScopedActorClaimsMapper(ScopedActorMarker marker) : IWorkActorClaimsMapper
+    {
+        public bool TryCreate(ClaimsIdentity identity, out WorkActor actor)
+        {
+            actor = new WorkActor(marker.ActorId);
+            return true;
+        }
+    }
+
+    private sealed class ConnectionResolutionCounter
+    {
+        private int identitySelections;
+        private int actorMappings;
+        private int claimMappings;
+
+        public int IdentitySelections => this.identitySelections;
+
+        public int ActorMappings => this.actorMappings;
+
+        public int ClaimMappings => this.claimMappings;
+
+        public void RecordIdentitySelection() => Interlocked.Increment(ref this.identitySelections);
+
+        public void RecordActorMapping() => Interlocked.Increment(ref this.actorMappings);
+
+        public void RecordClaimMapping() => Interlocked.Increment(ref this.claimMappings);
+    }
+
+    private sealed class CountingIdentitySelector(ConnectionResolutionCounter resolutions)
+        : IWorkClaimsIdentitySelector
+    {
+        public ClaimsIdentity? SelectIdentity(ClaimsPrincipal principal)
+        {
+            resolutions.RecordIdentitySelection();
+            return principal.Identity as ClaimsIdentity;
+        }
+    }
+
+    private sealed class CountingActorMapper(ConnectionResolutionCounter resolutions)
+        : IWorkActorClaimsMapper
+    {
+        public bool TryCreate(ClaimsIdentity identity, out WorkActor actor)
+        {
+            resolutions.RecordActorMapping();
+            actor = new WorkActor("connection-actor");
+            return true;
+        }
+    }
+
+    private sealed class CountingGroupMapper(ConnectionResolutionCounter resolutions)
+        : IWorkAuthorizationGroupClaimMapper
+    {
+        public bool TryMap(
+            ClaimsIdentity identity,
+            Claim claim,
+            out IReadOnlyList<string> groups)
+        {
+            resolutions.RecordClaimMapping();
+            groups = string.Equals(claim.Type, "groups", StringComparison.OrdinalIgnoreCase)
+                ? [claim.Value]
+                : [];
+            return true;
+        }
+    }
+
+    private sealed class HostOwnedPayloadSerializer : IWorkableSignalRPayloadSerializer
+    {
+        public object? Serialize<T>(T value) => value;
+    }
+
+    private sealed class EmptyAuthorizationGroupProvider : IWorkAuthorizationGroupProvider
+    {
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlySet<string>>(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static HubConnection CreateConnection(
+        IHost host,
+        string? accessToken = null,
+        string hubPath = "/workable/realtime")
         => new HubConnectionBuilder()
             .WithUrl(
-                "http://localhost/workable/realtime",
+                $"http://localhost{hubPath}",
                 options =>
                 {
                     options.Transports = HttpTransportType.LongPolling;
@@ -2519,12 +3281,55 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
+    public async Task SignalRConnectionClosesWhenItsExplicitAuthenticationTicketExpires()
+    {
+        using var host = await CreateExplicitSchemeSignalRHost();
+        var authentication = host.Services.GetRequiredService<WorkableSchemeChallengeProbe>();
+        authentication.AmbientAuthenticationExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(5);
+        authentication.WorkableAuthenticationExpiresUtc = DateTimeOffset.UtcNow.AddMilliseconds(300);
+        await using var connection = CreateConnection(
+            host,
+            accessToken: WorkableSchemeAuthenticationTestSupport.WorkableToken);
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.Closed += _ =>
+        {
+            closed.TrySetResult();
+            return Task.CompletedTask;
+        };
+
+        await connection.StartAsync();
+
+        await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(HubConnectionState.Disconnected, connection.State);
+    }
+
+    [Fact]
+    public async Task SignalRConnectionAcceptsLongLivedExplicitAuthenticationTicket()
+    {
+        using var host = await CreateExplicitSchemeSignalRHost();
+        var authentication = host.Services.GetRequiredService<WorkableSchemeChallengeProbe>();
+        authentication.WorkableAuthenticationExpiresUtc = DateTimeOffset.UtcNow.AddDays(90);
+        await using var connection = CreateConnection(
+            host,
+            accessToken: WorkableSchemeAuthenticationTestSupport.WorkableToken);
+
+        await connection.StartAsync();
+
+        Assert.Equal(HubConnectionState.Connected, connection.State);
+        await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
+    }
+
+    [Fact]
     public async Task SignalRCanUseExplicitWorkableAuthenticationSchemeWithoutChangingHostDefaultScheme()
     {
         using var host = await CreateExplicitSchemeSignalRHost();
         await using var unauthorized = CreateConnection(host);
 
-        await Assert.ThrowsAnyAsync<Exception>(() => unauthorized.StartAsync());
+        await unauthorized.StartAsync();
+        await Assert.ThrowsAnyAsync<Exception>(() => unauthorized.InvokeAsync(
+            "WatchEvents",
+            new WorkableRealtimeEventCriteria(),
+            null));
 
         await using var authorized = CreateConnection(
             host,
@@ -2534,7 +3339,156 @@ public sealed class WorkableSignalRTests
     }
 
     [Fact]
-    public async Task SignalRUsesWorkableTransportSchemeWhenHostFallbackPolicyTargetsAnotherScheme()
+    public async Task SignalRPreservesTheHostEndpointRedirectChallenge()
+    {
+        using var host = await CreateExplicitSchemeSignalRHost();
+        var challenge = host.Services.GetRequiredService<WorkableSchemeChallengeProbe>();
+        challenge.AuthenticateAmbient = false;
+        challenge.StatusCode = StatusCodes.Status302Found;
+        challenge.Location = "/host-login";
+        var client = host.GetTestClient();
+        using var content = new StringContent(string.Empty);
+
+        using var response = await client.PostAsync(
+            "/workable/realtime/negotiate?negotiateVersion=1",
+            content);
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal("/host-login", response.Headers.Location?.OriginalString);
+        Assert.Equal(
+            WorkableSchemeAuthenticationTestSupport.AmbientScheme,
+            Assert.Single(response.Headers.GetValues(WorkableSchemeChallengeProbe.HeaderName)));
+        Assert.Empty(await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SignalRQueryTokenUsesTheActualMappedHubPath()
+    {
+        const string HubPath = "/custom/realtime";
+        using var host = await CreateExplicitSchemeSignalRHost(HubPath);
+        var client = host.GetTestClient();
+        using var mappedResponse = await client.GetAsync(
+            $"{HubPath}?access_token={WorkableSchemeAuthenticationTestSupport.WorkableToken}");
+        using var unrelatedResponse = await client.GetAsync(
+            $"/unrelated/workable/realtime/probe?access_token={WorkableSchemeAuthenticationTestSupport.WorkableToken}");
+        await using var connection = CreateConnection(
+            host,
+            accessToken: WorkableSchemeAuthenticationTestSupport.WorkableToken,
+            hubPath: HubPath);
+
+        Assert.NotEqual(HttpStatusCode.Unauthorized, mappedResponse.StatusCode);
+        Assert.Equal(string.Empty, await unrelatedResponse.Content.ReadAsStringAsync());
+        await connection.StartAsync();
+        await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
+    }
+
+    [Fact]
+    public async Task SignalRQueryTokenUsesTheHostDefaultSchemeWithAFallbackPolicy()
+    {
+        using var host = await CreateEntraSignalRHost(
+            mapInboundClaims: false,
+            explicitlySelectScheme: false,
+            configureFallbackPolicy: true);
+        var token = EntraJwtTestSupport.CreateToken(
+            new Claim("oid", EntraJwtTestSupport.ActorObjectId),
+            new Claim(
+                WorkableEntraAuthorizationDefaults.ScopeClaimType,
+                $"{WorkableEntraAuthorizationDefaults.ReadScope} {WorkableEntraAuthorizationDefaults.ExecuteScope}"));
+        var client = host.GetTestClient();
+        using var response = await client.GetAsync($"/workable/realtime?access_token={token}");
+        await using var connection = CreateConnection(host, token);
+
+        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        await connection.StartAsync();
+        await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
+    }
+
+    [Fact]
+    public async Task SignalRRejectsAnEmptyEnabledQueryTokenName()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CreateHost(
+            addSignalR: true,
+            configureSignalR: options => options.AccessTokenQueryStringName = " "));
+
+        Assert.Contains("query string name", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SignalRDoesNotValidateQueryTokenOptionsWhenTheOptionalMiddlewareIsOmitted()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureSignalR: options => options.AccessTokenQueryStringName = " ",
+            useSignalRAccessTokenMiddleware: false);
+
+        using var response = await host.GetTestClient().GetAsync("/workable/realtime");
+
+        Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SignalRRejectsMalformedRealtimeOptionsWhenMapped()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CreateHost(
+            addSignalR: true,
+            configureSignalR: options => options.PublishInterval = TimeSpan.Zero));
+
+        Assert.Contains(
+            nameof(WorkableSignalROptions.PublishInterval),
+            exception.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SignalRDoesNotValidateRealtimeOptionsWhenTheHubIsNotMapped()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureSignalR: options => options.PublishInterval = TimeSpan.Zero,
+            mapSignalR: false);
+
+        Assert.NotNull(host.Services.GetRequiredService<IOptions<WorkableSignalROptions>>());
+    }
+
+    [Fact]
+    public async Task SignalRAllowsAnEmptyQueryTokenNameWhenPromotionIsDisabled()
+    {
+        using var host = await CreateHost(
+            addSignalR: true,
+            configureSignalR: options =>
+            {
+                options.PromoteAccessTokensFromQueryString = false;
+                options.AccessTokenQueryStringName = " ";
+            });
+
+        using var response = await host.GetTestClient().GetAsync("/workable/realtime");
+
+        Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SignalRRejectsAnEmptyAuthorizationPolicyName()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() => CreateHost(
+            addSignalR: true,
+            authorizationPolicy: " "));
+
+        Assert.Equal("authorizationPolicy", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task SignalRRejectsSelectingNamedAndFallbackPoliciesTogether()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() => CreateHost(
+            addSignalR: true,
+            authorizationPolicy: "HostPolicy",
+            useHostFallbackPolicy: true));
+
+        Assert.Equal("useHostFallbackPolicy", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task SignalRUsesTheHostDefaultPolicyInsteadOfTheFallbackPolicy()
     {
         using var host = await CreateExplicitSchemeSignalRHostWithFallbackPolicy();
         await using var connection = CreateConnection(
@@ -2545,7 +3499,47 @@ public sealed class WorkableSignalRTests
         await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
     }
 
-    private static async Task<IHost> CreateExplicitSchemeSignalRHost()
+    [Fact]
+    public async Task SignalRPreservesTheHostDefaultAuthorizationPolicy()
+    {
+        using var host = await CreateExplicitSchemeSignalRHostWithFallbackPolicy(useDefaultPolicy: true);
+        await using var connection = CreateConnection(
+            host,
+            accessToken: WorkableSchemeAuthenticationTestSupport.WorkableToken);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => connection.StartAsync());
+    }
+
+    [Fact]
+    public async Task SignalRUsesAHostNamedPolicyWithoutAlsoApplyingTheDefaultPolicy()
+    {
+        const string PolicyName = "HostWorkableEntra";
+        using var host = await CreateExplicitSchemeSignalRHostWithFallbackPolicy(
+            useDefaultPolicy: true,
+            authorizationPolicy: PolicyName);
+        await using var connection = CreateConnection(
+            host,
+            accessToken: WorkableSchemeAuthenticationTestSupport.WorkableToken);
+
+        await connection.StartAsync();
+        await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
+    }
+
+    [Fact]
+    public async Task SignalRCanLeaveAuthorizationMetadataToTheHostFallbackPolicy()
+    {
+        using var host = await CreateExplicitSchemeSignalRHostWithFallbackPolicy(
+            useHostFallbackPolicy: true);
+        await using var connection = CreateConnection(
+            host,
+            accessToken: WorkableSchemeAuthenticationTestSupport.WorkableToken);
+
+        await connection.StartAsync();
+        await connection.InvokeAsync("WatchEvents", new WorkableRealtimeEventCriteria(), null);
+    }
+
+    private static async Task<IHost> CreateExplicitSchemeSignalRHost(
+        string hubPath = "/workable/realtime")
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -2582,12 +3576,16 @@ public sealed class WorkableSignalRTests
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.UseWorkableSignalRAccessTokens();
                     app.UseAuthentication();
                     app.UseAuthorization();
                     app.UseEndpoints(endpoints =>
                     {
                         endpoints.MapWorkableApi("/workable");
-                        endpoints.MapWorkableSignalR();
+                        endpoints.MapGet(
+                            "/unrelated/workable/realtime/probe",
+                            context => context.Response.WriteAsync(context.Request.Headers.Authorization.ToString()));
+                        endpoints.MapWorkableSignalR(hubPath);
                     });
                 });
             })
@@ -2597,7 +3595,115 @@ public sealed class WorkableSignalRTests
         return host;
     }
 
-    private static async Task<IHost> CreateExplicitSchemeSignalRHostWithFallbackPolicy()
+    private static async Task<IHost> CreateEntraSignalRHost(
+        bool mapInboundClaims,
+        bool explicitlySelectScheme,
+        bool configureFallbackPolicy = false)
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(web =>
+            {
+                web.UseTestServer();
+                web.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services
+                        .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+                        .AddJwtBearer(
+                            JwtBearerDefaults.AuthenticationScheme,
+                            jwt =>
+                            {
+                                EntraJwtTestSupport.ConfigureValidation(jwt);
+                                jwt.MapInboundClaims = mapInboundClaims;
+                            });
+                    if (configureFallbackPolicy)
+                    {
+                        services.AddAuthorization(options =>
+                        {
+                            options.FallbackPolicy = new AuthorizationPolicyBuilder()
+                                .RequireAuthenticatedUser()
+                                .Build();
+                        });
+                    }
+                    if (explicitlySelectScheme)
+                    {
+                        services.AddWorkableEntraAuthorization(options =>
+                            options.AuthenticationScheme = JwtBearerDefaults.AuthenticationScheme);
+                    }
+                    else
+                    {
+                        services.AddWorkableEntraAuthorization();
+                    }
+                    services.AddTransportTestAuthorization(
+                    [
+                        WorkableEntraAuthorizationDefaults.ReadScope,
+                        WorkableEntraAuthorizationDefaults.ExecuteScope,
+                    ]);
+                    services.AddWorkableSystem(builder =>
+                    {
+                        builder.StartWithHost();
+                        builder.RequireAuthorization();
+                        builder.ConfigureAuthorization(authorization => authorization
+                            .AllowReadAllWorkToGroups(WorkableEntraAuthorizationDefaults.ReadScope)
+                            .AllowOperateAllWorkToGroups(WorkableEntraAuthorizationDefaults.ExecuteScope));
+                        builder.AddWork(
+                            WorkDefinition.Create(
+                                "signalr.entra-worker",
+                                configuration: WorkConfiguration.Default with
+                                {
+                                    Start = WorkStartConfiguration.DoNotStart,
+                                }),
+                            SuccessfulWork);
+                    });
+                    services.AddWorkableSignalR(options =>
+                    {
+                        options.PublishInterval = TimeSpan.FromMilliseconds(50);
+                    });
+                });
+                web.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseWorkableSignalRAccessTokens();
+                    app.UseAuthentication();
+                    app.UseAuthorization();
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableSignalR());
+                });
+            })
+            .Build();
+
+        await host.StartAsync();
+        return host;
+    }
+
+    private static async Task<IWorkerHandle> EnqueueEntraWorker(IWorkSystem system, WorkActor actor)
+    {
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            actor,
+            "Create an Entra actor-scoped SignalR test worker.",
+            isAuthenticated: true) with
+        {
+            Authorization = WorkAuthorizationSnapshot.CreateForSystem(
+                systemName: null,
+                actor,
+                [
+                    WorkableEntraAuthorizationDefaults.ReadScope,
+                    WorkableEntraAuthorizationDefaults.ExecuteScope,
+                ],
+                readableDefinitionIds: null,
+                isAuthenticated: true),
+        };
+        var session = await system.CreateSession(requestContext);
+        var worker = await session.Queue.Enqueue("signalr.entra-worker");
+        await TestEventually.Until(async () => (await session.Query.Workers(
+            new WorkerCriteria(ActorId: actor.Id))).Workers.Any(candidate => candidate.Id == worker.WorkerId));
+        return worker;
+    }
+
+    private static async Task<IHost> CreateExplicitSchemeSignalRHostWithFallbackPolicy(
+        bool useDefaultPolicy = false,
+        string? authorizationPolicy = null,
+        bool useHostFallbackPolicy = false)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -2609,10 +3715,33 @@ public sealed class WorkableSignalRTests
                     services.AddWorkableSchemeTestAuthentication();
                     services.AddAuthorization(options =>
                     {
-                        options.FallbackPolicy = new AuthorizationPolicyBuilder(
-                            WorkableSchemeAuthenticationTestSupport.AmbientScheme)
-                            .RequireClaim("host-app")
-                            .Build();
+                        var policy = useHostFallbackPolicy
+                            ? new AuthorizationPolicyBuilder(
+                                    WorkableSchemeAuthenticationTestSupport.WorkableBearerScheme)
+                                .RequireAuthenticatedUser()
+                                .Build()
+                            : new AuthorizationPolicyBuilder(
+                                    WorkableSchemeAuthenticationTestSupport.AmbientScheme)
+                                .RequireClaim("host-app")
+                                .Build();
+                        if (useDefaultPolicy)
+                        {
+                            options.DefaultPolicy = policy;
+                        }
+                        else
+                        {
+                            options.FallbackPolicy = policy;
+                        }
+
+                        if (authorizationPolicy is not null)
+                        {
+                            options.AddPolicy(
+                                authorizationPolicy,
+                                new AuthorizationPolicyBuilder(
+                                    WorkableSchemeAuthenticationTestSupport.WorkableBearerScheme)
+                                    .RequireAuthenticatedUser()
+                                    .Build());
+                        }
                     });
                     services.AddTransportTestAuthorization();
                     services.AddSingleton<SignalRWorkGate>();
@@ -2641,12 +3770,15 @@ public sealed class WorkableSignalRTests
                 web.Configure(app =>
                 {
                     app.UseRouting();
+                    app.UseWorkableSignalRAccessTokens();
                     app.UseAuthentication();
                     app.UseAuthorization();
                     app.UseEndpoints(endpoints =>
                     {
                         endpoints.MapWorkableApi("/workable");
-                        endpoints.MapWorkableSignalR();
+                        endpoints.MapWorkableSignalR(
+                            authorizationPolicy: authorizationPolicy,
+                            useHostFallbackPolicy: useHostFallbackPolicy);
                     });
                 });
             })
@@ -2981,6 +4113,15 @@ public sealed class WorkableSignalRTests
             => throw new KeyNotFoundException();
     }
 
+    private sealed class ReplayGapIterationStatusStream(WorkIterationStatusGapException gap) :
+        IWorkIterationStatusStream
+    {
+        public IWorkIterationStatusSubscription Subscribe(
+            WorkerIterationReference iteration,
+            long afterSequence = 0)
+            => throw gap;
+    }
+
     private sealed class LimitedIterationStatusStream(WorkerIterationReference expectedIteration) :
         IWorkIterationStatusStream
     {
@@ -2991,6 +4132,14 @@ public sealed class WorkableSignalRTests
             Assert.Equal(expectedIteration, iteration);
             throw new WorkIterationStatusSubscriptionLimitException(iteration, 1, isSystemLimit: false);
         }
+    }
+
+    private sealed class ThrowingIterationStatusStream(Exception exception) : IWorkIterationStatusStream
+    {
+        public IWorkIterationStatusSubscription Subscribe(
+            WorkerIterationReference iteration,
+            long afterSequence = 0)
+            => throw exception;
     }
 
     private sealed class ManualRealtimeTimerFactory : IWorkableRealtimeTimerFactory

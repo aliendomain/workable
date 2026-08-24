@@ -1,8 +1,12 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -17,6 +21,48 @@ namespace Workable.Tests;
 [Trait("Category", "Mcp")]
 public sealed class WorkableMcpTests
 {
+    [Fact]
+    public void McpRegistrationAppliesHostToolOptions()
+    {
+        using var provider = new ServiceCollection()
+            .AddWorkableMcpServer(options => options.IncludeActionTools = false)
+            .BuildServiceProvider();
+
+        Assert.False(provider.GetRequiredService<IOptions<WorkableMcpServerOptions>>().Value.IncludeActionTools);
+    }
+
+    [Fact]
+    public void McpMappingRejectsUnauthorisedAndUnknownSystems()
+    {
+        using var unauthorisedProvider = new ServiceCollection()
+            .AddRouting()
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create("mcp.mapping.unauthorised", configuration: AllowMcp()),
+                SuccessfulWork))
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var unauthorisedEndpoints = new TestEndpointRouteBuilder(unauthorisedProvider);
+
+        var unauthorised = Assert.Throws<InvalidOperationException>(() =>
+        {
+            unauthorisedEndpoints.MapWorkableMcp(useHostFallbackPolicy: true);
+        });
+
+        Assert.Contains("requires authorization-enabled systems", unauthorised.Message, StringComparison.Ordinal);
+
+        using var authorisedProvider = CreateProvider(
+            WorkDefinition.Create("mcp.mapping.authorised", configuration: AllowMcp()),
+            SuccessfulWork);
+        var authorisedEndpoints = new TestEndpointRouteBuilder(authorisedProvider);
+
+        var missing = Assert.Throws<InvalidOperationException>(() =>
+        {
+            authorisedEndpoints.MapWorkableMcp(systemName: "missing", useHostFallbackPolicy: true);
+        });
+
+        Assert.Contains("was not found", missing.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task McpServerExposesAndCallsPersistentExecutionDiagnosticTools()
     {
@@ -101,6 +147,13 @@ public sealed class WorkableMcpTests
             options: null,
             systemName: null,
             requestContext);
+        repository.Artifact = null;
+        var missingGetResult = await router.CallTool(
+            "workable_get_execution_diagnostic",
+            getArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext);
 
         Assert.Contains(tools, tool => tool.ToolName == "workable_query_execution_diagnostics");
         Assert.Contains(tools, tool => tool.ToolName == "workable_get_execution_diagnostic");
@@ -113,6 +166,8 @@ public sealed class WorkableMcpTests
         Assert.Equal(12, repository.LastCriteria?.Take);
         Assert.False(getResult.IsError);
         Assert.Contains("MCP persisted warning", getResult.Json, StringComparison.Ordinal);
+        Assert.False(missingGetResult.IsError);
+        Assert.Contains("\"found\":false", missingGetResult.Json, StringComparison.Ordinal);
         Assert.Equal(summary.WorkerId, repository.LastGetRequest?.WorkerId);
         Assert.Equal(summary.IterationSequence, repository.LastGetRequest?.IterationSequence);
     }
@@ -149,7 +204,78 @@ public sealed class WorkableMcpTests
         Assert.DoesNotContain(tools, tool =>
             tool.ToolName is "workable_query_execution_diagnostics" or "workable_get_execution_diagnostic");
         Assert.True(result.IsError);
-        Assert.Contains("workable.mcp.authorization_denied", result.Json, StringComparison.Ordinal);
+        Assert.Contains("workable.mcp.tool_not_found", result.Json, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(WorkExecutionDiagnosticCriteria.MaximumTake + 1)]
+    public async Task McpPersistentExecutionDiagnosticQueryRejectsOutOfRangeTake(int take)
+    {
+        var repository = new TestExecutionDiagnosticsRepository();
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
+            .AddSingleton<IWorkExecutionDiagnosticsRepository>(repository)
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.ConfigureTransportSystemAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("diagnostic-query-bound", configuration: AllowMcp()),
+                    SuccessfulWork);
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        using var arguments = JsonDocument.Parse($$"""{"take":{{take}}}""");
+
+        var result = await router.CallTool(
+            "workable_query_execution_diagnostics",
+            arguments.RootElement,
+            options: null,
+            systemName: null,
+            CreateMcpRequestContext("Attempt an unbounded diagnostics query."));
+
+        Assert.True(result.IsError);
+        Assert.Contains("workable.mcp.arguments_invalid", result.Json, StringComparison.Ordinal);
+        Assert.Contains("between 1 and 1000", result.Json, StringComparison.Ordinal);
+        Assert.Null(repository.LastCriteria);
+    }
+
+    [Fact]
+    public async Task McpRedactsExecutionDiagnosticRepositoryFailures()
+    {
+        const string SensitiveMessage = "database-password=repository-secret";
+        var repository = new TestExecutionDiagnosticsRepository
+        {
+            QueryException = new ArgumentException(SensitiveMessage),
+        };
+        await using var provider = new ServiceCollection()
+            .AddTransportTestAuthorization()
+            .AddSingleton<IWorkExecutionDiagnosticsRepository>(repository)
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.ConfigureTransportSystemAuthorization();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("diagnostic-redaction", configuration: AllowMcp()),
+                    SuccessfulWork);
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        using var arguments = JsonDocument.Parse("""{"take":10}""");
+
+        var result = await router.CallTool(
+            "workable_query_execution_diagnostics",
+            arguments.RootElement,
+            options: null,
+            systemName: null,
+            CreateMcpRequestContext("Verify provider failure redaction."));
+
+        Assert.True(result.IsError);
+        Assert.Contains("workable.mcp.tool_failed", result.Json, StringComparison.Ordinal);
+        Assert.DoesNotContain(SensitiveMessage, result.Json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -179,7 +305,9 @@ public sealed class WorkableMcpTests
         Assert.Equal(definition.InputSchema.JsonSchema, descriptor.InputSchemaJson);
         Assert.Equal(definition.OutputSchema.JsonSchema, descriptor.OutputSchemaJson);
         Assert.False(descriptor.UsesFallbackInputSchema);
-        Assert.Same(metadata, descriptor.Metadata);
+        Assert.NotSame(metadata, descriptor.Metadata);
+        Assert.Equal(metadata.Purpose, descriptor.Metadata?.Purpose);
+        Assert.Equal(metadata.Capabilities, descriptor.Metadata?.Capabilities);
     }
 
     [Fact]
@@ -198,6 +326,199 @@ public sealed class WorkableMcpTests
         Assert.True(included.UsesFallbackInputSchema);
         Assert.Equal("""{"type":"object","additionalProperties":true}""", included.InputSchemaJson);
         Assert.Empty(excluded);
+    }
+
+    [Fact]
+    public async Task ToolDescriptorsUseDiscoveryWithoutGrantingMcpInvocation()
+    {
+        var definition = WorkDefinition.Create(
+            "discovery.only",
+            inputSchema: WorkSchema.FromType<string>(),
+            configuration: AllowMcp());
+        using var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new FixedGroupProvider([]))
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization()
+                .AddWork(
+                    definition,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorize => authorize.AllowDiscoverToKnownAuthenticatedUsers()))
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = WorkRequestContext.Create(
+            WorkInvocationChannel.Mcp,
+            new WorkActor(Id: "known-mcp-discoverer"),
+            "Discover but do not invoke an MCP tool.",
+            isAuthenticated: true);
+
+        var tools = await router.GetTools(requestContext);
+        var workTool = Assert.Single(tools, tool => tool.Kind == WorkableMcpServerToolKind.Work);
+        using var queryArguments = JsonDocument.Parse("""{"take":1}""");
+        using var actionArguments = JsonDocument.Parse($$"""{"workerId":"{{Guid.NewGuid():D}}","revision":0}""");
+        var result = await router.CallTool(
+            workTool.ToolName,
+            arguments: null,
+            options: null,
+            systemName: null,
+            requestContext);
+        var queryResult = await router.CallTool(
+            "workable_query_workers",
+            queryArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext);
+        var actionResult = await router.CallTool(
+            "workable_cancel_worker",
+            actionArguments.RootElement,
+            options: null,
+            systemName: null,
+            requestContext);
+
+        Assert.Equal(definition.Name, workTool.WorkName);
+        Assert.DoesNotContain(tools, tool => tool.Kind is WorkableMcpServerToolKind.Query or WorkableMcpServerToolKind.Action);
+        Assert.True(result.IsError);
+        Assert.Contains("Unauthorized", result.Json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("workable.mcp.tool_not_found", queryResult.Json, StringComparison.Ordinal);
+        Assert.Contains("workable.mcp.tool_not_found", actionResult.Json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task McpActionToolsReflectExactWorkAndWorkflowOperationPermissions()
+    {
+        var definition = WorkDefinition.Create(
+            "queue.only",
+            inputSchema: WorkSchema.FromType<string>(),
+            configuration: AllowMcp());
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new FixedGroupProvider(["queue.only"]))
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.AddWork(
+                    definition,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization.AllowQueueToGroups("queue.only"));
+                builder.AddWorkflow(
+                    WorkflowDefinition.Create("workflow.queue.only"),
+                    workflow => workflow.DispatchWork("child", definition),
+                    authorize: authorization => authorization.AllowQueueToGroups("queue.only"));
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = CreateMcpRequestContext("List operation-scoped MCP tools.");
+
+        var tools = await router.GetTools(requestContext);
+        using var workerArguments = JsonDocument.Parse(
+            $$"""{"workerId":"{{Guid.NewGuid():D}}","revision":0}""");
+        using var workflowArguments = JsonDocument.Parse(
+            $$"""{"runId":"{{Guid.NewGuid():D}}"}""");
+        var workerAction = await router.CallTool(
+            "workable_cancel_worker",
+            workerArguments.RootElement,
+            null,
+            null,
+            requestContext);
+        var workflowAction = await router.CallTool(
+            "workable_cancel_workflow",
+            workflowArguments.RootElement,
+            null,
+            null,
+            requestContext);
+
+        Assert.Contains(tools, tool => tool.Kind == WorkableMcpServerToolKind.Work && tool.WorkName == definition.Name);
+        Assert.Contains(tools, tool => tool.ToolName == "workable_start_workflow");
+        Assert.DoesNotContain(tools, tool => tool.Kind == WorkableMcpServerToolKind.Query);
+        Assert.DoesNotContain(tools, tool => tool.ToolName is
+            "workable_start_worker" or
+            "workable_pause_worker" or
+            "workable_cancel_worker" or
+            "workable_push_worker" or
+            "workable_purge_worker" or
+            "workable_reconfigure_work_definition" or
+            "workable_start_workflow_run" or
+            "workable_pause_workflow_run" or
+            "workable_stop_workflow" or
+            "workable_cancel_workflow");
+        Assert.Contains("workable.mcp.tool_not_found", workerAction.Json, StringComparison.Ordinal);
+        Assert.Contains("workable.mcp.tool_not_found", workflowAction.Json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task McpCanReconfigureDiscoverableDefinitionWithoutReadPermission()
+    {
+        var definition = WorkDefinition.Create("reconfigure.only", configuration: AllowMcp());
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new FixedGroupProvider(["reconfigure.only"]))
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.ConfigureAuthorization(authorization =>
+                    authorization.AllowControlSystemToGroups("reconfigure.only"));
+                builder.AddWork(
+                    definition,
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization
+                        .AllowReadToGroups("inspect")
+                        .AllowOperationsToGroups(
+                            ["reconfigure.only"],
+                            WorkOperationPermissions.ReconfigureDefinition));
+            })
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = CreateMcpRequestContext("Reconfigure without definition read access.");
+        await system.Start(requestContext);
+
+        var callerSession = await system.CreateSession(requestContext);
+        var tools = await router.GetTools(requestContext);
+        using var arguments = JsonDocument.Parse($$"""
+            {
+              "name": "{{definition.Name}}",
+              "revision": {{definition.Revision}},
+              "defaultOptions": {
+                "profilingEnabled": true
+              }
+            }
+            """);
+        var result = await router.CallTool(
+            "workable_reconfigure_work_definition",
+            arguments.RootElement,
+            null,
+            null,
+            requestContext);
+        var inspector = await CreateMcpSessionWithGroups(system, "Inspect reconfigured definition.", "inspect");
+        var reconfigured = Assert.Single(inspector.Catalog.Definitions);
+
+        Assert.Empty(callerSession.Catalog.Definitions);
+        Assert.Single(callerSession.Discovery.Definitions);
+        Assert.Contains(tools, tool => tool.ToolName == "workable_reconfigure_work_definition");
+        Assert.DoesNotContain(tools, tool => tool.Kind == WorkableMcpServerToolKind.Query);
+        Assert.False(result.IsError);
+        var resultJson = JsonNode.Parse(result.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected definition reconfiguration response.");
+        Assert.Equal("Accepted", resultJson["status"]?.GetValue<string>());
+        Assert.Null(resultJson["definition"]);
+        Assert.Equal(1, resultJson["revision"]?.GetValue<long>());
+        Assert.Equal(1, reconfigured.Revision);
+        Assert.True(reconfigured.DefaultOptions.ProfilingEnabled);
+
+        var conflict = await router.CallTool(
+            "workable_reconfigure_work_definition",
+            arguments.RootElement,
+            null,
+            null,
+            requestContext);
+        var conflictJson = JsonNode.Parse(conflict.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected definition conflict response.");
+        Assert.Equal("Conflict", conflictJson["status"]?.GetValue<string>());
+        Assert.Null(conflictJson["definition"]);
+        Assert.Equal(1, conflictJson["revision"]?.GetValue<long>());
     }
 
     [Fact]
@@ -327,18 +648,7 @@ public sealed class WorkableMcpTests
             tool.Kind == WorkableMcpServerToolKind.Query &&
             tool.ToolName == "workable_query_work_iteration_key_types" &&
             tool.Description?.Contains("claim work", StringComparison.OrdinalIgnoreCase) == true);
-        Assert.Contains(tools, tool =>
-            tool.Kind == WorkableMcpServerToolKind.Action &&
-            tool.ToolName == "workable_start_workflow" &&
-            tool.Description?.Contains("registered workflow", StringComparison.OrdinalIgnoreCase) == true);
-        Assert.Contains(tools, tool =>
-            tool.Kind == WorkableMcpServerToolKind.Action &&
-            tool.ToolName == "workable_stop_workflow" &&
-            tool.Description?.Contains("Pause a running workflow run", StringComparison.OrdinalIgnoreCase) == true);
-        Assert.Contains(tools, tool =>
-            tool.Kind == WorkableMcpServerToolKind.Action &&
-            tool.ToolName == "workable_cancel_workflow" &&
-            tool.Description?.Contains("Immediately cancel", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.DoesNotContain(tools, tool => IsWorkflowTool(tool.ToolName));
         Assert.Contains(tools, tool =>
             tool.Kind == WorkableMcpServerToolKind.Action &&
             tool.ToolName == "workable_cancel_worker" &&
@@ -357,12 +667,6 @@ public sealed class WorkableMcpTests
         var actionSchema = JsonNode.Parse(actionTool.InputSchemaJson)
             ?? throw new InvalidOperationException("Expected action tool schema JSON.");
         Assert.NotNull(actionSchema["properties"]?["description"]);
-
-        var workflowTool = Assert.Single(tools, tool => tool.ToolName == "workable_start_workflow");
-        var workflowSchema = JsonNode.Parse(workflowTool.InputSchemaJson)
-            ?? throw new InvalidOperationException("Expected workflow tool schema JSON.");
-        Assert.NotNull(workflowSchema["properties"]?["description"]);
-        Assert.NotNull(workflowSchema["properties"]?["input"]);
 
         var reconfigureTool = Assert.Single(tools, tool => tool.ToolName == "workable_reconfigure_work_definition");
         var reconfigureSchema = JsonNode.Parse(reconfigureTool.InputSchemaJson)
@@ -465,6 +769,9 @@ public sealed class WorkableMcpTests
         await using var provider = CreateProvider(WorkDefinition.Create("known", configuration: AllowMcp()), SuccessfulWork);
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
 
+        var tools = await router.GetTools(
+            CreateMcpRequestContext("List MCP server tools."),
+            systemName: "missing");
         var result = await router.CallTool(
             "workable_query_workers",
             arguments: null,
@@ -472,6 +779,7 @@ public sealed class WorkableMcpTests
             systemName: "missing",
             requestContext: CreateMcpRequestContext("Invoke MCP query tool."));
 
+        Assert.Empty(tools);
         Assert.True(result.IsError);
         Assert.Contains("workable.mcp.system_not_found", result.Json);
     }
@@ -489,14 +797,18 @@ public sealed class WorkableMcpTests
                     WorkDefinition.Create("remote.echo", configuration: AllowMcp()),
                     SuccessfulWork);
             })
+            .AddWorkableSystem("empty", builder => builder.RequireAuthorization())
             .AddWorkableMcpServer()
             .BuildServiceProvider();
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         var requestContext = CreateMcpRequestContext("Invoke MCP named system without connect.");
 
-        var toolsException = await Assert.ThrowsAsync<WorkSystemAccessDeniedException>(async () => await router.GetTools(
+        var tools = await router.GetTools(
             requestContext,
-            systemName: "remote"));
+            systemName: "remote");
+        var emptyTools = await router.GetTools(
+            requestContext,
+            systemName: "empty");
         var result = await router.CallTool(
             "workable_query_work_definitions",
             arguments: null,
@@ -504,9 +816,11 @@ public sealed class WorkableMcpTests
             systemName: "remote",
             requestContext: requestContext);
 
-        Assert.Equal(WorkSystemPermission.AccessSystem, toolsException.Permission);
+        Assert.Empty(tools);
+        Assert.Empty(emptyTools);
         Assert.True(result.IsError);
-        Assert.Contains("system-level access", result.Json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("workable.mcp.system_not_found", result.Json, StringComparison.Ordinal);
+        Assert.DoesNotContain("access", result.Json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -649,7 +963,8 @@ public sealed class WorkableMcpTests
 
         Assert.Empty(tools);
         Assert.True(result.IsError);
-        Assert.Contains("system-level access", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("workable.mcp.system_not_found", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("access", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -744,6 +1059,9 @@ public sealed class WorkableMcpTests
         using var unauthorizedContent = new StringContent("{", System.Text.Encoding.UTF8, "application/json");
         using var unauthorized = await httpClient.PostAsync("/workable/mcp", unauthorizedContent);
         Assert.Equal(System.Net.HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+        Assert.Equal(
+            WorkableSchemeAuthenticationTestSupport.WorkableBearerScheme,
+            Assert.Single(unauthorized.Headers.GetValues(WorkableSchemeChallengeProbe.HeaderName)));
 
         httpClient.DefaultRequestHeaders.Authorization = WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
         var transport = new HttpClientTransport(
@@ -759,6 +1077,116 @@ public sealed class WorkableMcpTests
         var tools = await client.ListToolsAsync();
 
         Assert.Contains(tools, tool => tool.Name == "workable_work_echo_message");
+    }
+
+    [Fact]
+    public async Task MappedHttpMcpPreservesAHostRedirectChallenge()
+    {
+        using var host = await CreateExplicitSchemeMcpHttpHost();
+        var challenge = host.Services.GetRequiredService<WorkableSchemeChallengeProbe>();
+        challenge.StatusCode = StatusCodes.Status302Found;
+        challenge.Location = "/host-login";
+        var httpClient = host.GetTestClient();
+        using var content = new StringContent("{", System.Text.Encoding.UTF8, "application/json");
+
+        using var response = await httpClient.PostAsync("/workable/mcp", content);
+
+        Assert.Equal(System.Net.HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal("/host-login", response.Headers.Location?.OriginalString);
+        Assert.Equal(
+            WorkableSchemeAuthenticationTestSupport.WorkableBearerScheme,
+            Assert.Single(response.Headers.GetValues(WorkableSchemeChallengeProbe.HeaderName)));
+        Assert.Empty(await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task MappedHttpMcpPreservesHostFallbackPolicyWhenAWorkableTransportSchemeIsSelected()
+    {
+        using var host = await CreateExplicitSchemeMcpHttpHost(
+            configureFallbackPolicy: true,
+            useHostFallbackPolicy: true);
+        var httpClient = host.GetTestClient();
+        httpClient.DefaultRequestHeaders.Authorization =
+            WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost/workable/mcp"),
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            await using var client = await McpClient.CreateAsync(transport);
+        });
+    }
+
+    [Fact]
+    public async Task MappedHttpMcpAppliesTheHostDefaultAuthorizationPolicy()
+    {
+        using var host = await CreateExplicitSchemeMcpHttpHost(useDefaultPolicy: true);
+        var httpClient = host.GetTestClient();
+        httpClient.DefaultRequestHeaders.Authorization =
+            WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost/workable/mcp"),
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+
+        await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            await using var client = await McpClient.CreateAsync(transport);
+        });
+    }
+
+    [Fact]
+    public async Task MappedHttpMcpCanUseAHostNamedAuthorizationPolicy()
+    {
+        const string PolicyName = "HostWorkableMcp";
+        using var host = await CreateExplicitSchemeMcpHttpHost(
+            useDefaultPolicy: true,
+            authorizationPolicy: PolicyName);
+        var httpClient = host.GetTestClient();
+        httpClient.DefaultRequestHeaders.Authorization =
+            WorkableSchemeAuthenticationTestSupport.CreateBearerHeader();
+        var transport = new HttpClientTransport(
+            new HttpClientTransportOptions
+            {
+                Endpoint = new Uri("http://localhost/workable/mcp"),
+            },
+            httpClient,
+            loggerFactory: null,
+            ownsHttpClient: false);
+        await using var client = await McpClient.CreateAsync(transport);
+
+        var tools = await client.ListToolsAsync();
+
+        Assert.Contains(tools, tool => tool.Name == "workable_work_echo_message");
+    }
+
+    [Fact]
+    public async Task MappedHttpMcpRejectsSelectingNamedAndFallbackPoliciesTogether()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            CreateExplicitSchemeMcpHttpHost(
+                authorizationPolicy: "HostWorkableMcp",
+                useHostFallbackPolicy: true));
+
+        Assert.Equal("useHostFallbackPolicy", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task MappedHttpMcpRejectsABlankNamedAuthorizationPolicy()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            CreateExplicitSchemeMcpHttpHost(authorizationPolicy: " "));
+
+        Assert.Equal("authorizationPolicy", exception.ParamName);
     }
 
     [Fact]
@@ -889,7 +1317,7 @@ public sealed class WorkableMcpTests
             ?? throw new InvalidOperationException("Expected worker.");
 
         Assert.True(result.IsError);
-        Assert.Contains("Unauthorized", json);
+        Assert.Contains("workable.mcp.tool_not_found", json);
         Assert.Equal(WorkerState.Queued, updated.State);
     }
 
@@ -1118,7 +1546,16 @@ public sealed class WorkableMcpTests
     [Fact]
     public async Task MappedHttpMcpWorkflowStartReturnsToolErrorForUnknownWorkflow()
     {
-        using var host = await CreateMcpHttpHost();
+        using var host = await CreateMcpHttpHost(builder =>
+        {
+            var child = WorkDefinition.Create("mcp.http.workflow.known.child", configuration: AllowMcp());
+            builder.AddAuthorizedTransportWork(child, SuccessfulWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("mcp.http.workflow.known"),
+                workflow => workflow.DispatchWork("child", child),
+                authorize => authorize.AllowOperateToGroups(
+                    TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
         var httpClient = host.GetTestClient();
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -1145,7 +1582,16 @@ public sealed class WorkableMcpTests
     [Fact]
     public async Task MappedHttpMcpWorkflowActionReturnsToolErrorForUnknownRun()
     {
-        using var host = await CreateMcpHttpHost();
+        using var host = await CreateMcpHttpHost(builder =>
+        {
+            var child = WorkDefinition.Create("mcp.http.workflow.action.child", configuration: AllowMcp());
+            builder.AddAuthorizedTransportWork(child, SuccessfulWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("mcp.http.workflow.action"),
+                workflow => workflow.DispatchWork("child", child),
+                authorize => authorize.AllowOperateToGroups(
+                    TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
         var httpClient = host.GetTestClient();
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -1205,13 +1651,22 @@ public sealed class WorkableMcpTests
         var json = ReadToolText(result);
 
         Assert.True(result.IsError);
-        Assert.Contains("workable.workflow.definition.unauthorized", json);
+        Assert.Contains("workable.mcp.tool_not_found", json);
     }
 
     [Fact]
     public async Task MappedHttpMcpWorkflowActionReturnsToolErrorForInvalidArguments()
     {
-        using var host = await CreateMcpHttpHost();
+        using var host = await CreateMcpHttpHost(builder =>
+        {
+            var child = WorkDefinition.Create("mcp.http.workflow.invalid.child", configuration: AllowMcp());
+            builder.AddAuthorizedTransportWork(child, SuccessfulWork);
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("mcp.http.workflow.invalid"),
+                workflow => workflow.DispatchWork("child", child),
+                authorize => authorize.AllowOperateToGroups(
+                    TransportAuthorizationTestSupport.OperateGroups.ToArray()));
+        });
         var httpClient = host.GetTestClient();
         var transport = new HttpClientTransport(
             new HttpClientTransportOptions
@@ -1440,7 +1895,7 @@ public sealed class WorkableMcpTests
             WorkDefinition.Create("mcp.reconfigure.known", configuration: AllowMcp()),
             SuccessfulWork);
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
-        using var missingArguments = JsonDocument.Parse("""{"name":"mcp.reconfigure.missing","revision":0}""");
+        using var missingArguments = JsonDocument.Parse("""{"name":"mcp.reconfigure.missing","revision":0,"defaultOptions":{"profilingEnabled":true}}""");
         using var malformedArguments = JsonDocument.Parse("""{"name":"mcp.reconfigure.known","revision":0,"changes":{"configuration":"invalid"}}""");
 
         var missing = await router.CallTool(
@@ -1459,6 +1914,172 @@ public sealed class WorkableMcpTests
         Assert.Contains("\"status\":\"NotFound\"", missing.Json);
         Assert.True(malformed.IsError);
         Assert.Contains("workable.mcp.arguments_invalid", malformed.Json);
+    }
+
+    [Theory]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"changes\":{}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"changes\":\"invalid\"}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"defaultOptions\":\"invalid\"}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"configuration\":[]}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"changes\":{\"defaultOptions\":{}},\"defaultOptions\":{}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"changes\":{\"unsupported\":{}}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"changes\":{\"configuration\":{},\"Configuration\":{}}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"defaultOptions\":{},\"DefaultOptions\":{}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"defaultOptions\":{\"profilngEnabled\":true}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"defaultOptions\":{\"profilingEnabled\":true},\"unsupported\":true}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"defaultOptions\":{\"profilingEnabled\":true,\"ProfilingEnabled\":false}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"configuration\":{\"coordination\":{\"mode\":\"Local\",\"Mode\":\"Persistent\"}}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"configuration\":{}}")]
+    [InlineData("{\"name\":\"mcp.reconfigure.strict\",\"revision\":0,\"defaultOptions\":{\"unsupportedArray\":[{\"value\":true}]}}")]
+    public async Task McpDefinitionReconfigurationRejectsAmbiguousOrMalformedChangeShapes(string json)
+    {
+        var definition = WorkDefinition.Create("mcp.reconfigure.strict", configuration: AllowMcp());
+        await using var provider = CreateProvider(definition, SuccessfulWork);
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        using var arguments = JsonDocument.Parse(json);
+
+        var result = await router.CallTool(
+            "workable_reconfigure_work_definition",
+            arguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Reject malformed definition reconfiguration."));
+
+        Assert.True(result.IsError);
+        Assert.Contains("workable.mcp.arguments_invalid", result.Json, StringComparison.Ordinal);
+        var session = await CreateMcpSession(
+            provider.GetRequiredService<IWorkSystemRegistry>().Default,
+            "Verify malformed reconfiguration changed nothing.");
+        Assert.Equal(0, Assert.Single(session.Catalog.Definitions).Revision);
+    }
+
+    [Fact]
+    public async Task McpDefinitionReconfigurationRejectsUndefinedProfilingCaptureMode()
+    {
+        var definition = WorkDefinition.Create("mcp.reconfigure.undefined-profile", configuration: AllowMcp());
+        await using var provider = CreateProvider(definition, SuccessfulWork);
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        using var arguments = JsonDocument.Parse("""
+            {
+              "name": "mcp.reconfigure.undefined-profile",
+              "revision": 0,
+              "defaultOptions": {
+                "profilingCaptureMode": 999
+              }
+            }
+            """);
+
+        var result = await router.CallTool(
+            "workable_reconfigure_work_definition",
+            arguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Reject undefined profiling capture mode."));
+        var session = await CreateMcpSession(
+            provider.GetRequiredService<IWorkSystemRegistry>().Default,
+            "Verify undefined profiling capture mode changed nothing.");
+
+        Assert.True(result.IsError);
+        Assert.Contains("workable.options.profiling_capture_mode.invalid", result.Json, StringComparison.Ordinal);
+        Assert.Equal(0, Assert.Single(session.Catalog.Definitions).Revision);
+    }
+
+    [Fact]
+    public async Task McpDefinitionReconfigurationAcceptsNestedChanges()
+    {
+        var definition = WorkDefinition.Create("mcp.reconfigure.nested", configuration: AllowMcp());
+        await using var provider = CreateProvider(definition, SuccessfulWork);
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        using var arguments = JsonDocument.Parse("""
+            {
+              "name": "mcp.reconfigure.nested",
+              "revision": 0,
+              "changes": {
+                "defaultOptions": {
+                  "profilingEnabled": true
+                }
+              }
+            }
+            """);
+
+        var result = await router.CallTool(
+            "workable_reconfigure_work_definition",
+            arguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Apply nested definition reconfiguration."));
+
+        Assert.False(result.IsError);
+        Assert.Contains("\"status\":\"Accepted\"", result.Json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task McpCustomSystemDoesNotExpandCoarseOperateCountsIntoActionTools()
+    {
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new FixedGroupProvider(["coarse.operate"]))
+            .AddWorkableSystem(builder =>
+            {
+                builder.RequireAuthorization();
+                builder.AddWork(
+                    WorkDefinition.Create("mcp.coarse.operation", configuration: AllowMcp()),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization.AllowOperateToGroups("coarse.operate"));
+            })
+            .BuildServiceProvider();
+        var inner = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await inner.Start();
+        var coarseSystem = new CoarseOperationWorkSystem(inner);
+        var router = new WorkableMcpToolRouter(new SingleSystemRegistry(coarseSystem));
+        var options = new WorkableMcpServerOptions
+        {
+            IncludeWorkTools = false,
+            IncludeQueryTools = false,
+            IncludeActionTools = true,
+        };
+        var requestContext = CreateMcpRequestContext("Discover conservative custom-system tools.");
+
+        var tools = await router.GetTools(requestContext, options);
+        using var arguments = JsonDocument.Parse("""{"workerId":"11111111-1111-1111-1111-111111111111","revision":0}""");
+        var directCall = await router.CallTool(
+            "workable_start_worker",
+            arguments.RootElement,
+            options,
+            null,
+            requestContext);
+
+        Assert.Empty(tools);
+        Assert.True(directCall.IsError);
+        Assert.Contains("workable.mcp.tool_not_found", directCall.Json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task McpServerOptionsCanDisableEveryBuiltInToolCategory()
+    {
+        var definition = WorkDefinition.Create("mcp.options.disabled", configuration: AllowMcp());
+        await using var provider = CreateProvider(definition, SuccessfulWork);
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var options = new WorkableMcpServerOptions
+        {
+            IncludeWorkTools = false,
+            IncludeQueryTools = false,
+            IncludeActionTools = false,
+        };
+        var requestContext = CreateMcpRequestContext("Verify an intentionally empty MCP surface.");
+
+        var tools = await router.GetTools(requestContext, options);
+        var result = await router.CallTool(
+            "workable_query_workers",
+            arguments: null,
+            options,
+            systemName: null,
+            requestContext);
+
+        Assert.Empty(tools);
+        Assert.True(result.IsError);
+        Assert.Contains("workable.mcp.tool_not_found", result.Json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1526,6 +2147,9 @@ public sealed class WorkableMcpTests
         var router = provider.GetRequiredService<WorkableMcpToolRouter>();
         await system.Start();
 
+        var workflowRequestContext = CreateMcpRequestContext("Start MCP workflow with input.");
+        var workflowAccess = await system.DescribeAccess(workflowRequestContext);
+        Assert.Equal(1, workflowAccess.OperableWorkflowDefinitionCount);
         using var arguments = JsonDocument.Parse("""
             {
               "name": "mcp.workflow.input",
@@ -1540,7 +2164,7 @@ public sealed class WorkableMcpTests
             arguments.RootElement,
             options: null,
             systemName: null,
-            requestContext: CreateMcpRequestContext("Start MCP workflow with input."));
+            requestContext: workflowRequestContext);
 
         Assert.False(result.IsError);
         Assert.Contains("\"status\":\"Completed\"", result.Json);
@@ -1616,6 +2240,8 @@ public sealed class WorkableMcpTests
             options: null,
             systemName: null,
             requestContext: CreateMcpRequestContext("Stop MCP workflow."));
+        var stoppedJson = JsonNode.Parse(stopped.Json)?.AsObject()
+            ?? throw new InvalidOperationException("Expected workflow stop response.");
         slowRelease.TrySetResult();
 
         WorkflowRunSnapshot? completed = null;
@@ -1629,6 +2255,8 @@ public sealed class WorkableMcpTests
 
         Assert.False(started.IsError);
         Assert.False(stopped.IsError);
+        Assert.Null(startedJson["run"]);
+        Assert.Null(stoppedJson["run"]);
         Assert.Equal(0, Volatile.Read(ref fastRuns));
         Assert.Equal(WorkflowRunStatus.Paused, completed!.Status);
     }
@@ -1975,6 +2603,14 @@ public sealed class WorkableMcpTests
         var filteredJson = JsonNode.Parse(filtered.Json)?.AsObject() ?? throw new InvalidOperationException("Expected workflow query response.");
         Assert.Single(filteredJson["runs"]?.AsArray() ?? throw new InvalidOperationException("Expected workflow runs."));
 
+        using var pagedArguments = JsonDocument.Parse("""{"includeFinal":true,"skip":1,"take":1}""");
+        var paged = await router.CallTool("workable_query_workflow_runs", pagedArguments.RootElement, null, null, CreateMcpRequestContext("Page workflow runs."));
+        var pagedJson = JsonNode.Parse(paged.Json)?.AsObject() ?? throw new InvalidOperationException("Expected paged workflow query response.");
+        Assert.Single(pagedJson["runs"]?.AsArray() ?? throw new InvalidOperationException("Expected paged workflow runs."));
+        Assert.Equal(2, pagedJson["totalCount"]?.GetValue<int>());
+        Assert.Equal(1, pagedJson["skip"]?.GetValue<int>());
+        Assert.Equal(1, pagedJson["take"]?.GetValue<int>());
+
         using var detailArguments = JsonDocument.Parse($$"""{"runId":"{{runId}}","childSampleSize":1}""");
         var detail = await router.CallTool("workable_get_workflow_run", detailArguments.RootElement, null, null, CreateMcpRequestContext("Get workflow detail."));
         var detailJson = JsonNode.Parse(detail.Json)?.AsObject() ?? throw new InvalidOperationException("Expected workflow detail response.");
@@ -1987,11 +2623,50 @@ public sealed class WorkableMcpTests
         using var missingArguments = JsonDocument.Parse($$"""{"runId":"{{Guid.NewGuid():D}}"}""");
         var missing = await router.CallTool("workable_get_workflow_run", missingArguments.RootElement, null, null, CreateMcpRequestContext("Get missing workflow detail."));
         var missingJson = JsonNode.Parse(missing.Json)?.AsObject() ?? throw new InvalidOperationException("Expected workflow detail response.");
+        using var negativeSampleArguments = JsonDocument.Parse("""{"childSampleSize":-1}""");
+        var negativeSample = await router.CallTool(
+            "workable_query_workflow_runs",
+            negativeSampleArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Reject negative child sample size."));
+        using var oversizedSampleArguments = JsonDocument.Parse(
+            $$"""{"runId":"{{runId}}","childSampleSize":{{WorkflowRunViewAdapter.MaximumChildSampleSize + 1}}}""");
+        var oversizedSample = await router.CallTool(
+            "workable_get_workflow_run",
+            oversizedSampleArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Reject oversized child sample size."));
+        using var oversizedPageArguments = JsonDocument.Parse(
+            $$"""{"take":{{WorkflowRunViewAdapter.MaximumRunPageSize + 1}}}""");
+        var oversizedPage = await router.CallTool(
+            "workable_query_workflow_runs",
+            oversizedPageArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Reject oversized workflow page."));
+        using var oversizedSkipArguments = JsonDocument.Parse(
+            $$"""{"skip":{{WorkflowRunViewAdapter.MaximumRunPageSkip + 1}}}""");
+        var oversizedSkip = await router.CallTool(
+            "workable_query_workflow_runs",
+            oversizedSkipArguments.RootElement,
+            null,
+            null,
+            CreateMcpRequestContext("Reject oversized workflow offset."));
 
         release.TrySetResult();
 
         Assert.False(missing.IsError);
         Assert.False(missingJson["found"]?.GetValue<bool>() ?? true);
+        Assert.True(negativeSample.IsError);
+        Assert.True(oversizedSample.IsError);
+        Assert.True(oversizedPage.IsError);
+        Assert.True(oversizedSkip.IsError);
+        Assert.Contains("between 0 and 25", negativeSample.Json);
+        Assert.Contains("between 0 and 25", oversizedSample.Json);
+        Assert.Contains("between 1 and 100", oversizedPage.Json);
+        Assert.Contains($"between 0 and {WorkflowRunViewAdapter.MaximumRunPageSkip}", oversizedSkip.Json);
     }
 
     [Fact]
@@ -2050,8 +2725,6 @@ public sealed class WorkableMcpTests
             options: null,
             systemName: null,
             requestContext: CreateMcpRequestContext("Query workflow runs without workflow read."));
-        var hiddenListJson = JsonNode.Parse(hiddenList.Json)?.AsObject()
-            ?? throw new InvalidOperationException("Expected workflow query response.");
 
         using var detailArguments = JsonDocument.Parse($$"""{"runId":"{{runId}}"}""");
         var hiddenDetail = await router.CallTool(
@@ -2060,11 +2733,9 @@ public sealed class WorkableMcpTests
             options: null,
             systemName: null,
             requestContext: CreateMcpRequestContext("Get workflow detail without workflow read."));
-        var hiddenDetailJson = JsonNode.Parse(hiddenDetail.Json)?.AsObject()
-            ?? throw new InvalidOperationException("Expected workflow detail response.");
 
-        Assert.Empty(hiddenListJson["runs"]?.AsArray() ?? throw new InvalidOperationException("Expected workflow runs."));
-        Assert.False(hiddenDetailJson["found"]?.GetValue<bool>() ?? true);
+        Assert.Contains("workable.mcp.tool_not_found", hiddenList.Json, StringComparison.Ordinal);
+        Assert.Contains("workable.mcp.tool_not_found", hiddenDetail.Json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2179,7 +2850,7 @@ public sealed class WorkableMcpTests
                         });
                     }
 
-                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp(useHostFallbackPolicy: true));
                 });
             })
             .Build();
@@ -2235,8 +2906,11 @@ public sealed class WorkableMcpTests
                     });
                     app.UseEndpoints(endpoints =>
                     {
-                        endpoints.MapWorkableMcp();
-                        endpoints.MapWorkableMcp("/workable/systems/remote/mcp", systemName: "remote");
+                        endpoints.MapWorkableMcp(useHostFallbackPolicy: true);
+                        endpoints.MapWorkableMcp(
+                            "/workable/systems/remote/mcp",
+                            systemName: "remote",
+                            useHostFallbackPolicy: true);
                     });
                 });
             })
@@ -2279,7 +2953,7 @@ public sealed class WorkableMcpTests
                             email: "mcp.user@example.com");
                         await next();
                     });
-                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp(useHostFallbackPolicy: true));
                 });
             })
             .Build();
@@ -2332,7 +3006,7 @@ public sealed class WorkableMcpTests
                             "Test"));
                         await next();
                     });
-                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp(useHostFallbackPolicy: true));
                 });
             })
             .Build();
@@ -2341,7 +3015,11 @@ public sealed class WorkableMcpTests
         return host;
     }
 
-    private static async Task<IHost> CreateExplicitSchemeMcpHttpHost()
+    private static async Task<IHost> CreateExplicitSchemeMcpHttpHost(
+        bool configureFallbackPolicy = false,
+        bool useDefaultPolicy = false,
+        string? authorizationPolicy = null,
+        bool useHostFallbackPolicy = false)
     {
         var host = new HostBuilder()
             .ConfigureWebHost(web =>
@@ -2351,6 +3029,34 @@ public sealed class WorkableMcpTests
                 {
                     services.AddRouting();
                     services.AddWorkableSchemeTestAuthentication();
+                    if (configureFallbackPolicy || useDefaultPolicy || !string.IsNullOrWhiteSpace(authorizationPolicy))
+                    {
+                        services.AddAuthorization(options =>
+                        {
+                            var policy = new AuthorizationPolicyBuilder(
+                                WorkableSchemeAuthenticationTestSupport.AmbientScheme)
+                                .RequireClaim("host-app")
+                                .Build();
+                            if (useDefaultPolicy)
+                            {
+                                options.DefaultPolicy = policy;
+                            }
+                            else if (configureFallbackPolicy)
+                            {
+                                options.FallbackPolicy = policy;
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(authorizationPolicy))
+                            {
+                                options.AddPolicy(
+                                    authorizationPolicy,
+                                    new AuthorizationPolicyBuilder(
+                                        WorkableSchemeAuthenticationTestSupport.WorkableBearerScheme)
+                                        .RequireAuthenticatedUser()
+                                        .Build());
+                            }
+                        });
+                    }
                     services.AddTransportTestAuthorization();
                     services.AddWorkableSystem(builder =>
                     {
@@ -2367,7 +3073,10 @@ public sealed class WorkableMcpTests
                 {
                     app.UseAuthentication();
                     app.UseRouting();
-                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp());
+                    app.UseAuthorization();
+                    app.UseEndpoints(endpoints => endpoints.MapWorkableMcp(
+                        authorizationPolicy: authorizationPolicy,
+                        useHostFallbackPolicy: useHostFallbackPolicy));
                 });
             })
             .Build();
@@ -2389,6 +3098,127 @@ public sealed class WorkableMcpTests
             system,
             WorkInvocationChannel.Mcp,
             description: description);
+
+    [Fact]
+    public async Task McpRouterDispatchesEveryWorkerActionTool()
+    {
+        await using var provider = new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork(
+                WorkDefinition.Create("mcp.worker.action.branches", configuration: AllowMcp()),
+                (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = CreateMcpRequestContext("Dispatch every worker action tool.");
+        using var arguments = JsonDocument.Parse(
+            $$"""{"workerId":"{{Guid.NewGuid():D}}","revision":0}""");
+
+        foreach (var toolName in new[]
+        {
+            "workable_start_worker",
+            "workable_pause_worker",
+            "workable_cancel_worker",
+            "workable_push_worker",
+            "workable_purge_worker",
+        })
+        {
+            var result = await router.CallTool(
+                toolName,
+                arguments.RootElement,
+                options: null,
+                systemName: null,
+                requestContext);
+
+            Assert.DoesNotContain("workable.mcp.tool_not_found", result.Json, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task McpRouterDispatchesEveryAdvertisedQueryTool()
+    {
+        await using var provider = new ServiceCollection()
+            .AddWorkableSystem(builder => builder
+                .AddWork(
+                    WorkDefinition.Create("mcp.query.branches", configuration: AllowMcp()),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()))
+                .AddWorkflow(
+                    WorkflowDefinition.Create("mcp.query.workflow.branches"),
+                    workflow => workflow.DispatchWork(
+                        "child",
+                        WorkDefinition.Create("mcp.query.branches", configuration: AllowMcp()))))
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = CreateMcpRequestContext("Dispatch every advertised query tool.");
+        var queryTools = (await router.GetTools(requestContext))
+            .Where(tool => tool.Kind == WorkableMcpServerToolKind.Query)
+            .ToArray();
+        using var arguments = JsonDocument.Parse($$"""
+            {
+              "workerId": "{{Guid.NewGuid():D}}",
+              "sequence": 1,
+              "runId": "{{Guid.NewGuid():D}}",
+              "name": "mcp.query.branches",
+              "take": 1
+            }
+            """);
+
+        Assert.True(queryTools.Length >= 10);
+        foreach (var tool in queryTools)
+        {
+            var result = await router.CallTool(
+                tool.ToolName,
+                arguments.RootElement,
+                options: null,
+                systemName: null,
+                requestContext);
+
+            Assert.DoesNotContain("workable.mcp.tool_not_found", result.Json, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task McpRouterDispatchesEveryAdvertisedActionTool()
+    {
+        var definition = WorkDefinition.Create("mcp.action.branches", configuration: AllowMcp());
+        await using var provider = new ServiceCollection()
+            .AddWorkableSystem(builder => builder
+                .AddWork(
+                    definition,
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()))
+                .AddWorkflow(
+                    WorkflowDefinition.Create("mcp.action.workflow.branches"),
+                    workflow => workflow.DispatchWork("child", definition)))
+            .AddWorkableMcpServer()
+            .BuildServiceProvider();
+        var router = provider.GetRequiredService<WorkableMcpToolRouter>();
+        var requestContext = CreateMcpRequestContext("Dispatch every advertised action tool.");
+        var actionTools = (await router.GetTools(requestContext))
+            .Where(tool => tool.Kind == WorkableMcpServerToolKind.Action)
+            .ToArray();
+        using var arguments = JsonDocument.Parse($$"""
+            {
+              "workerId": "{{Guid.NewGuid():D}}",
+              "revision": 0,
+              "runId": "{{Guid.NewGuid():D}}",
+              "name": "mcp.action.workflow.branches",
+              "defaultOptions": { "profilingEnabled": true }
+            }
+            """);
+
+        Assert.True(actionTools.Length >= 10);
+        foreach (var tool in actionTools)
+        {
+            var result = await router.CallTool(
+                tool.ToolName,
+                arguments.RootElement,
+                options: null,
+                systemName: null,
+                requestContext);
+
+            Assert.DoesNotContain("workable.mcp.tool_not_found", result.Json, StringComparison.Ordinal);
+        }
+    }
 
     private static WorkRequestContext CreateMcpRequestContext(string description)
         => WorkRequestContext.Create(
@@ -2455,6 +3285,27 @@ public sealed class WorkableMcpTests
                 WorkInvocationChannel.Mcp),
         };
 
+    private static bool IsWorkflowTool(string toolName)
+        => toolName is
+            "workable_start_workflow" or
+            "workable_start_workflow_run" or
+            "workable_pause_workflow_run" or
+            "workable_stop_workflow" or
+            "workable_cancel_workflow" or
+            "workable_query_workflow_runs" or
+            "workable_get_workflow_run";
+
+    private sealed class FixedGroupProvider(IEnumerable<string> groups) : IWorkAuthorizationGroupProvider
+    {
+        private readonly IReadOnlySet<string> groups = groups.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        public ValueTask<IReadOnlySet<string>> GetGroups(
+            WorkActor actor,
+            string? systemName,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(this.groups);
+    }
+
     private sealed class CapturingAuthorizationGroupContextProvider : IWorkAuthorizationGroupContextProvider
     {
         private readonly object gate = new();
@@ -2483,6 +3334,83 @@ public sealed class WorkableMcpTests
 
             return ValueTask.FromResult<IReadOnlySet<string>?>(null);
         }
+    }
+
+    private sealed class CoarseOperationWorkSystem(IWorkSystem inner) : IWorkSystem
+    {
+        public WorkSystemId Id => inner.Id;
+
+        public string? Name => inner.Name;
+
+        public bool RequiresAuthorization => inner.RequiresAuthorization;
+
+        public WorkSystemState State => inner.State;
+
+        public IWorkCatalog Catalog => inner.Catalog;
+
+        public IWorkQueueService Queue => inner.Queue;
+
+        public IWorkerOperations Workers => inner.Workers;
+
+        public IWorkQueryService Query => inner.Query;
+
+        public IWorkEventStream Events => inner.Events;
+
+        public IWorkIterationStatusStream IterationStatuses => inner.IterationStatuses;
+
+        public IWorkChangeStream Changes => inner.Changes;
+
+        public IWorkSystemDiagnostics Diagnostics => inner.Diagnostics;
+
+        public async ValueTask<WorkSystemAccessSummary> DescribeAccess(
+            WorkRequestContext requestContext,
+            CancellationToken cancellationToken = default)
+        {
+            var access = await inner.DescribeAccess(requestContext, cancellationToken);
+            return access with
+            {
+                CanOperateAllWork = false,
+            };
+        }
+
+        public ValueTask<IWorkSystemSession> CreateSession(
+            WorkRequestContext requestContext,
+            CancellationToken cancellationToken = default)
+            => inner.CreateSession(requestContext, cancellationToken);
+
+        public Task Start(WorkRequestContext requestContext, CancellationToken cancellationToken = default)
+            => inner.Start(requestContext, cancellationToken);
+
+        public Task<WorkSystemStopResult> Stop(
+            WorkRequestContext requestContext,
+            CancellationToken cancellationToken = default)
+            => inner.Stop(requestContext, cancellationToken);
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class SingleSystemRegistry(IWorkSystem system) : IWorkSystemRegistry
+    {
+        public IWorkSystem Default => system;
+
+        public IReadOnlyCollection<IWorkSystem> Systems => [system];
+
+        public bool TryGet(string name, [NotNullWhen(true)] out IWorkSystem? workSystem)
+        {
+            workSystem = string.Equals(name, system.Name, StringComparison.OrdinalIgnoreCase)
+                ? system
+                : null;
+            return workSystem is not null;
+        }
+    }
+
+    private sealed class TestEndpointRouteBuilder(IServiceProvider services) : IEndpointRouteBuilder
+    {
+        public IServiceProvider ServiceProvider { get; } = services;
+
+        public ICollection<EndpointDataSource> DataSources { get; } = [];
+
+        public IApplicationBuilder CreateApplicationBuilder() => new ApplicationBuilder(this.ServiceProvider);
     }
 
     private sealed record WorkflowMcpInput(string ExternalKey);

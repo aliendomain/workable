@@ -333,9 +333,11 @@ INNER JOIN expired ON expired.DiagnosticId = diagnostics.DiagnosticId;
         WorkExecutionDiagnosticCriteria criteria,
         CancellationToken cancellationToken = default)
     {
-        if (criteria.Take is <= 0 or > 1_000)
+        if (criteria.Take is <= 0 or > WorkExecutionDiagnosticCriteria.MaximumTake)
         {
-            throw new ArgumentOutOfRangeException(nameof(criteria), "Execution diagnostic query take must be between 1 and 1,000.");
+            throw new ArgumentOutOfRangeException(
+                nameof(criteria),
+                $"Execution diagnostic query take must be between 1 and {WorkExecutionDiagnosticCriteria.MaximumTake}.");
         }
 
         var systemName = this.GetSystemName(criteria.WorkSystemId);
@@ -485,10 +487,29 @@ ORDER BY CreatedAt, RuleId;
         await using var command = connection.CreateCommand();
         command.Transaction = (SqlTransaction)transaction;
         command.CommandText = RequiredDmlSetOptions + $"""
+-- Take the system range lock before any mutation so concurrent replacements cannot
+-- both observe an empty scope. The active-rule maximum is system-wide, so writes
+-- for one system intentionally serialize on this low-frequency administration path.
+DECLARE @RuleMutationLock int;
+SELECT @RuleMutationLock = COUNT(*)
+FROM {this.captureRulesTable} WITH (UPDLOCK, HOLDLOCK)
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName;
+
 DELETE FROM {this.captureRulesTable}
 WHERE PersistenceScope = @PersistenceScope
   AND WorkSystemName = @WorkSystemName
   AND ActiveUntil <= @Now;
+
+DELETE FROM {this.captureRulesTable}
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName
+  AND RuleId <> @RuleId
+  AND
+  (
+      (DefinitionName IS NULL AND @DefinitionName IS NULL)
+      OR DefinitionName COLLATE Latin1_General_100_CI_AS = @DefinitionName COLLATE Latin1_General_100_CI_AS
+  );
 
 IF NOT EXISTS (SELECT 1 FROM {this.captureRulesTable} WHERE RuleId = @RuleId)
    AND (SELECT COUNT(*) FROM {this.captureRulesTable} WITH (UPDLOCK, HOLDLOCK)

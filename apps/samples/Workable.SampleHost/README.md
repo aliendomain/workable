@@ -13,6 +13,8 @@ The sample enables the standard adapters, but not every adapter is exposed the s
 
 The sample uses fake path-based authentication so local authorization scenarios are easy to exercise without an identity provider.
 
+The fake-auth setup demonstrates Workable authorization profiles, not production Entra authentication. It does not show Workable registering JWT validation. Production hosts own their authentication handlers, schemes, token validation, endpoint policies, and challenge responses; see [Microsoft Entra Authentication](../../../docs/guides/entra-authentication.md).
+
 Run it from the repository root:
 
 ```powershell
@@ -31,9 +33,9 @@ The demo workload queues work continuously while it is enabled. It includes shor
 
 For the iteration profile viewer, queue `sample.demo.profiling-lab`. That definition enables profiling by default and builds a deeper tree with logical scopes, timing leaves, result nodes, injected-service contributions, real SQL command nodes captured through `Microsoft.Data.SqlClient`, and real outbound HTTP request/response timing captured through `HttpClient`. In the profile toolbar, use the compact database button to filter to `sql.client` nodes or the globe button to filter to `http.client` nodes; turn on **Ancestor context** when you want their containing scopes to remain visible. Each profiling section calls a loopback sample endpoint, so expand `Capture HTTP sample` in the unfiltered tree to inspect its `HTTP Request` node. One service intentionally writes a constructor-time profile node so you can also see how root-level service activation differs from execution-time method scopes in the UI.
 
-To try targeted full capture in the admin UI, use the `work-admin` fake-auth URL for a single-session demo across both systems, or `operations-only` when you want access limited to the default Operations system. Open the sample system's **Catalog**, select `sample.demo.profiling-lab`, and use the **Full profile capture** card. Set a small match count and expiration, select **Capture by work type**, and then queue the work. The `system-admin` profile can create the capture rule but intentionally cannot queue work; when using that profile, switch to a separately work-authorized profile to submit the matching worker. To try actor matching, open a retained worker, expand **Worker controls**, and use **Capture by user** or **Capture this user + work type** for a future worker.
+To try targeted full capture in the admin UI, use the `system-and-work-admin` fake-auth URL for a single-session demo across both systems, or `operations-only` when you want access limited to the default Operations system. Open the sample system's **Catalog**, select `sample.demo.profiling-lab`, and use the **Full profile capture** card. Set a small worker count and expiration, select **Capture this definition**, and then queue the work. Use **Capture all work** in the top catalog card to create a system-wide fallback instead. The `work-admin` profile can inspect the rules but cannot change them because it intentionally lacks system control. The `system-admin` profile can create a capture rule but intentionally cannot queue work; when using that profile, switch to a separately work-authorized profile to submit the matching worker. To try the exact-worker toggle, open a non-final retained worker, expand **Worker controls**, and use **Capture this worker**; the change applies to that worker's next execution.
 
-To try persisted evidence, sign in with `system-and-work-admin`, open the default Operations system overview or its `sample.demo.profiling-lab` catalog entry, and use **Persistent execution diagnostics**. Choose a short active lifetime, artifact retention, log level, and `Bounded` or `Full` profile; then queue the profiling lab. The sample's SQL durable-queue registration also supplies the diagnostics repository, while its SQL and HTTP profiling registrations make both dependency sources discoverable in the artifact. Query the result with the MCP tools `workable_query_execution_diagnostics` and `workable_get_execution_diagnostic`, or the HTTP routes under `/workable/execution-diagnostics`. The `system-admin` profile can enable capture and query evidence but intentionally cannot queue the matching work. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md).
+To try persisted evidence, sign in with `system-and-work-admin`, open the default Operations system **Catalog** or its `sample.demo.profiling-lab` catalog entry, and use **Persistent execution diagnostics**. Choose a short active lifetime, artifact retention, log level, and `Bounded` or `Full` profile; then queue the profiling lab. The sample's SQL durable-queue registration also supplies the diagnostics repository, while its SQL and HTTP profiling registrations make both dependency sources discoverable in the artifact. Query the result with the MCP tools `workable_query_execution_diagnostics` and `workable_get_execution_diagnostic`, or the HTTP routes under `/workable/execution-diagnostics`. The `system-admin` profile can enable capture and query evidence but intentionally cannot queue the matching work. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md).
 
 The loopback profiling client defaults to `http://127.0.0.1:61932`, matching the sample launch profile. If you host the sample on another address, set `WorkableSample:ProfilingHttpBaseAddress` to the reachable base URL.
 
@@ -111,11 +113,13 @@ The admin UI is secure by default and will not proxy requests until you configur
   "authProvider": "basic",
   "apiUrl": "http://localhost:61932/fake-auth/work-admin/workable",
   "basicAuth": {
+    "enabled": true,
     "username": "admin",
     "password": "replace-with-a-long-random-password"
   },
   "sessionSecret": "replace-with-a-different-long-random-secret",
-  "sessionMaxAgeSeconds": 28800
+  "sessionMaxAgeSeconds": 28800,
+  "sessionAbsoluteMaxAgeSeconds": 86400
 }
 ```
 

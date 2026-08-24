@@ -18,6 +18,27 @@ export function parseCookieHeader(value: string | null) {
   return cookies;
 }
 
+export function readUniqueCookie(value: string | null, name: string) {
+  const matches: string[] = [];
+  for (const pair of value?.split(";") ?? []) {
+    const separator = pair.indexOf("=");
+    if (separator < 0 || pair.slice(0, separator).trim() !== name) {
+      continue;
+    }
+
+    const rawValue = pair.slice(separator + 1).trim();
+    try {
+      matches.push(decodeURIComponent(rawValue));
+    } catch {
+      matches.push(rawValue);
+    }
+  }
+
+  return matches.length === 1
+    ? { ok: true as const, value: matches[0] }
+    : { ok: false as const, duplicate: matches.length > 1 };
+}
+
 export function serializeCookie(
   name: string,
   value: string,
@@ -47,7 +68,10 @@ export function serializeCookie(
 }
 
 export function serializeExpiredCookie(name: string) {
-  return `${name}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+  const attributes = `${name}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+  return name.startsWith("__Host-") || name.startsWith("__Secure-")
+    ? `${attributes}; Secure`
+    : attributes;
 }
 
 export function shouldSecureCookie(request: Request, isProduction: boolean) {

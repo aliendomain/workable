@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Workable;
 
@@ -67,6 +68,30 @@ public sealed class WorkChangeStreamTests
         Assert.Equal(1, diagnostics.CoalescedChangeCount);
         Assert.Equal(1, diagnostics.DeliveredChangeCount);
         Assert.Equal(0, diagnostics.DroppedChangeCount);
+    }
+
+    [Fact]
+    public async Task DefinitionScopeDoesNotChangePublicEqualityButPreventsCrossScopeCoalescing()
+    {
+        var stream = new WorkChangeStream();
+        await using var subscription = stream.Subscribe();
+        await using var reader = subscription.Read().GetAsyncEnumerator();
+        var firstKey = WorkChangeKey.System().ScopeToDefinition("first.work");
+        var secondKey = WorkChangeKey.System().ScopeToDefinition("second.work");
+
+        Assert.Equal(firstKey, secondKey);
+        Assert.Equal(firstKey.GetHashCode(), secondKey.GetHashCode());
+
+        stream.Publish(firstKey);
+        stream.Publish(secondKey);
+
+        var first = await ReadNext(reader);
+        var second = await ReadNext(reader);
+        Assert.Equal("first.work", first.Key.DefinitionName);
+        Assert.Equal("second.work", second.Key.DefinitionName);
+        var diagnostics = AssertNoQueuedChanges(subscription);
+        Assert.Equal(0, diagnostics.CoalescedChangeCount);
+        Assert.Equal(2, diagnostics.DeliveredChangeCount);
     }
 
     [Fact]
@@ -266,6 +291,72 @@ public sealed class WorkChangeStreamTests
 
         Assert.Equal(0, stream.ActiveSubscriptionCount);
         Assert.Throws<ObjectDisposedException>(() => stream.Subscribe());
+    }
+
+    [Fact]
+    public async Task RemovedAndDisposedSubscriptionsIgnoreOwnerAndLatePublicationCallbacks()
+    {
+        var stream = new WorkChangeStream();
+        var subscription = stream.Subscribe();
+        var subscriptionType = subscription.GetType();
+        var remove = typeof(WorkChangeStream).GetMethod("Remove", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var publish = subscriptionType.GetMethod("Publish", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var change = new WorkChange(1, DateTimeOffset.UtcNow, WorkChangeKey.System());
+
+        remove.Invoke(stream, [subscription]);
+        remove.Invoke(stream, [subscription]);
+        await subscription.DisposeAsync();
+        publish.Invoke(subscription, [change]);
+
+        Assert.Equal(0, stream.ActiveSubscriptionCount);
+        Assert.Equal(0, GetDiagnostics(subscription).AcceptedChangeCount);
+    }
+
+    [Fact]
+    public async Task ReaderCancellationCompositionUsesEnumeratorSubscriptionAndLinkedTokens()
+    {
+        var stream = new WorkChangeStream();
+        using var subscriptionCancellation = new CancellationTokenSource();
+        using var enumeratorCancellation = new CancellationTokenSource();
+        await using var subscription = stream.Subscribe();
+
+        await using (var enumeratorOnly = subscription.Read()
+            .GetAsyncEnumerator(enumeratorCancellation.Token))
+        {
+            enumeratorCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                enumeratorOnly.MoveNextAsync().AsTask());
+        }
+
+        await using var second = stream.Subscribe();
+        await using (var subscriptionOnly = second.Read(subscriptionCancellation.Token)
+            .GetAsyncEnumerator())
+        {
+            subscriptionCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                subscriptionOnly.MoveNextAsync().AsTask());
+        }
+
+        using var sharedCancellation = new CancellationTokenSource();
+        await using var third = stream.Subscribe();
+        await using (var shared = third.Read(sharedCancellation.Token)
+            .GetAsyncEnumerator(sharedCancellation.Token))
+        {
+            sharedCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                shared.MoveNextAsync().AsTask());
+        }
+
+        using var firstLinked = new CancellationTokenSource();
+        using var secondLinked = new CancellationTokenSource();
+        await using var fourth = stream.Subscribe();
+        await using (var linked = fourth.Read(firstLinked.Token)
+            .GetAsyncEnumerator(secondLinked.Token))
+        {
+            secondLinked.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                linked.MoveNextAsync().AsTask());
+        }
     }
 
     [Fact]

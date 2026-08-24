@@ -51,7 +51,9 @@ public sealed class WorkflowRuntimeShould
             builder.AddWorkflow(
                 WorkflowDefinition.Create("workflow.secured"),
                 workflow => workflow.DispatchWork("dispatch", Work("sample.dispatch")),
-                authorize: auth => auth.AllowOperateToGroups("workflow.ops"));
+                authorize: auth => auth
+                    .AllowReadToGroups("workflow.read")
+                    .AllowOperateToGroups("workflow.ops"));
         });
 
         using var provider = services.BuildServiceProvider();
@@ -160,7 +162,7 @@ public sealed class WorkflowRuntimeShould
         var completion = await workflowHandle.WaitForCompletion();
         await childRan.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal(WorkQueueStatus.Unauthorized, directChild.QueueOutcome.Status);
+        Assert.Equal(WorkQueueStatus.NotFound, directChild.QueueOutcome.Status);
         Assert.True(workflowHandle.StartOutcome.IsAccepted);
         Assert.True(completion.IsCompletedSuccessfully);
     }
@@ -291,7 +293,7 @@ public sealed class WorkflowRuntimeShould
         await TestEventually.Until(
             async () => (await system.WorkerOperations.Get(childWorkerId))?.State == WorkerState.Canceled,
             "Expected workflow cancellation to propagate to its restricted child.");
-        Assert.Equal(WorkActionStatus.Unauthorized, directCancel.Status);
+        Assert.Equal(WorkActionStatus.NotFound, directCancel.Status);
         Assert.True(workflowCancel.IsAccepted);
         Assert.Equal(WorkflowRunStatus.Canceled, completion.Status);
     }
@@ -364,7 +366,9 @@ public sealed class WorkflowRuntimeShould
         var unrelatedWorker = await system.WorkerOperations.Get(unrelatedWorkerId);
 
         Assert.False(cancellation.IsSuccessful);
-        Assert.Contains(cancellation.Messages, message => message.Code == "workable.worker.unauthorized");
+        var message = Assert.Single(cancellation.Messages);
+        Assert.Equal("workable.workflow.child_cancel_rejected", message.Code);
+        Assert.DoesNotContain(unrelatedWorkerId.ToString(), message.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(WorkerState.Queued, unrelatedWorker?.State);
     }
 
@@ -517,6 +521,196 @@ public sealed class WorkflowRuntimeShould
 
         var cancel = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Cancel, operatorContext);
         Assert.True(cancel.IsAccepted);
+        Assert.NotNull(cancel.Run);
+        await TestEventually.Until(
+            () => system.WorkflowRuntime.Get(runId)?.Status == WorkflowRunStatus.Canceled,
+            "Expected the authorized cancellation to settle the workflow into a final state.");
+
+        var unauthorizedFinalAction = await system.WorkflowRuntime.Execute(
+            runId,
+            WorkflowAction.Start,
+            readerContext);
+
+        Assert.Equal(WorkflowActionStatus.Unauthorized, unauthorizedFinalAction.Status);
+        Assert.Null(unauthorizedFinalAction.Run);
+        Assert.DoesNotContain(
+            unauthorizedFinalAction.Messages,
+            message => message.Code == "workable.workflow.run.final");
+    }
+
+    [Fact]
+    public async Task EnforceWorkflowOperationMasksAndInputRequirements()
+    {
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(new TestWorkflowGroupProvider(
+            new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["workflow-starter"] = Groups("workflow.queue"),
+                ["workflow-canceller"] = Groups("workflow.cancel"),
+                ["workflow-seed"] = Groups("workflow.seed"),
+            }));
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.authorization.mask.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    childStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create(
+                    "workflow.authorization.mask",
+                    inputSchema: WorkSchema.FromType<WorkflowAuthorizationInput>()),
+                workflow => workflow.DispatchWork("child", Work("workflow.authorization.mask.child")),
+                authorize: authorization => authorization
+                    .AllowQueueToGroups(
+                        ["workflow.queue"],
+                        grant => grant.WhenQueueingRequire<WorkflowAuthorizationInput>(
+                            context => context.Input?.Allowed == true))
+                    .AllowOperationsToGroups(
+                        ["workflow.cancel"],
+                        WorkOperationPermissions.Cancel,
+                        grant => grant.WhenWorkerActionsRequire<WorkflowAuthorizationInput>(
+                            context => context.Input?.Allowed == true))
+                    .AllowOperationsToGroups(
+                        ["workflow.seed"],
+                        WorkOperationPermissions.Operate));
+        });
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var starter = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-starter"));
+        var canceller = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-canceller"));
+        var seed = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("workflow-seed"));
+
+        var rejected = await system.WorkflowRuntime.Start(
+            "workflow.authorization.mask",
+            starter,
+            WorkInput.FromValue(new WorkflowAuthorizationInput(Allowed: false)));
+        var invalidStart = await system.WorkflowRuntime.Start(
+            "workflow.authorization.mask",
+            starter,
+            WorkInput.FromJson("\"malformed\""));
+        var cancelOnlyStart = await system.WorkflowRuntime.Start(
+            "workflow.authorization.mask",
+            canceller,
+            WorkInput.FromValue(new WorkflowAuthorizationInput(Allowed: true)));
+        var malformedRun = await system.WorkflowRuntime.Start(
+            "workflow.authorization.mask",
+            seed,
+            WorkInput.FromJson("\"malformed\""));
+        var malformedRunId = malformedRun.RunId ?? throw new InvalidOperationException("Expected malformed workflow run id.");
+        var invalidCancel = await system.WorkflowRuntime.Execute(
+            malformedRunId,
+            WorkflowAction.Cancel,
+            canceller);
+        var accepted = await system.WorkflowRuntime.Start(
+            "workflow.authorization.mask",
+            starter,
+            WorkInput.FromValue(new WorkflowAuthorizationInput(Allowed: true)));
+        var runId = accepted.RunId ?? throw new InvalidOperationException("Expected workflow run id.");
+        await childStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var starterCancel = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Cancel, starter);
+        var cancellerCancel = await system.WorkflowRuntime.Execute(runId, WorkflowAction.Cancel, canceller);
+
+        Assert.Equal(WorkflowStartStatus.Unauthorized, rejected.StartOutcome.Status);
+        Assert.Equal(WorkflowStartStatus.Invalid, invalidStart.StartOutcome.Status);
+        Assert.Contains(
+            invalidStart.StartOutcome.Messages,
+            message => message.Code == "workable.authorization.operate_requirement_input_invalid");
+        Assert.Equal(WorkflowStartStatus.Unauthorized, cancelOnlyStart.StartOutcome.Status);
+        Assert.Equal(WorkflowActionStatus.Invalid, invalidCancel.Status);
+        Assert.Null(invalidCancel.Run);
+        Assert.Contains(
+            invalidCancel.Messages,
+            message => message.Code == "workable.authorization.operate_requirement_input_invalid");
+        Assert.Equal(WorkflowActionStatus.Unauthorized, starterCancel.Status);
+        Assert.True(cancellerCancel.IsAccepted);
+        Assert.Null(cancellerCancel.Run);
+        Assert.True((await system.WorkflowRuntime.Execute(
+            malformedRunId,
+            WorkflowAction.Cancel,
+            seed)).IsAccepted);
+    }
+
+    [Fact]
+    public async Task HideUnauthorizedWorkflowNamesAndRunIdsLikeMissingTargets()
+    {
+        var hiddenChildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkAuthorizationGroupProvider>(new TestWorkflowGroupProvider(
+            new Dictionary<string, IReadOnlySet<string>>
+            {
+                ["visible-operator"] = Groups("visible.ops"),
+                ["hidden-operator"] = Groups("hidden.ops"),
+            }));
+        services.AddWorkableSystem(builder =>
+        {
+            builder.RequireAuthorization(true);
+            builder.AddWork(
+                WorkDefinition.Create("workflow.authorization.hidden.child"),
+                async (_, _, cancellationToken) =>
+                {
+                    hiddenChildStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return WorkExecutionResult.Success();
+                });
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.authorization.visible"),
+                workflow => workflow.DispatchWork("child", Work("workflow.authorization.hidden.child")),
+                authorize: authorization => authorization.AllowOperateToGroups("visible.ops"));
+            builder.AddWorkflow(
+                WorkflowDefinition.Create("workflow.authorization.hidden"),
+                workflow => workflow.DispatchWork("child", Work("workflow.authorization.hidden.child")),
+                authorize: authorization => authorization.AllowOperateToGroups("hidden.ops"));
+        });
+        using var provider = services.BuildServiceProvider();
+        var system = (InMemoryWorkSystem)provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var visibleOperator = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("visible-operator"));
+        var hiddenOperator = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("hidden-operator"));
+        var hiddenHandle = await system.WorkflowRuntime.Start(
+            "workflow.authorization.hidden",
+            hiddenOperator);
+        var hiddenRunId = hiddenHandle.RunId ?? throw new InvalidOperationException("Expected hidden workflow run id.");
+        await hiddenChildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var hiddenStart = await system.WorkflowRuntime.Start(
+            "workflow.authorization.hidden",
+            visibleOperator);
+        var missingStart = await system.WorkflowRuntime.Start(
+            "workflow.authorization.missing",
+            visibleOperator);
+        var hiddenCancel = await system.WorkflowRuntime.Execute(
+            hiddenRunId,
+            WorkflowAction.Cancel,
+            visibleOperator);
+        var missingCancel = await system.WorkflowRuntime.Execute(
+            WorkflowRunId.New(),
+            WorkflowAction.Cancel,
+            visibleOperator);
+
+        Assert.Equal(WorkflowStartStatus.NotFound, hiddenStart.StartOutcome.Status);
+        Assert.Equal(missingStart.StartOutcome.Status, hiddenStart.StartOutcome.Status);
+        Assert.Equal(WorkflowActionStatus.NotFound, hiddenCancel.Status);
+        Assert.Equal(missingCancel.Status, hiddenCancel.Status);
+
+        var cleanup = await system.WorkflowRuntime.Execute(hiddenRunId, WorkflowAction.Cancel, hiddenOperator);
+        Assert.True(cleanup.IsAccepted);
     }
 
     [Fact]
@@ -1915,7 +2109,8 @@ public sealed class WorkflowRuntimeShould
         Assert.NotNull(run);
         Assert.Equal(WorkflowRunStatus.Blocked, run!.Status);
         Assert.Equal(WorkflowStepRunStatus.Running, run.Steps.Single(step => step.Name == "join").Status);
-        Assert.Contains(run.Messages, message => message.Code == "sample.child.failed");
+        Assert.Contains(run.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(run.Messages, message => message.Code == "sample.child.failed");
     }
 
     [Fact]
@@ -1947,7 +2142,7 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal(WorkflowStepRunStatus.Failed, run.Steps.Single(step => step.Name == "dispatch").Status);
         Assert.Contains(
             completion.Messages,
-            message => message.Code == "workable.definition.not_found");
+            message => message.Code == "workable.workflow.child_dispatch_rejected");
     }
 
     [Fact]
@@ -1987,7 +2182,8 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal(WorkflowStepRunStatus.Completed, run.Steps.Single(step => step.Name == "dispatch").Status);
         Assert.Contains(
             run.Messages,
-            message => message.Code == "sample.fail");
+            message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(run.Messages, message => message.Code == "sample.fail");
     }
 
     [Fact]
@@ -2427,7 +2623,8 @@ public sealed class WorkflowRuntimeShould
             timeout: TimeSpan.FromSeconds(15));
 
         Assert.Equal(WorkflowRunStatus.Blocked, run!.Status);
-        Assert.Contains(run.Messages, message => message.Code == "sample.fail");
+        Assert.Contains(run.Messages, message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(run.Messages, message => message.Code == "sample.fail");
         Assert.DoesNotContain(handle.RunId!.Value, store.DeletedWorkflowRuns);
     }
 
@@ -3066,8 +3263,10 @@ public sealed class WorkflowRuntimeShould
         Assert.Equal("sample.beta", remainingRequest.Definition.Name);
         Assert.Contains(
             completion.Messages,
-            message => message.Code == "workable.execution.exception" &&
-                message.Text.Contains("replayed child failed", StringComparison.Ordinal));
+            message => message.Code == "workable.workflow.child_completion_unsuccessful");
+        Assert.DoesNotContain(
+            completion.Messages,
+            message => message.Text.Contains("replayed child failed", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -4569,7 +4768,7 @@ public sealed class WorkflowRuntimeShould
     }
 
     [Fact]
-    public async Task RetryWorkflowChildRetentionPurgeAfterWorkflowBecomesFinal()
+    public async Task PurgeFinalWorkflowRunAfterChildrenArePurgedByRetention()
     {
         var store = new TestWorkflowPersistenceStore();
         var slowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -4641,17 +4840,25 @@ public sealed class WorkflowRuntimeShould
             "Expected the fast child worker to complete while the workflow was still waiting on the slow child.",
             timeout: TimeSpan.FromSeconds(10));
 
-        await Task.Delay(200);
+        await TestEventually.Until(
+            async () => await system.Query.Worker(fastWorkerId) is null,
+            "Expected retention to purge the completed fast child while the workflow was still running.",
+            timeout: TimeSpan.FromSeconds(20));
+
         slowRelease.TrySetResult();
 
         var completion = await handle.WaitForCompletion().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.True(completion.IsCompletedSuccessfully);
         Assert.NotNull(store.GetWorkflowRun(handle.RunId!.Value));
 
+        var slowWorkerId = completion.Run!.Steps
+            .Single(step => step.Name == "slow")
+            .WorkerIds
+            .Single();
         await TestEventually.Until(
-            async () => await system.Query.Worker(fastWorkerId) is null,
-            "Expected retention to retry the completed child purge after the workflow became final.",
-            timeout: TimeSpan.FromSeconds(10));
+            async () => await system.Query.Worker(slowWorkerId) is null,
+            "Expected retention to purge the final slow child after the workflow completed.",
+            timeout: TimeSpan.FromSeconds(20));
         await TestEventually.Until(
             () => system.WorkflowRuntime.Get(handle.RunId.Value) is null,
             "Expected the final workflow run to disappear after retention purged its last child workers.",
@@ -5268,4 +5475,6 @@ public sealed class WorkflowRuntimeShould
     private sealed record DispatchEachItem(string Id);
     private sealed record DispatchEachSourceOutput(IReadOnlyList<DispatchEachItem> Items);
     private sealed record WorkflowInputPayload(string ExternalKey);
+
+    private sealed record WorkflowAuthorizationInput(bool Allowed);
 }

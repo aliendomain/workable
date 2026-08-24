@@ -64,7 +64,8 @@ public interface IWorkExecutionDiagnosticsRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Creates or replaces a temporary capture rule.
+    /// Creates or replaces the temporary capture rule for the same definition scope.
+    /// A <see langword="null"/> definition represents the system-wide scope.
     /// </summary>
     Task UpsertCaptureRule(
         WorkExecutionDiagnosticCaptureRule rule,
@@ -184,6 +185,7 @@ public sealed record WorkExecutionDiagnosticsExpirationRequest(
 /// <summary>
 /// Selects persisted iteration diagnostics.
 /// </summary>
+/// <param name="Take">The requested result count, which must be between 1 and <see cref="MaximumTake"/>.</param>
 public sealed record WorkExecutionDiagnosticCriteria(
     WorkSystemId WorkSystemId,
     string? DefinitionName = null,
@@ -191,7 +193,18 @@ public sealed record WorkExecutionDiagnosticCriteria(
     DateTimeOffset? CompletedAfter = null,
     DateTimeOffset? CompletedBefore = null,
     LogLevel? MinimumLogLevel = null,
-    int Take = 100);
+    int Take = WorkExecutionDiagnosticCriteria.DefaultTake)
+{
+    /// <summary>
+    /// The default number of diagnostic summaries returned by a query.
+    /// </summary>
+    public const int DefaultTake = 100;
+
+    /// <summary>
+    /// The maximum number of diagnostic summaries returned by a query.
+    /// </summary>
+    public const int MaximumTake = 1_000;
+}
 
 /// <summary>
 /// Selects one persisted iteration artifact.

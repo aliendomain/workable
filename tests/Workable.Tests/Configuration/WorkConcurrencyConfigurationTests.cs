@@ -288,6 +288,23 @@ public sealed class WorkConcurrencyConfigurationTests
         Assert.Equal("input.concurrencyKey", message.Target);
     }
 
+    [Fact]
+    public void ConcurrencyInputValidationRejectsUndefinedScope()
+    {
+        var messages = WorkConfigurationValidator.ValidateConcurrencyInput(
+            coordination: CoordinationWithConcurrency(WorkConcurrencyConfiguration.Default with
+            {
+                IsEnabled = true,
+                MaximumCapacity = 1,
+                Scope = (WorkConcurrencyScope)999,
+            }),
+            input: WorkInput.Empty);
+
+        var message = Assert.Single(messages);
+        Assert.Equal("workable.configuration.concurrency.scope.invalid", message.Code);
+        Assert.Equal("configuration.coordination.concurrency.scope", message.Target);
+    }
+
     [Theory]
     [MemberData(nameof(LocalConcurrencyPermutations))]
     public void LocalConcurrencyAllowsAllScopeBlockingLimitAndOverrideCombinations(
@@ -423,6 +440,33 @@ public sealed class WorkConcurrencyConfigurationTests
             .GetRequiredService<IWorkSystemRegistry>()
             .Default;
 
+    [Fact]
+    public void DurabilityAttributeComposesEveryCoordinationEnablementSource()
+    {
+        Assert.Throws<InvalidOperationException>(() => new ServiceCollection()
+            .AddWorkableSystem(builder => builder.AddWork<CompleteDurablyOnlyWork>(
+                WorkDefinition.Create("durability.attribute.complete"))));
+
+        var alreadyEnabled = WorkDefinition.Create(
+            "durability.attribute.parent-enabled",
+            configuration: WorkConfiguration.Default with
+            {
+                Coordination = WorkCoordinationConfiguration.Default with { IsEnabled = true },
+            });
+        var system = new ServiceCollection()
+            .AddWorkableSystem(builder =>
+            {
+                builder.AddWork<DisabledDurabilityWork>(WorkDefinition.Create("durability.attribute.disabled"));
+                builder.AddWork<DisabledDurabilityWork>(alreadyEnabled);
+            })
+            .BuildServiceProvider()
+            .GetRequiredService<IWorkSystemRegistry>()
+            .Default;
+
+        Assert.False(RequiredDefinition(system, "durability.attribute.disabled").Configuration.Coordination.IsEnabled);
+        Assert.True(RequiredDefinition(system, alreadyEnabled.Name).Configuration.Coordination.IsEnabled);
+    }
+
     private static WorkDefinition RequiredDefinition(IWorkSystem system, string name)
         => system.Catalog.TryGet(name, out var definition)
             ? definition
@@ -470,6 +514,26 @@ public sealed class WorkConcurrencyConfigurationTests
     private sealed class PersistentAttributedConcurrencyWork : IWorkExecutor
     {
         public Task<WorkExecutionResult> Execute(IWorkExecutionContext context, WorkInput? input, CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult.Success());
+    }
+
+    [WorkQueueDurability(isEnabled: false, completeDurably: true)]
+    private sealed class CompleteDurablyOnlyWork : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(
+            IWorkExecutionContext context,
+            WorkInput? input,
+            CancellationToken cancellationToken)
+            => Task.FromResult(WorkExecutionResult.Success());
+    }
+
+    [WorkQueueDurability(isEnabled: false, completeDurably: false)]
+    private sealed class DisabledDurabilityWork : IWorkExecutor
+    {
+        public Task<WorkExecutionResult> Execute(
+            IWorkExecutionContext context,
+            WorkInput? input,
+            CancellationToken cancellationToken)
             => Task.FromResult(WorkExecutionResult.Success());
     }
 }

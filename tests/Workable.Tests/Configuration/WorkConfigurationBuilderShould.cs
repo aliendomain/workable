@@ -157,6 +157,33 @@ public sealed class WorkConfigurationBuilderShould
         Assert.Throws<ArgumentNullException>(() => builder.ClassifyExceptions(null!));
     }
 
+    [Fact]
+    public void PreserveDefaultsForOptionalFluentValuesAndNormalizeAutomaticInputs()
+    {
+        var builder = new WorkConfigurationBuilder(WorkConfiguration.Default);
+        var raw = WorkInput.FromJson("{\"value\":1}");
+
+        builder.ConfigureFailedWorker();
+        builder.ConfigureRetention();
+        builder.WithAutomaticStart<object?>(() => null);
+        builder.WithAutomaticStart(() => raw);
+
+        var configuration = builder.Build();
+        Assert.Equal(WorkFailedWorkerConfiguration.Default, configuration.FailedWorker);
+        Assert.Equal(WorkRetentionConfiguration.Default, configuration.Retention);
+        Assert.Null(builder.BuildAutomaticStarts()[0].InputFactory(EmptyServices()));
+        Assert.Same(raw, builder.BuildAutomaticStarts()[1].InputFactory(EmptyServices()));
+    }
+
+    [Fact]
+    public void RejectNullChildDefinitions()
+    {
+        var builder = new WorkConfigurationBuilder(WorkConfiguration.Default);
+
+        Assert.Throws<ArgumentNullException>(() => builder.AllowChildExecution((WorkDefinition[])null!));
+        Assert.Throws<ArgumentException>(() => builder.AllowChildExecution((WorkDefinition[])[null!]));
+    }
+
     private static IServiceProvider EmptyServices()
         => new ServiceCollection().BuildServiceProvider();
 

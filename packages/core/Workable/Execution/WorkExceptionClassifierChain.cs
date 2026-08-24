@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Workable;
 
@@ -8,6 +9,8 @@ internal sealed class WorkExceptionClassifierChain(
     IReadOnlyList<WorkExceptionClassifier> globalClassifiers,
     ILogger? logger)
 {
+    private readonly ILogger logger = logger ?? NullLogger.Instance;
+
     public WorkExceptionClassification Classify(RegisteredWork work, Exception exception)
     {
         ArgumentNullException.ThrowIfNull(work);
@@ -43,7 +46,7 @@ internal sealed class WorkExceptionClassifierChain(
         }
         catch (TargetInvocationException classifierException)
         {
-            logger?.LogWarning(
+            this.logger.LogWarning(
                 classifierException.InnerException ?? classifierException,
                 "A Workable exception classifier failed while classifying an execution exception.");
             return WorkExceptionClassification.Unknown;
