@@ -9,8 +9,12 @@ import {
   useRegisterConsolePageRealtimeView,
   useResolvedConsolePageRealtimeViewDescriptorId,
 } from "@/components/features/console/page-realtime-view";
-import { useConsoleRealtimeStats } from "@/components/features/console/realtime";
+import {
+  useConsoleRealtimeEventStream,
+  useConsoleRealtimeStats,
+} from "@/components/features/console/realtime";
 import { renderDom } from "@/test/dom";
+import { resetWorkableRequestHeadersTooLargeFailureForTests } from "@/lib/workable";
 
 test("disabled page realtime view exposes the inert loadable shape used for inactive views", () => {
   const view = createDisabledConsolePageRealtimeView<{ count: number }>();
@@ -204,6 +208,89 @@ test("page realtime provider forwards connection instance keys into the resolved
   }
 });
 
+test("event realtime stream does not schedule its fallback restart after a 431", async () => {
+  const originalWithUrl = HubConnectionBuilder.prototype.withUrl;
+  const originalWithAutomaticReconnect = HubConnectionBuilder.prototype.withAutomaticReconnect;
+  const originalConfigureLogging = HubConnectionBuilder.prototype.configureLogging;
+  const originalBuild = HubConnectionBuilder.prototype.build;
+  let startCount = 0;
+  let fallbackTimerCount = 0;
+  const originalSetTimeout = globalThis.setTimeout;
+
+  HubConnectionBuilder.prototype.withUrl = function withUrl(this: HubConnectionBuilder) {
+    return this;
+  } as typeof HubConnectionBuilder.prototype.withUrl;
+  HubConnectionBuilder.prototype.withAutomaticReconnect = function withAutomaticReconnect(this: HubConnectionBuilder) {
+    return this;
+  } as typeof HubConnectionBuilder.prototype.withAutomaticReconnect;
+  HubConnectionBuilder.prototype.configureLogging = function configureLogging(this: HubConnectionBuilder) {
+    return this;
+  } as typeof HubConnectionBuilder.prototype.configureLogging;
+  HubConnectionBuilder.prototype.build = function build() {
+    return createFailingHubConnection(() => {
+      startCount++;
+    });
+  } as typeof HubConnectionBuilder.prototype.build;
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    if (timeout === 5000) {
+      fallbackTimerCount++;
+    }
+    return originalSetTimeout(handler, timeout, ...args);
+  }) as typeof setTimeout;
+
+  function Probe() {
+    const stream = useConsoleRealtimeEventStream({
+      captureEnabled: false,
+      connection: {
+        apiUrl: "https://console.example.com/workable",
+        realtimeHubPath: "/realtime",
+      },
+      createBatchMessage: () => createEventMessage(),
+      createSingleMessage: () => createEventMessage(),
+      enabled: true,
+      maxMessages: 10,
+      subscriptionErrorMessage: "Subscription failed.",
+      watchArgument: null,
+      watchArgumentKey: "null",
+      watchMethod: "WatchEvents",
+      watchStoppedMessage: "Watch stopped.",
+    });
+    return <output data-testid="state">{stream.connectionState} / {stream.error}</output>;
+  }
+
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  let render = await renderDom(<Probe />);
+  try {
+    await render.waitFor(() => {
+      assert.match(
+        render.container.querySelector("[data-testid='state']")?.textContent ?? "",
+        /disconnected.*431/
+      );
+    });
+    assert.equal(startCount, 1);
+    assert.equal(fallbackTimerCount, 0);
+
+    await render.restore();
+    render = await renderDom(<Probe />);
+    await render.waitFor(() => {
+      assert.match(
+        render.container.querySelector("[data-testid='state']")?.textContent ?? "",
+        /disconnected.*Automatic requests have stopped/
+      );
+    });
+    assert.equal(startCount, 1);
+    assert.equal(fallbackTimerCount, 0);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    HubConnectionBuilder.prototype.withUrl = originalWithUrl;
+    HubConnectionBuilder.prototype.withAutomaticReconnect = originalWithAutomaticReconnect;
+    HubConnectionBuilder.prototype.configureLogging = originalConfigureLogging;
+    HubConnectionBuilder.prototype.build = originalBuild;
+    resetWorkableRequestHeadersTooLargeFailureForTests();
+    await render.restore();
+  }
+});
+
 function createFakeHubConnection(): HubConnection {
   const methodHandlers = new Map<string, (payload: unknown) => void>();
   let reconnectingHandler: ((error?: Error) => void) | undefined;
@@ -244,4 +331,35 @@ function createFakeHubConnection(): HubConnection {
   };
 
   return connection as unknown as HubConnection;
+}
+
+function createFailingHubConnection(onStart: () => void): HubConnection {
+  const connection = {
+    connectionId: null,
+    state: HubConnectionState.Disconnected,
+    invoke: async () => undefined,
+    off: () => undefined,
+    on: () => undefined,
+    onclose: () => undefined,
+    onreconnected: () => undefined,
+    onreconnecting: () => undefined,
+    start: async () => {
+      onStart();
+      throw new Error("Failed to complete negotiation: Status code '431'");
+    },
+    stop: async () => undefined,
+  };
+
+  return connection as unknown as HubConnection;
+}
+
+function createEventMessage() {
+  return {
+    bytes: 0,
+    events: [],
+    eventTypes: [],
+    id: "message",
+    receivedAt: 0,
+    value: {} as never,
+  };
 }

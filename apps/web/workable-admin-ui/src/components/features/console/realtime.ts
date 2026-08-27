@@ -12,11 +12,14 @@ import {
   createConsoleRealtimeSharedConnectionKey,
   createConsoleRealtimeSharedViewPool,
   createWorkableRealtimeHubUrl,
+  shouldStopConsoleRealtimeRetries,
   type ConsoleRealtimeSharedViewConnectionLease,
 } from "@/components/features/console/realtime-view-pool";
 import type { Loadable } from "@/components/features/console/types";
 import {
   createWorkableRealtimeUrl,
+  hasWorkableRequestHeadersTooLargeFailure,
+  stopWorkableRequestsForOversizedHeaders,
   type WorkableConnection,
   type WorkableRealtimeEvent,
   type WorkableRealtimeEventBatch,
@@ -706,7 +709,7 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
     };
 
     queueMicrotask(() => {
-      if (!canceled) {
+      if (!canceled && !hasWorkableRequestHeadersTooLargeFailure()) {
         updateStats("connecting");
         setState((current) => ({
           ...current,
@@ -729,6 +732,21 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
         systemName ?? null
       );
     const scheduleRestart = (error: unknown, delayMs = consoleRealtimeFallbackRestartDelayMs) => {
+      if (shouldStopConsoleRealtimeRetries(error)) {
+        if (retryTimer) {
+          clearTimeout(retryTimer);
+          retryTimer = null;
+        }
+        updateStats("disconnected");
+        setState((current) => ({
+          ...current,
+          connectionState: "disconnected",
+          error: error instanceof Error ? error.message : "Request headers are too large.",
+          loading: false,
+        }));
+        return;
+      }
+
       if (canceled || retryTimer) {
         return;
       }
@@ -779,6 +797,11 @@ export function useConsoleRealtimeEventStream<TMessage extends ConsoleRealtimeEv
       },
     });
     const startConnection = () => {
+      if (hasWorkableRequestHeadersTooLargeFailure()) {
+        scheduleRestart(stopWorkableRequestsForOversizedHeaders());
+        return;
+      }
+
       if (canceled || hubConnection.state !== HubConnectionState.Disconnected) {
         return;
       }

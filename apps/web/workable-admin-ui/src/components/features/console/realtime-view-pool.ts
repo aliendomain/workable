@@ -1,16 +1,42 @@
 "use client";
 
-import { HubConnectionBuilder, HubConnectionState, LogLevel, type HubConnection, type IHttpConnectionOptions } from "@microsoft/signalr";
+import { HubConnectionBuilder, HubConnectionState, LogLevel, type HubConnection, type IHttpConnectionOptions, type IRetryPolicy, type RetryContext } from "@microsoft/signalr";
 import {
   createWorkableRealtimeUrl,
   getWorkableRealtimeAccessToken,
+  hasWorkableRequestHeadersTooLargeFailure,
   invalidateWorkableRealtimeAccessToken,
+  isWorkableRequestHeadersTooLargeError,
   isWorkableRealtimeAuthenticationError,
+  stopWorkableRequestsForOversizedHeaders,
 } from "../../../lib/workable.ts";
 
 export const consoleRealtimeAutomaticReconnectDelaysMs = [0, 2000, 10000, 30000] as const;
 export const consoleRealtimeFallbackRestartDelayMs = 5000;
 const consoleRealtimeSharedConnectionReleaseDelayMs = 1000;
+
+export const consoleRealtimeRetryPolicy: IRetryPolicy = {
+  nextRetryDelayInMilliseconds(retryContext: RetryContext) {
+    if (shouldStopConsoleRealtimeRetries(retryContext.retryReason)) {
+      return null;
+    }
+
+    return consoleRealtimeAutomaticReconnectDelaysMs[retryContext.previousRetryCount] ?? null;
+  },
+};
+
+export function shouldStopConsoleRealtimeRetries(error: unknown) {
+  if (hasWorkableRequestHeadersTooLargeFailure()) {
+    return true;
+  }
+
+  if (!isWorkableRequestHeadersTooLargeError(error)) {
+    return false;
+  }
+
+  stopWorkableRequestsForOversizedHeaders(error);
+  return true;
+}
 
 type SharedConnectionSnapshot = {
   connectionId?: string | null;
@@ -93,6 +119,15 @@ export function createConsoleRealtimeSharedViewPool({
   };
 
   const scheduleRestart = (entry: SharedConnectionEntry, error: unknown) => {
+    if (shouldStopConsoleRealtimeRetries(error)) {
+      if (entry.retryTimer) {
+        clearTimeout(entry.retryTimer);
+        entry.retryTimer = null;
+      }
+      updateEntrySnapshot(entry, "disconnected", error);
+      return;
+    }
+
     if (entry.retryTimer || entry.consumerCount <= 0) {
       updateEntrySnapshot(entry, "disconnected", error);
       return;
@@ -197,6 +232,15 @@ export function createConsoleRealtimeSharedViewPool({
   };
 
   const startEntry = (entry: SharedConnectionEntry) => {
+    if (hasWorkableRequestHeadersTooLargeFailure()) {
+      updateEntrySnapshot(
+        entry,
+        "disconnected",
+        stopWorkableRequestsForOversizedHeaders()
+      );
+      return;
+    }
+
     if (entry.startPromise || entry.consumerCount <= 0 || entry.hubConnection.state !== HubConnectionState.Disconnected) {
       return;
     }
@@ -353,7 +397,7 @@ export function createConsoleRealtimeHubConnection({
       withCredentials: true,
       ...options,
     })
-    .withAutomaticReconnect([...consoleRealtimeAutomaticReconnectDelaysMs])
+    .withAutomaticReconnect(consoleRealtimeRetryPolicy)
     .configureLogging(LogLevel.None)
     .build();
 }
@@ -367,7 +411,8 @@ function getConsoleRealtimeErrorMessage(error: unknown, fallback: string) {
 }
 
 function isExpectedConsoleRealtimeDisconnect(error: unknown) {
-  if (isConsoleRealtimeAuthenticationError(error)) {
+  if (isConsoleRealtimeAuthenticationError(error) ||
+      isWorkableRequestHeadersTooLargeError(error)) {
     return false;
   }
 

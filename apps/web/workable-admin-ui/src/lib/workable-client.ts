@@ -21,6 +21,18 @@ export class WorkableRealtimeAuthenticationError extends Error {
   }
 }
 
+export class WorkableRequestHeadersTooLargeError extends Error {
+  public readonly status = 431;
+
+  constructor() {
+    super(
+      "The Workable admin session has exceeded the request-header limit. " +
+      "Automatic requests have stopped; clear the admin UI site data and sign in again."
+    );
+    this.name = "WorkableRequestHeadersTooLargeError";
+  }
+}
+
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
 const inFlightQueryRequests = new Map<string, Promise<unknown>>();
 const realtimeAccessTokenCache = new Map<string, {
@@ -33,7 +45,49 @@ const realtimeAccessTokenFallbackTtlMs = 5 * 60 * 1000;
 const realtimeMissingAccessTokenTtlMs = 5 * 60 * 1000;
 const realtimeAccessTokenRefreshSkewMs = 60 * 1000;
 let loginRedirectInFlight = false;
+let requestHeadersTooLargeFailure: WorkableRequestHeadersTooLargeError | null = null;
 const adminUiAuthRequiredError = "Authentication is required for the Workable admin UI.";
+
+export function hasWorkableRequestHeadersTooLargeFailure() {
+  return requestHeadersTooLargeFailure !== null;
+}
+
+export function isWorkableRequestHeadersTooLargeError(error: unknown) {
+  if (error instanceof WorkableRequestHeadersTooLargeError) {
+    return true;
+  }
+
+  if (error instanceof WorkableApiError && error.status === 431) {
+    return true;
+  }
+
+  if (error && typeof error === "object") {
+    const candidate = error as { status?: unknown; statusCode?: unknown };
+    if (Number(candidate.status) === 431 || Number(candidate.statusCode) === 431) {
+      return true;
+    }
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /request header fields too large/i.test(message) ||
+    /\bstatus(?:\s+code)?\b[^0-9]{0,40}431\b/i.test(message) ||
+    /\bhttp(?:\/\d(?:\.\d)?)?\s+431\b/i.test(message);
+}
+
+export function stopWorkableRequestsForOversizedHeaders(error?: unknown) {
+  if (!requestHeadersTooLargeFailure &&
+      (error === undefined || isWorkableRequestHeadersTooLargeError(error))) {
+    requestHeadersTooLargeFailure = error instanceof WorkableRequestHeadersTooLargeError
+      ? error
+      : new WorkableRequestHeadersTooLargeError();
+  }
+
+  return requestHeadersTooLargeFailure;
+}
+
+export function resetWorkableRequestHeadersTooLargeFailureForTests() {
+  requestHeadersTooLargeFailure = null;
+}
 
 export function formatDateTime(value?: string | null) {
   if (!value) {
@@ -133,6 +187,10 @@ async function fetchWorkable<T>(
   scopedPath: string,
   init?: RequestInit
 ): Promise<T> {
+  if (requestHeadersTooLargeFailure) {
+    throw requestHeadersTooLargeFailure;
+  }
+
   const response = await fetch(`/api/workable/${scopedPath}`, {
     ...init,
     headers: {
@@ -141,6 +199,10 @@ async function fetchWorkable<T>(
       ...init?.headers,
     },
   });
+
+  if (response.status === 431) {
+    throw stopWorkableRequestsForOversizedHeaders()!;
+  }
 
   const contentType = response.headers.get("content-type") ?? "";
   const responseText = await response.text();
@@ -191,6 +253,10 @@ export function createWorkableRealtimeUrl(connection: WorkableConnection) {
 }
 
 export async function getWorkableRealtimeAccessToken(apiUrl: string) {
+  if (requestHeadersTooLargeFailure) {
+    throw requestHeadersTooLargeFailure;
+  }
+
   const cached = realtimeAccessTokenCache.get(apiUrl);
   const now = Date.now();
   const forceRefresh = realtimeAccessTokenForceRefresh.has(apiUrl);
@@ -215,6 +281,10 @@ export async function getWorkableRealtimeAccessToken(apiUrl: string) {
           : undefined,
       }
     );
+    if (response.status === 431) {
+      throw stopWorkableRequestsForOversizedHeaders()!;
+    }
+
     const body = await response.json().catch(() => ({}));
     if (response.status === 401) {
       redirectToLogin(apiUrl, "unauthorized");

@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   WorkableApiError,
+  WorkableRequestHeadersTooLargeError,
   WorkableRealtimeAuthenticationError,
   getWorkableRealtimeAccessToken,
+  hasWorkableRequestHeadersTooLargeFailure,
   invalidateWorkableRealtimeAccessToken,
+  isWorkableRequestHeadersTooLargeError,
+  resetWorkableRequestHeadersTooLargeFailureForTests,
+  stopWorkableRequestsForOversizedHeaders,
   workableFetch,
   workableQueryFetch,
   type WorkableConnection,
@@ -141,6 +146,79 @@ test("workableFetch surfaces API problem details and redirects auth-required res
   }
 });
 
+test("a 431 opens a page-wide circuit breaker for subsequent Workable requests", async () => {
+  let fetchCount = 0;
+  const restoreFetch = mockFetch(async () => {
+    fetchCount++;
+    return new Response("{malformed", {
+      headers: { "content-type": "application/json" },
+      status: 431,
+    });
+  });
+
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  try {
+    await assert.rejects(
+      workableFetch(connection, "views/workers"),
+      (error) => {
+        assert.equal(error instanceof WorkableRequestHeadersTooLargeError, true);
+        assert.match((error as Error).message, /Automatic requests have stopped/);
+        return true;
+      }
+    );
+    await assert.rejects(
+      workableFetch(connection, "views/overview"),
+      WorkableRequestHeadersTooLargeError
+    );
+    assert.equal(fetchCount, 1);
+  } finally {
+    resetWorkableRequestHeadersTooLargeFailureForTests();
+    restoreFetch();
+  }
+});
+
+test("oversized-header detection recognizes fetch and SignalR error shapes", () => {
+  const terminal = new WorkableRequestHeadersTooLargeError();
+
+  assert.equal(isWorkableRequestHeadersTooLargeError(terminal), true);
+  assert.equal(
+    isWorkableRequestHeadersTooLargeError(new WorkableApiError("large", 431, null)),
+    true
+  );
+  assert.equal(
+    isWorkableRequestHeadersTooLargeError(new WorkableApiError("failed", 500, null)),
+    false
+  );
+  assert.equal(isWorkableRequestHeadersTooLargeError({ status: 431 }), true);
+  assert.equal(isWorkableRequestHeadersTooLargeError({ statusCode: "431" }), true);
+  assert.equal(
+    isWorkableRequestHeadersTooLargeError(new Error("Request Header Fields Too Large")),
+    true
+  );
+  assert.equal(
+    isWorkableRequestHeadersTooLargeError(new Error("Negotiation returned status 431")),
+    true
+  );
+  assert.equal(
+    isWorkableRequestHeadersTooLargeError(
+      new Error("Response status code does not indicate success: 431")
+    ),
+    true
+  );
+  assert.equal(isWorkableRequestHeadersTooLargeError("HTTP 431"), true);
+  assert.equal(isWorkableRequestHeadersTooLargeError("Disconnected after 431 ms"), false);
+  assert.equal(isWorkableRequestHeadersTooLargeError("Worker 431 failed"), false);
+  assert.equal(isWorkableRequestHeadersTooLargeError(null), false);
+
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  assert.equal(stopWorkableRequestsForOversizedHeaders(new Error("temporary")), null);
+  assert.equal(hasWorkableRequestHeadersTooLargeFailure(), false);
+  assert.strictEqual(stopWorkableRequestsForOversizedHeaders(terminal), terminal);
+  assert.equal(hasWorkableRequestHeadersTooLargeFailure(), true);
+  assert.strictEqual(stopWorkableRequestsForOversizedHeaders(), terminal);
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+});
+
 test("getWorkableRealtimeAccessToken fetches, caches, and reuses hosted API tokens", async () => {
   const apiUrl = "https://token-cache.example.com/workable";
   const calls: string[] = [];
@@ -241,6 +319,38 @@ test("getWorkableRealtimeAccessToken throws the server error message when token 
       /Hosted token exchange failed\./
     );
   } finally {
+    restoreFetch();
+  }
+});
+
+test("a realtime token 431 opens the shared Workable request circuit breaker", async () => {
+  const apiUrl = "https://token-headers.example.com/workable";
+  let fetchCount = 0;
+  const restoreFetch = mockFetch(async () => {
+    fetchCount++;
+    return new Response("{malformed", {
+      headers: { "content-type": "application/json" },
+      status: 431,
+    });
+  });
+
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  try {
+    await assert.rejects(
+      getWorkableRealtimeAccessToken(apiUrl),
+      WorkableRequestHeadersTooLargeError
+    );
+    await assert.rejects(
+      getWorkableRealtimeAccessToken(apiUrl),
+      WorkableRequestHeadersTooLargeError
+    );
+    await assert.rejects(
+      workableFetch(connection, "views/workers"),
+      WorkableRequestHeadersTooLargeError
+    );
+    assert.equal(fetchCount, 1);
+  } finally {
+    resetWorkableRequestHeadersTooLargeFailureForTests();
     restoreFetch();
   }
 });

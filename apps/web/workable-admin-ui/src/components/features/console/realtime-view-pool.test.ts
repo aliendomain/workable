@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { HubConnectionState, type HubConnection } from "@microsoft/signalr";
 import {
+  consoleRealtimeRetryPolicy,
   createConsoleRealtimeSharedConnectionKey,
   createConsoleRealtimeSharedViewPool,
   createWorkableRealtimeHubUrl,
   type ConsoleRealtimeSharedViewConnectionLease,
 } from "./realtime-view-pool.ts";
+import {
+  resetWorkableRequestHeadersTooLargeFailureForTests,
+  stopWorkableRequestsForOversizedHeaders,
+} from "../../../lib/workable.ts";
 
 test("realtime view helpers build stable shared keys and same-origin hub urls", () => {
   assert.equal(
@@ -254,6 +259,117 @@ test("shared view pool stops retrying after a fresh token is also rejected", asy
   assert.deepEqual(invalidations, ["https://workable.example.com/workable"]);
 
   lease.release();
+});
+
+test("shared view pool never restarts a connection rejected with 431", async () => {
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  const connection = new FakeHubConnection();
+  connection.startErrors.push(
+    new Error("Failed to complete negotiation: Status code '431'")
+  );
+  const pool = createConsoleRealtimeSharedViewPool({
+    createConnection: () => connection as unknown as HubConnection,
+    restartDelayMs: 0,
+    stopDelayMs: 0,
+  });
+  const lease = acquire(pool);
+
+  try {
+    lease.ensureStarted();
+    await wait(10);
+    const startsAfterFailure = connection.startCount;
+    await wait(10);
+
+    assert.equal(startsAfterFailure, 1);
+    assert.equal(connection.startCount, 1);
+    assert.equal(lease.getSnapshot().connectionState, "disconnected");
+    assert.match(lease.getSnapshot().error ?? "", /431/);
+  } finally {
+    lease.release();
+    resetWorkableRequestHeadersTooLargeFailureForTests();
+  }
+});
+
+test("automatic realtime reconnect policy treats 431 as terminal", () => {
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  try {
+    assert.deepEqual(
+      [0, 1, 2, 3, 4].map((previousRetryCount) =>
+        consoleRealtimeRetryPolicy.nextRetryDelayInMilliseconds({
+          elapsedMilliseconds: previousRetryCount * 10,
+          previousRetryCount,
+          retryReason: new Error("temporary disconnect"),
+        })
+      ),
+      [0, 2000, 10000, 30000, null]
+    );
+    assert.equal(
+      consoleRealtimeRetryPolicy.nextRetryDelayInMilliseconds({
+        elapsedMilliseconds: 0,
+        previousRetryCount: 0,
+        retryReason: new Error("Request Header Fields Too Large (431)"),
+      }),
+      null
+    );
+    assert.equal(
+      consoleRealtimeRetryPolicy.nextRetryDelayInMilliseconds({
+        elapsedMilliseconds: 10,
+        previousRetryCount: 0,
+        retryReason: new Error("temporary disconnect"),
+      }),
+      null
+    );
+  } finally {
+    resetWorkableRequestHeadersTooLargeFailureForTests();
+  }
+});
+
+test("a 431 cancels an already-scheduled shared realtime restart", async () => {
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  const connection = new FakeHubConnection();
+  const pool = createConsoleRealtimeSharedViewPool({
+    createConnection: () => connection as unknown as HubConnection,
+    restartDelayMs: 20,
+    stopDelayMs: 0,
+  });
+  const lease = acquire(pool);
+
+  try {
+    lease.ensureStarted();
+    await flushMicrotasks();
+    connection.triggerClose(new Error("temporary disconnect"));
+    connection.triggerClose(new Error("Status code '431'"));
+    await wait(30);
+
+    assert.equal(connection.startCount, 1);
+    assert.match(lease.getSnapshot().error ?? "", /431/);
+  } finally {
+    lease.release();
+    resetWorkableRequestHeadersTooLargeFailureForTests();
+  }
+});
+
+test("an already-open 431 circuit prevents a shared realtime connection from starting", async () => {
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  const connection = new FakeHubConnection();
+  const pool = createConsoleRealtimeSharedViewPool({
+    createConnection: () => connection as unknown as HubConnection,
+    stopDelayMs: 0,
+  });
+  const lease = acquire(pool);
+
+  try {
+    stopWorkableRequestsForOversizedHeaders();
+    lease.ensureStarted();
+    await flushMicrotasks();
+
+    assert.equal(connection.startCount, 0);
+    assert.equal(lease.getSnapshot().connectionState, "disconnected");
+    assert.match(lease.getSnapshot().error ?? "", /Automatic requests have stopped/);
+  } finally {
+    lease.release();
+    resetWorkableRequestHeadersTooLargeFailureForTests();
+  }
 });
 
 function acquire(pool: ReturnType<typeof createConsoleRealtimeSharedViewPool>): ConsoleRealtimeSharedViewConnectionLease {
