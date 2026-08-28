@@ -366,6 +366,84 @@ test("concurrent catalog success cannot retrigger a failed catalog generation", 
   }
 });
 
+test("catalog retries a failed scope after visiting a cached scope", async () => {
+  clearDefinitionCatalogLevelCache();
+  const previousFetch = globalThis.fetch;
+  const calls: string[] = [];
+  let failedScopeRequestCount = 0;
+  let resolveRecoveredScope: ((response: Response) => void) | undefined;
+  const recoveredScope = new Promise<Response>((resolve) => {
+    resolveRecoveredScope = resolve;
+  });
+  globalThis.fetch = (async (input) => {
+    const requestPath = String(input);
+    calls.push(requestPath);
+    if (requestPath.endsWith("definitions?level=true&category=Cached")) {
+      return Response.json({
+        categories: [],
+        definitions: [{ category: "Cached", id: { value: "cached-1" }, name: "CachedWork" }],
+      });
+    }
+
+    if (requestPath.endsWith("definitions?level=true&category=Failed")) {
+      failedScopeRequestCount += 1;
+      return failedScopeRequestCount === 1
+        ? Response.json({ error: "Failed catalog scope" }, { status: 404 })
+        : recoveredScope;
+    }
+
+    return Response.json({ error: `Unhandled request: ${requestPath}` }, { status: 500 });
+  }) as typeof fetch;
+  const browser = (path: string) => (
+    <DefinitionCatalogBrowser
+      connection={connection}
+      emptyState={<div>No entries</div>}
+      loadingState={<div>Loading catalog</div>}
+      onNavigate={() => undefined}
+      path={path}
+      renderCategory={(category) => <div>{category.label}</div>}
+      renderDefinition={(definition) => <div>{definition.name}</div>}
+      renderError={(error) => <div>{error}</div>}
+    />
+  );
+  const element = (path: string, warmCachedScope = false) => (
+    <>
+      {browser(path)}
+      {warmCachedScope ? browser("Cached") : null}
+    </>
+  );
+  const render = await renderDom(element("Failed"));
+
+  try {
+    await render.waitFor(() => render.getByText("Failed catalog scope"));
+    await render.rerender(element("Failed", true));
+    await render.waitFor(() => render.getByText("CachedWork"));
+    await render.rerender(element("Cached"));
+    await render.waitFor(() => render.getByText("CachedWork"));
+
+    await render.rerender(element("Failed"));
+    await render.waitFor(() => assert.equal(render.queryByText("CachedWork"), null));
+    assert.equal(failedScopeRequestCount, 2);
+    resolveRecoveredScope?.(Response.json({
+      categories: [],
+      definitions: [{ category: "Failed", id: { value: "recovered-1" }, name: "RecoveredWork" }],
+    }));
+    await render.waitFor(() => render.getByText("RecoveredWork"));
+
+    assert.equal(
+      calls.filter((path) => path.endsWith("definitions?level=true&category=Cached")).length,
+      1
+    );
+  } finally {
+    resolveRecoveredScope?.(
+      Response.json({ error: "Test cleanup" }, { status: 500 })
+    );
+    globalThis.fetch = previousFetch;
+    await render.restore();
+    clearDefinitionCatalogLevelCache();
+  }
+});
+
 test("catalog failure invalidation stays isolated to the affected connection", async () => {
   clearDefinitionCatalogLevelCache();
   const previousFetch = globalThis.fetch;

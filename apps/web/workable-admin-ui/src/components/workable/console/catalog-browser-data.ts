@@ -116,6 +116,10 @@ export function useDefinitionCatalogLevel(
   useEffect(() => {
     const scopeChanged = scopeKeyRef.current !== cacheKey;
     scopeKeyRef.current = cacheKey;
+    if (scopeChanged) {
+      failedRequestKeyRef.current = null;
+    }
+
     if (!hasConnection || !path) {
       queueMicrotask(() => setState({ loading: false }));
       return;
