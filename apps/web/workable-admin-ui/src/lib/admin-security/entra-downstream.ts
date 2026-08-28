@@ -41,7 +41,6 @@ const MAX_TOKEN_COOKIE_SNAPSHOTS = 4;
 const MAX_TOKEN_COOKIE_SNAPSHOT_BYTES = 6 * 1024;
 const MAX_ACCESS_TOKEN_CACHE_ENTRIES = 256;
 const MAX_CLEARED_TOKEN_OWNERS = 256;
-const MAX_REFRESH_COORDINATOR_KEYS = 8;
 const MAX_ACCESS_TOKEN_BYTES = 64 * 1024;
 const MAX_REFRESH_TOKEN_BYTES = 4 * 1024;
 const MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
@@ -116,7 +115,7 @@ type EntraTargetAccessTokenOptions = {
 };
 
 type EntraRefreshCoordinator = {
-  keys: Set<string>;
+  key: string;
   lastError?: unknown;
   latestState: StoredEntraTargetTokenState;
   tail: Promise<void>;
@@ -397,20 +396,16 @@ async function coordinateEntraTargetAccessTokenRefresh(
   const secret = sessionSecret(settings)!;
   const refreshToken = stored.refreshToken!;
 
-  const coordinatorKey = createRefreshCoordinatorKey(
-    refreshToken,
-    stored.ownerBinding,
-    secret
-  );
+  const coordinatorKey = createRefreshCoordinatorKey(stored.ownerBinding, secret);
   let coordinator = refreshCoordinators.get(coordinatorKey);
   if (!coordinator) {
     coordinator = {
-      keys: new Set(),
+      key: coordinatorKey,
       latestState: cloneStoredState(stored),
       tail: Promise.resolve(),
       version: 0,
     };
-    registerRefreshCoordinator(coordinatorKey, coordinator);
+    refreshCoordinators.set(coordinatorKey, coordinator);
   }
 
   const requestedVersion = coordinator.version;
@@ -485,14 +480,6 @@ async function coordinateEntraTargetAccessTokenRefresh(
     );
     coordinator.lastError = undefined;
     coordinator.version++;
-    registerRefreshCoordinator(
-      createRefreshCoordinatorKey(
-        nextRefreshToken,
-        coordinator.latestState.ownerBinding,
-        secret
-      ),
-      coordinator
-    );
     return { state: cloneStoredState(coordinator.latestState), accessToken };
   } finally {
     release();
@@ -502,36 +489,17 @@ async function coordinateEntraTargetAccessTokenRefresh(
   }
 }
 
-function createRefreshCoordinatorKey(
-  refreshToken: string,
-  ownerBinding: string,
-  secret: string
-) {
+function createRefreshCoordinatorKey(ownerBinding: string, secret: string) {
   return sign(
-    `workable.admin.entra.refresh.v2\0${ownerBinding}\0${refreshToken}`,
+    `workable.admin.entra.refresh-coordinator.v1\0${ownerBinding}`,
     secret
   );
 }
 
-function registerRefreshCoordinator(key: string, coordinator: EntraRefreshCoordinator) {
-  refreshCoordinators.set(key, coordinator);
-  coordinator.keys.add(key);
-  while (coordinator.keys.size > MAX_REFRESH_COORDINATOR_KEYS) {
-    const oldest = coordinator.keys.values().next().value as string;
-    coordinator.keys.delete(oldest);
-    if (refreshCoordinators.get(oldest) === coordinator) {
-      refreshCoordinators.delete(oldest);
-    }
-  }
-}
-
 function removeRefreshCoordinator(coordinator: EntraRefreshCoordinator) {
-  for (const key of coordinator.keys) {
-    if (refreshCoordinators.get(key) === coordinator) {
-      refreshCoordinators.delete(key);
-    }
+  if (refreshCoordinators.get(coordinator.key) === coordinator) {
+    refreshCoordinators.delete(coordinator.key);
   }
-  coordinator.keys.clear();
 }
 
 function cloneStoredState(state: StoredEntraTargetTokenState): StoredEntraTargetTokenState {

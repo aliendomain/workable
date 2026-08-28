@@ -115,13 +115,38 @@ test("workableFetch can bypass an identical in-flight GET for fresh reconciliati
   }
 });
 
-test("workableFetch surfaces API problem details and redirects auth-required responses to login", async () => {
+test("workableFetch preserves unmarked hosted authentication failures", async () => {
+  const replacements: string[] = [];
+  const restoreWindow = mockWindowLocation("/workers", "", replacements);
+  const restoreFetch = mockFetch(async () =>
+    jsonResponse(
+      { error: "The hosted Workable API rejected the bearer token." },
+      { status: 401 }
+    )
+  );
+
+  try {
+    await assert.rejects(
+      workableFetch(connection, "views/workers"),
+      (error) => error instanceof WorkableApiError && error.status === 401
+    );
+    assert.deepEqual(replacements, []);
+  } finally {
+    restoreFetch();
+    restoreWindow();
+  }
+});
+
+test("workableFetch redirects proxy-signaled reauthentication failures to login", async () => {
   const replacements: string[] = [];
   const restoreWindow = mockWindowLocation("/workers", "?state=Running", replacements);
   const restoreFetch = mockFetch(async () =>
     jsonResponse(
-      { error: "Authentication is required for the Workable admin UI." },
-      { status: 401 }
+      { error: "Microsoft Entra ID access is no longer available. Sign in again." },
+      {
+        status: 401,
+        headers: { "x-workable-admin-reauthenticate": "true" },
+      }
     )
   );
 
@@ -132,7 +157,10 @@ test("workableFetch surfaces API problem details and redirects auth-required res
         assert.equal(error instanceof WorkableApiError, true);
         const apiError = error as WorkableApiError;
         assert.equal(apiError.status, 401);
-        assert.equal(apiError.message, "Authentication is required for the Workable admin UI.");
+        assert.equal(
+          apiError.message,
+          "Microsoft Entra ID access is no longer available. Sign in again."
+        );
         return true;
       }
     );

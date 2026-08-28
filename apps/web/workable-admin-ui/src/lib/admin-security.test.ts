@@ -3052,6 +3052,43 @@ test("unversioned, unrecognized, and primitive delegated-token state fails close
     );
     assert.equal(response.status, 401);
   }
+
+  const unsupportedPayload = encrypt(
+    JSON.stringify({ ownerBinding, refreshToken: "unversioned-refresh" }),
+    secret,
+    "entra-target-token"
+  );
+  const unsupportedRoot =
+    "__Host-workable_admin_entra_target_token.00000000-0000-4000-8000-000000000099";
+  const proxyResponse = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/host", {
+      headers: {
+        cookie: [
+          session.header.split(";", 1)[0]!,
+          `${unsupportedRoot}.parts=1`,
+          `${unsupportedRoot}.0=${unsupportedPayload}`,
+        ].join("; "),
+      },
+    }),
+    ["host"],
+    {
+      env,
+      fetch: async () => {
+        throw new Error("Unsupported cookie state must fail before proxy backchannel work.");
+      },
+    }
+  );
+
+  assert.equal(proxyResponse.status, 401);
+  assert.equal(
+    proxyResponse.headers.get("x-workable-admin-reauthenticate"),
+    "true"
+  );
+  assert.ok(
+    getSetCookies(proxyResponse.headers).some((cookie) =>
+      cookie.startsWith(`${unsupportedRoot}.parts=`) && /Max-Age=0/.test(cookie)
+    )
+  );
 });
 
 test("four concurrent target groups remain below the legacy request-header ceiling", async () => {
@@ -3111,10 +3148,10 @@ test("four concurrent target groups remain below the legacy request-header ceili
   );
 });
 
-test("concurrent target rotations keep refresh coordinator aliases bounded", async () => {
+test("delayed browser snapshots stay on one session-bound refresh coordinator", async () => {
   resetEntraBackchannelCachesForTests();
   resetEntraRefreshCoordinatorsForTests();
-  const targets = Array.from({ length: 12 }, (_, index) => ({
+  const targets = Array.from({ length: 13 }, (_, index) => ({
     apiUrl: `https://coordinator-${index + 1}.example.com/workable`,
     scope: `api://coordinator-${index + 1}/workable.access`,
   }));
@@ -3127,15 +3164,24 @@ test("concurrent target rotations keep refresh coordinator aliases bounded", asy
     { refresh_token: "initial-coordinator-refresh" }
   );
   const observedCoordinatorSizes: number[] = [];
+  const refreshAuthorities: string[] = [];
+  let ninthRefreshStarted!: () => void;
+  const ninthRefreshHasStarted = new Promise<void>((resolve) => {
+    ninthRefreshStarted = resolve;
+  });
+  let finishNinthRefresh!: () => void;
+  const ninthRefreshCanFinish = new Promise<void>((resolve) => {
+    finishNinthRefresh = resolve;
+  });
   let tokenCalls = 0;
-  const responses = await Promise.all(targets.map((target) =>
+  const requestTarget = (target: (typeof targets)[number]) =>
     createEntraTargetAccessTokenResponse(
       new Request(
         `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(target.apiUrl)}`,
         { headers: { cookie: cookieHeader } }
       ),
       env,
-      async (url) => {
+      async (url, init) => {
         if (String(url).includes(".well-known/openid-configuration")) {
           return Response.json({
             token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
@@ -3143,18 +3189,40 @@ test("concurrent target rotations keep refresh coordinator aliases bounded", asy
         }
         observedCoordinatorSizes.push(entraRefreshCoordinatorSizeForTests());
         tokenCalls++;
+        refreshAuthorities.push(
+          (init?.body as URLSearchParams).get("refresh_token") ?? ""
+        );
+        if (tokenCalls === 9) {
+          ninthRefreshStarted();
+          await ninthRefreshCanFinish;
+        }
         return Response.json({
           access_token: `coordinator-access-${tokenCalls}`,
           expires_in: 3600,
           refresh_token: `coordinator-refresh-${tokenCalls}`,
         });
       }
-    )
-  ));
+    );
 
-  assert.deepEqual(responses.map((response) => response.status), Array(12).fill(200));
-  assert.equal(tokenCalls, 12);
-  assert.equal(Math.max(...observedCoordinatorSizes), 8);
+  const firstResponses = Promise.all(targets.slice(0, 12).map(requestTarget));
+  await ninthRefreshHasStarted;
+  const delayedResponse = requestTarget(targets[12]!);
+  await Promise.resolve();
+  await Promise.resolve();
+  finishNinthRefresh();
+  const responses = [...await firstResponses, await delayedResponse];
+
+  assert.deepEqual(responses.map((response) => response.status), Array(13).fill(200));
+  assert.equal(tokenCalls, 13);
+  assert.equal(
+    refreshAuthorities.filter((authority) => authority === "initial-coordinator-refresh").length,
+    1
+  );
+  assert.deepEqual(
+    refreshAuthorities.slice(1),
+    Array.from({ length: 12 }, (_, index) => `coordinator-refresh-${index + 1}`)
+  );
+  assert.equal(Math.max(...observedCoordinatorSizes), 1);
   assert.equal(entraRefreshCoordinatorSizeForTests(), 0);
 });
 
