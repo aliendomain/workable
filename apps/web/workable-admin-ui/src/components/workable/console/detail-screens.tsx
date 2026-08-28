@@ -961,6 +961,7 @@ export function WorkerConsoleView({
   const logPageRequestGenerationRef = useRef(0);
   const timelinePageRequestGenerationRef = useRef(0);
   const refreshSeed = refreshToken + actionRefreshToken + manualRefreshToken;
+  const paginationConnectionScope = createWorkableConnectionScopeKey(connection);
   const landingSnapshot = useWorkableResource<WorkWorkerOverviewComponent>(
     connection,
     createWorkerOverviewPath(workerId, {
@@ -1590,7 +1591,7 @@ export function WorkerConsoleView({
       hasMore: false,
       loadingMore: false,
     });
-  }, [logQueryKey, refreshSeed, workerId]);
+  }, [logQueryKey, paginationConnectionScope, refreshSeed, workerId]);
 
   useEffect(() => {
     timelinePageRequestGenerationRef.current += 1;
@@ -1600,7 +1601,7 @@ export function WorkerConsoleView({
       hasMore: false,
       loadingMore: false,
     });
-  }, [refreshSeed, timelineQueryKey, workerId]);
+  }, [paginationConnectionScope, refreshSeed, timelineQueryKey, workerId]);
 
   useEffect(() => {
     if (!logBasePage) {
@@ -1679,6 +1680,7 @@ export function WorkerConsoleView({
   const loadMoreLogs = useCallback(async () => {
     if (
       logPageLoadState.loadingMore ||
+      logPageLoadState.error !== undefined ||
       !logPageLoadState.hasMore ||
       !logPageLoadState.nextCursor
     ) {
@@ -1736,6 +1738,7 @@ export function WorkerConsoleView({
     }
   }, [
     connection,
+    logPageLoadState.error,
     logPageLoadState.hasMore,
     logPageLoadState.loadingMore,
     logPageLoadState.nextCursor,
@@ -1745,7 +1748,12 @@ export function WorkerConsoleView({
   ]);
 
   const loadMoreTimeline = useCallback(async () => {
-    if (timelinePageLoadState.loadingMore || !timelinePageLoadState.hasMore || !timelinePageLoadState.nextCursor) {
+    if (
+      timelinePageLoadState.loadingMore ||
+      timelinePageLoadState.error !== undefined ||
+      !timelinePageLoadState.hasMore ||
+      !timelinePageLoadState.nextCursor
+    ) {
       return;
     }
 
@@ -1801,6 +1809,7 @@ export function WorkerConsoleView({
   }, [
     connection,
     normalizedSelectedTimelineFilters,
+    timelinePageLoadState.error,
     timelinePageLoadState.hasMore,
     timelinePageLoadState.loadingMore,
     timelinePageLoadState.nextCursor,
@@ -2105,12 +2114,11 @@ export function WorkerConsoleView({
 
     timelinePageRequestGenerationRef.current += 1;
     setExtraTimelineItems([]);
-    setTimelinePageLoadState({
-      error: undefined,
-      hasMore: timelineBasePage?.hasMore ?? false,
-      loadingMore: false,
-      nextCursor: timelineBasePage?.cursor ?? null,
-    });
+    setTimelinePageLoadState((current) => restoreBaseCursorPaginationAfterCompaction(
+      current,
+      timelineBasePage?.hasMore ?? false,
+      timelineBasePage?.cursor ?? null
+    ));
   }, [extraTimelineItems.length, timelineBasePage]);
   const forgetPushedTimelineItems = useCallback(() => {
     setRealtimeTimelineItems((current) => {
@@ -2528,6 +2536,7 @@ export function IterationConsoleView({
     loadingMore: false,
   });
   const iterationLogPageRequestGenerationRef = useRef(0);
+  const paginationConnectionScope = createWorkableConnectionScopeKey(connection);
   const focusedIterationHiddenSnapshotRef = useRef<ReadonlySet<IterationDetailPanelId> | null>(null);
   const relativeNow = useLiveRelativeTimeNow();
   const isOutputPanelVisible = !hiddenPanelIds.has("iterationOutput");
@@ -2663,7 +2672,7 @@ export function IterationConsoleView({
       hasMore: false,
       loadingMore: false,
     });
-  }, [iterationLogQueryKey, refreshToken, sequence, workerId]);
+  }, [iterationLogQueryKey, paginationConnectionScope, refreshToken, sequence, workerId]);
 
   useEffect(() => {
     if (!iterationLogBasePage) {
@@ -2682,6 +2691,7 @@ export function IterationConsoleView({
   const loadMoreIterationLogs = useCallback(async () => {
     if (
       iterationLogPageLoadState.loadingMore ||
+      iterationLogPageLoadState.error !== undefined ||
       !iterationLogPageLoadState.hasMore ||
       !iterationLogPageLoadState.nextCursor
     ) {
@@ -2729,6 +2739,7 @@ export function IterationConsoleView({
     }
   }, [
     connection,
+    iterationLogPageLoadState.error,
     iterationLogPageLoadState.hasMore,
     iterationLogPageLoadState.loadingMore,
     iterationLogPageLoadState.nextCursor,
@@ -4217,17 +4228,24 @@ function IterationMessagePanel({
       }
 
       return {
-        ...current,
-        hasMore: current.baseHasMore,
+        ...restoreBaseCursorPaginationAfterCompaction(
+          current,
+          current.baseHasMore,
+          current.baseCursor ?? null
+        ),
         items: current.baseItems,
-        loadingMore: false,
-        nextCursor: current.baseCursor ?? null,
       };
     });
   }, [pagedMessageCount]);
 
   const loadMore = useCallback(() => {
-    if (messagesState.loading || messagesState.loadingMore || !messagesState.hasMore || !messagesState.nextCursor) {
+    if (
+      messagesState.loading ||
+      messagesState.loadingMore ||
+      messagesState.error !== undefined ||
+      !messagesState.hasMore ||
+      !messagesState.nextCursor
+    ) {
       return;
     }
 
@@ -4272,6 +4290,7 @@ function IterationMessagePanel({
       });
   }, [
     connection,
+    messagesState.error,
     messagesState.hasMore,
     messagesState.loading,
     messagesState.loadingMore,
@@ -4554,6 +4573,22 @@ export function stopAutomaticCursorPaginationAfterError<
     loadingMore: false,
     nextCursor: null,
   };
+}
+
+export function restoreBaseCursorPaginationAfterCompaction<
+  TState extends WorkerOverviewPageLoadState,
+>(current: TState, baseHasMore: boolean, baseCursor: string | null): TState {
+  const stoppedAfterError = current.error !== undefined;
+  return {
+    ...current,
+    hasMore: !stoppedAfterError && baseHasMore,
+    loadingMore: false,
+    nextCursor: stoppedAfterError ? null : baseCursor,
+  };
+}
+
+function createWorkableConnectionScopeKey(connection: WorkableConnection) {
+  return `${connection.apiUrl.trim()}\n${connection.systemName?.trim() ?? ""}`;
 }
 
 const workerLogActivityPageSize = 50;

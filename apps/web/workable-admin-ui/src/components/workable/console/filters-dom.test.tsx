@@ -293,6 +293,79 @@ test("catalog 404 does not republish an empty cache and request forever", async 
   }
 });
 
+test("concurrent catalog success cannot retrigger a failed catalog generation", async () => {
+  clearDefinitionCatalogLevelCache();
+  const previousFetch = globalThis.fetch;
+  const calls: string[] = [];
+  let resolveMissingLevel: ((response: Response) => void) | undefined;
+  const missingLevel = new Promise<Response>((resolve) => {
+    resolveMissingLevel = resolve;
+  });
+  globalThis.fetch = (async (input) => {
+    const path = String(input);
+    calls.push(path);
+    if (path === "/api/workable/systems/Ops/definitions?level=true") {
+      return Response.json({
+        categories: [],
+        definitions: [{ category: "Ops", id: { value: "root-1" }, name: "RootWork" }],
+      });
+    }
+
+    if (path === "/api/workable/systems/Ops/definitions?level=true&category=Missing") {
+      return missingLevel;
+    }
+
+    return Response.json({ error: `Unhandled request: ${path}` }, { status: 500 });
+  }) as typeof fetch;
+  const browser = (path: string) => (
+    <DefinitionCatalogBrowser
+      connection={connection}
+      emptyState={<div>No entries</div>}
+      loadingState={<div>Loading catalog</div>}
+      onNavigate={() => undefined}
+      path={path}
+      renderCategory={(category) => <div>{category.label}</div>}
+      renderDefinition={(definition) => <div>{definition.name}</div>}
+      renderError={(error) => <div>{error}</div>}
+    />
+  );
+  const render = await renderDom(
+    <>
+      {browser("")}
+      {browser("Missing")}
+    </>
+  );
+
+  try {
+    await render.waitFor(() => render.getByText("RootWork"));
+    resolveMissingLevel?.(
+      Response.json({ error: "Missing catalog level" }, { status: 404 })
+    );
+    await render.waitFor(() => render.getByText("Missing catalog level"));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(
+      calls.filter((path) =>
+        path === "/api/workable/systems/Ops/definitions?level=true&category=Missing"
+      ).length,
+      1
+    );
+    assert.equal(
+      calls.filter((path) =>
+        path === "/api/workable/systems/Ops/definitions?level=true"
+      ).length,
+      2
+    );
+  } finally {
+    resolveMissingLevel?.(
+      Response.json({ error: "Test cleanup" }, { status: 500 })
+    );
+    globalThis.fetch = previousFetch;
+    await render.restore();
+    clearDefinitionCatalogLevelCache();
+  }
+});
+
 test("catalog failure invalidation stays isolated to the affected connection", async () => {
   clearDefinitionCatalogLevelCache();
   const previousFetch = globalThis.fetch;

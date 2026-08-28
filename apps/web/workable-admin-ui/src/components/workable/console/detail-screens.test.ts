@@ -89,6 +89,7 @@ import {
   parseQueueJson,
   parseSchemaJsonValue,
   retainLatestWorkerTimelineRealtimeItems,
+  restoreBaseCursorPaginationAfterCompaction,
   serializeWorkerLogQuery,
   serializeWorkerTimelineQuery,
   shouldForgetPagedIterationMessages,
@@ -519,7 +520,7 @@ test("iteration console view loads the overview landing response and renders the
   }
 });
 
-test("iteration log pagination ignores a failed page from an older refresh generation", async () => {
+test("iteration log pagination ignores a successful page from an older connection generation", async () => {
   let overviewRequestCount = 0;
   let resolveStaleLogPage: ((response: Response) => void) | undefined;
   const staleLogPage = new Promise<Response>((resolve) => {
@@ -530,7 +531,7 @@ test("iteration log pagination ignores a failed page from an older refresh gener
       return staleLogPage;
     }
 
-    if (call.input === "/api/workable/systems/Ops/workers/worker-1/iterations/7/overview?activity=Logs") {
+    if (call.input.endsWith("/workers/worker-1/iterations/7/overview?activity=Logs")) {
       overviewRequestCount += 1;
       const overview = iterationOverviewComponent();
       const logPage = overview.logs.page;
@@ -542,15 +543,15 @@ test("iteration log pagination ignores a failed page from an older refresh gener
 
     return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
   });
-  const element = (refreshToken: number) => createElement(IterationConsoleView, {
-    connection,
+  const element = (activeConnection: WorkableConnection) => createElement(IterationConsoleView, {
+    connection: activeConnection,
     onNavigateBack: () => undefined,
     onOpenDefinition: () => undefined,
-    refreshToken,
+    refreshToken: 0,
     sequence: 7,
     workerId: "worker-1",
   });
-  const result = await renderDom(element(0));
+  const result = await renderDom(element(connection));
 
   try {
     await result.waitFor(() => result.getByText("Scroll to load more"));
@@ -571,14 +572,19 @@ test("iteration log pagination ignores a failed page from an older refresh gener
       );
     });
 
-    await result.rerender(element(1));
+    await result.rerender(element({ ...connection, systemName: "Beta" }));
     await result.waitFor(() => assert.equal(overviewRequestCount, 2));
-    resolveStaleLogPage?.(
-      Response.json({ error: "Old iteration log page unavailable" }, { status: 502 })
-    );
+    resolveStaleLogPage?.(Response.json({
+      page: {
+        cursor: null,
+        hasMore: false,
+        items: [workerLog({ id: "stale-log", message: "Stale Alpha log" })],
+      },
+      summary: iterationOverviewComponent().logs.summary,
+    }));
     await new Promise((resolve) => setTimeout(resolve, 25));
 
-    assert.equal(result.queryByText("Old iteration log page unavailable"), null);
+    assert.equal(result.queryByText("Stale Alpha log"), null);
     result.getByText("Scroll to load more");
   } finally {
     resolveStaleLogPage?.(
@@ -919,6 +925,32 @@ test("worker log helpers filter, sort, cap, summarize, and compare entries", () 
       hasMore: false,
       loadingMore: false,
       nextCursor: null,
+    }
+  );
+  assert.deepEqual(
+    restoreBaseCursorPaginationAfterCompaction({
+      error: "Page unavailable",
+      hasMore: false,
+      loadingMore: true,
+      nextCursor: null,
+    }, true, "base-cursor"),
+    {
+      error: "Page unavailable",
+      hasMore: false,
+      loadingMore: false,
+      nextCursor: null,
+    }
+  );
+  assert.deepEqual(
+    restoreBaseCursorPaginationAfterCompaction({
+      hasMore: false,
+      loadingMore: true,
+      nextCursor: null,
+    }, true, "base-cursor"),
+    {
+      hasMore: true,
+      loadingMore: false,
+      nextCursor: "base-cursor",
     }
   );
 

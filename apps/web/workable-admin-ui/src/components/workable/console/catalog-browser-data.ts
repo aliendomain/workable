@@ -110,12 +110,18 @@ export function useDefinitionCatalogLevel(
   const systemName = connection?.systemName;
   const hasConnection = connection !== null;
   const scopeKeyRef = useRef(cacheKey);
+  const failedRequestKeyRef = useRef<string | null>(null);
+  const requestKey = `${cacheKey ?? ""}\n${refreshToken}`;
 
   useEffect(() => {
     const scopeChanged = scopeKeyRef.current !== cacheKey;
     scopeKeyRef.current = cacheKey;
     if (!hasConnection || !path) {
       queueMicrotask(() => setState({ loading: false }));
+      return;
+    }
+
+    if (failedRequestKeyRef.current === requestKey) {
       return;
     }
 
@@ -145,6 +151,7 @@ export function useDefinitionCatalogLevel(
     workableFetch<DefinitionCatalogLevel>(requestConnection, path)
       .then((data) => {
         if (!canceled) {
+          failedRequestKeyRef.current = null;
           if (cacheKey) {
             definitionCatalogLevelCache.set(cacheKey, data);
           }
@@ -153,6 +160,7 @@ export function useDefinitionCatalogLevel(
       })
       .catch((error) => {
         if (!canceled) {
+          failedRequestKeyRef.current = requestKey;
           if (error instanceof WorkableApiError && error.status === 404) {
             invalidateDefinitionCatalogLevelCache(requestConnection);
           }
@@ -175,7 +183,7 @@ export function useDefinitionCatalogLevel(
     return () => {
       canceled = true;
     };
-  }, [apiUrl, systemName, path, refreshToken, hasConnection, cacheKey, cacheVersion]);
+  }, [apiUrl, systemName, path, refreshToken, hasConnection, cacheKey, cacheVersion, requestKey]);
 
   return state;
 }
