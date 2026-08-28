@@ -7,6 +7,7 @@ import {
   WorkerConsoleView,
   resolveIterationHttpClientProfilingAvailable,
   resolveIterationSqlProfilingAvailable,
+  type WorkerConsoleViewUiStateSnapshot,
 } from "@/components/workable/console/detail-screens";
 import { renderDom } from "@/test/dom";
 import type {
@@ -107,6 +108,48 @@ test("catalog renders diagnostic capture controls before definitions and refresh
         2
       );
     });
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("catalog clears prior-system definitions before a new system request fails", async () => {
+  const betaConnection: WorkableConnection = {
+    ...connection,
+    systemName: "Beta",
+  };
+  const fetchMock = installQueueFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/definitions") {
+      return Response.json([definition()]);
+    }
+
+    if (call.input === "/api/workable/systems/Beta/definitions") {
+      return Response.json({ error: "Beta unavailable." }, { status: 502 });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const element = (activeConnection: WorkableConnection) => (
+    <DefinitionsView
+      canControlSystem={false}
+      canViewDiagnostics={false}
+      catalogScope={null}
+      connection={activeConnection}
+      onCatalogScopeChange={() => undefined}
+      onOpenDefinition={() => undefined}
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+  const result = await renderDom(element(connection));
+
+  try {
+    await result.waitFor(() => result.getByText("ImportOrders"));
+    await result.rerender(element(betaConnection));
+    await result.waitFor(() => result.getByText("Beta unavailable."));
+    assert.throws(() => result.getByText("ImportOrders"));
   } finally {
     fetchMock.restore();
     await result.restore();
@@ -427,6 +470,176 @@ test("worker console exposes a view workflow action when the overview carries a 
     await result.click(result.getByRole("button", { name: "View Workflow" }));
     assert.deepEqual(openedWorkflowRuns, ["run-123"]);
   } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("worker pagination ignores failed and successful pages from an older connection generation", async () => {
+  let overviewRequestCount = 0;
+  let resolveStaleLogPage: ((response: Response) => void) | undefined;
+  let resolveStaleTimelinePage: ((response: Response) => void) | undefined;
+  const staleLogPage = new Promise<Response>((resolve) => {
+    resolveStaleLogPage = resolve;
+  });
+  const staleTimelinePage = new Promise<Response>((resolve) => {
+    resolveStaleTimelinePage = resolve;
+  });
+  const initialUiState = {
+    focusedWorkerHiddenSnapshotPanelIds: null,
+    focusedWorkerPanel: null,
+    hiddenPanelIds: [],
+    logSortDirection: "desc",
+    selectedLogLevels: null,
+    selectedTimelineFilters: null,
+    timelineSortDirection: "desc",
+    workerConfigurationAutoShowAllValues: true,
+    workerConfigurationDisplayMode: "auto",
+    workerConfigurationPanelViewState: "compact",
+    workerControlsPanelViewState: "compact",
+    workerDurationPanelViewState: "standard",
+    workerId: "worker-1",
+    workerLogsPanelViewState: "standard",
+    workerTimelinePanelViewState: "standard",
+  } satisfies WorkerConsoleViewUiStateSnapshot;
+  const fetchMock = installQueueFetch((call) => {
+    if (call.input.includes("/workers/worker-1/overview/logs?")) {
+      return staleLogPage;
+    }
+
+    if (
+      call.input.includes("/workers/worker-1/overview/timeline?") &&
+      call.input.includes("activityCursor=")
+    ) {
+      return staleTimelinePage;
+    }
+
+    if (call.input.includes("/workers/worker-1/overview/timeline?")) {
+      const timeline = workerOverview().timeline;
+      assert.ok(timeline?.page);
+      timeline.page.cursor = `timeline-cursor-${overviewRequestCount + 1}`;
+      timeline.page.hasMore = true;
+      timeline.page.items = [{
+        at: "2026-06-27T12:00:00.000Z",
+        category: "SystemEvent",
+        id: `base-timeline-${overviewRequestCount + 1}`,
+        kind: "StateChange",
+        state: "Queued",
+      }];
+      return Response.json(timeline);
+    }
+
+    if (call.input.includes("/workers/worker-1/overview?")) {
+      overviewRequestCount += 1;
+      const overview = workerOverview();
+      if (overview.logs?.page) {
+        overview.logs.page.cursor = `cursor-${overviewRequestCount}`;
+        overview.logs.page.hasMore = true;
+      }
+      if (overview.timeline?.page) {
+        overview.timeline.page.cursor = `timeline-cursor-${overviewRequestCount}`;
+        overview.timeline.page.hasMore = true;
+        overview.timeline.page.items = [{
+          at: "2026-06-27T12:00:00.000Z",
+          category: "SystemEvent",
+          id: `base-timeline-${overviewRequestCount}`,
+          kind: "StateChange",
+          state: "Queued",
+        }];
+      }
+      return Response.json(overview);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const element = (activeConnection: WorkableConnection) => (
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkerConsoleView
+        canViewDiagnostics={false}
+        clearSystemNotification={() => undefined}
+        connection={activeConnection}
+        initialUiState={initialUiState}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onNavigateBack={() => undefined}
+        onOpenDefinitionCatalog={() => undefined}
+        onOpenIteration={() => undefined}
+        onOpenWorker={() => undefined}
+        onOpenWorkflowRun={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        refreshToken={0}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        reportSystemNotification={() => undefined}
+        workerId="worker-1"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+  const result = await renderDom(element(connection));
+  const loadMoreLabels = () => Array.from(result.container.querySelectorAll("span"))
+    .filter((element) => element.textContent === "Scroll to load more");
+
+  try {
+    await result.waitFor(() => assert.equal(loadMoreLabels().length, 2));
+    for (const loadMoreLabel of loadMoreLabels()) {
+      const viewport = loadMoreLabel.parentElement?.parentElement;
+      assert.ok(viewport instanceof result.dom.window.HTMLElement);
+      await result.scroll(viewport, {
+        clientHeight: 100,
+        scrollHeight: 240,
+        scrollTop: 160,
+      });
+    }
+    await result.waitFor(() => {
+      assert.equal(
+        fetchMock.calls.some((call) =>
+          call.input.includes("/workers/worker-1/overview/logs?")
+        ),
+        true
+      );
+      assert.equal(
+        fetchMock.calls.some((call) =>
+          call.input.includes("/workers/worker-1/overview/timeline?") &&
+          call.input.includes("activityCursor=")
+        ),
+        true
+      );
+    });
+
+    await result.rerender(element({ ...connection, systemName: "Beta" }));
+    await result.waitFor(() => assert.equal(overviewRequestCount, 2));
+    resolveStaleLogPage?.(
+      Response.json({ error: "Old log page unavailable" }, { status: 502 })
+    );
+    const staleTimelineSummary = workerOverview().timeline?.summary;
+    assert.ok(staleTimelineSummary);
+    resolveStaleTimelinePage?.(Response.json({
+      page: {
+        cursor: null,
+        hasMore: false,
+        items: [{
+          at: "2026-06-27T12:00:01.000Z",
+          category: "Failure",
+          id: "stale-timeline",
+          iterationStatus: "Failed",
+          kind: "Iteration",
+          sequence: 99,
+        }],
+      },
+      summary: staleTimelineSummary,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(result.queryByText("Old log page unavailable"), null);
+    assert.equal(result.queryByText("Iteration #99 failed"), null);
+    assert.equal(loadMoreLabels().length, 2);
+  } finally {
+    resolveStaleLogPage?.(
+      Response.json({ error: "Test cleanup" }, { status: 500 })
+    );
+    resolveStaleTimelinePage?.(
+      Response.json({ error: "Test cleanup" }, { status: 500 })
+    );
     fetchMock.restore();
     await result.restore();
   }

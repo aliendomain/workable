@@ -283,11 +283,20 @@ export function useInfiniteWorkerQuery(
       }
 
       setState((current) => ({
-        ...current,
-        error: undefined,
-        loading: true,
-        loadingMore: false,
-        nextSkip: 0,
+        ...(shouldResetQuery
+          ? {
+              items: [],
+              loading: true,
+              loadingMore: false,
+              nextSkip: 0,
+            }
+          : {
+              ...current,
+              error: undefined,
+              loading: true,
+              loadingMore: false,
+              nextSkip: 0,
+            }),
       }));
       loadedRequestKeyRef.current = requestKey;
       void loadPage(0, false, requestId);
@@ -303,6 +312,7 @@ export function useInfiniteWorkerQuery(
     if (
       current.loading ||
       current.loadingMore ||
+      current.error !== undefined ||
       inFlightSkipRef.current === current.nextSkip ||
       (current.totalCount !== undefined && current.nextSkip >= current.totalCount)
     ) {
@@ -315,7 +325,8 @@ export function useInfiniteWorkerQuery(
 
   return {
     error: state.error,
-    hasMore: state.totalCount === undefined || state.nextSkip < state.totalCount,
+    hasMore: state.error === undefined &&
+      (state.totalCount === undefined || state.nextSkip < state.totalCount),
     items: state.items,
     loading: state.loading,
     loadingMore: state.loadingMore,
@@ -554,11 +565,20 @@ export function useInfiniteIterationQuery(
       }
 
       setState((current) => ({
-        ...current,
-        error: undefined,
-        loading: true,
-        loadingMore: false,
-        nextSkip: 0,
+        ...(shouldResetQuery
+          ? {
+              items: [],
+              loading: true,
+              loadingMore: false,
+              nextSkip: 0,
+            }
+          : {
+              ...current,
+              error: undefined,
+              loading: true,
+              loadingMore: false,
+              nextSkip: 0,
+            }),
       }));
       loadedRequestKeyRef.current = requestKey;
       void loadPage(0, false, requestId);
@@ -574,6 +594,7 @@ export function useInfiniteIterationQuery(
     if (
       current.loading ||
       current.loadingMore ||
+      current.error !== undefined ||
       inFlightSkipRef.current === current.nextSkip ||
       (current.totalCount !== undefined && current.nextSkip >= current.totalCount)
     ) {
@@ -586,7 +607,8 @@ export function useInfiniteIterationQuery(
 
   return {
     error: state.error,
-    hasMore: state.totalCount === undefined || state.nextSkip < state.totalCount,
+    hasMore: state.error === undefined &&
+      (state.totalCount === undefined || state.nextSkip < state.totalCount),
     items: state.items,
     loading: state.loading,
     loadingMore: state.loadingMore,

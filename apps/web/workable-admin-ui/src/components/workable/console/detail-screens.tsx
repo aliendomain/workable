@@ -575,7 +575,8 @@ export function DefinitionView({
   const info = useWorkableResource<WorkInfo>(
     connection,
     `definitions/${definitionId}/info`,
-    refreshToken
+    refreshToken,
+    { resetKey: definitionId }
   );
   const [queueDefinition, setQueueDefinition] = useState<WorkDefinition | null>(null);
   const [definitionRequest, setDefinitionRequest] = useState<QueueWorkRequest>(() =>
@@ -957,8 +958,10 @@ export function WorkerConsoleView({
   const initializedWorkerConfigurationVisibilityRef = useRef<string | null>(restoredUiState ? workerId : null);
   const initializedWorkerConfigurationAutoModeRef = useRef<string | null>(restoredUiState ? workerId : null);
   const workerOverviewRealtimeResyncCooldownUntilRef = useRef(0);
+  const logPageRequestGenerationRef = useRef(0);
   const timelinePageRequestGenerationRef = useRef(0);
   const refreshSeed = refreshToken + actionRefreshToken + manualRefreshToken;
+  const paginationConnectionScope = createWorkableConnectionScopeKey(connection);
   const landingSnapshot = useWorkableResource<WorkWorkerOverviewComponent>(
     connection,
     createWorkerOverviewPath(workerId, {
@@ -1581,13 +1584,14 @@ export function WorkerConsoleView({
   ]);
 
   useEffect(() => {
+    logPageRequestGenerationRef.current += 1;
     setExtraLogEntries([]);
     setRealtimeLogEntries([]);
     setLogPageLoadState({
       hasMore: false,
       loadingMore: false,
     });
-  }, [logQueryKey, refreshSeed, workerId]);
+  }, [logQueryKey, paginationConnectionScope, refreshSeed, workerId]);
 
   useEffect(() => {
     timelinePageRequestGenerationRef.current += 1;
@@ -1597,7 +1601,7 @@ export function WorkerConsoleView({
       hasMore: false,
       loadingMore: false,
     });
-  }, [refreshSeed, timelineQueryKey, workerId]);
+  }, [paginationConnectionScope, refreshSeed, timelineQueryKey, workerId]);
 
   useEffect(() => {
     if (!logBasePage) {
@@ -1628,6 +1632,7 @@ export function WorkerConsoleView({
   }, [timelineBasePage]);
 
   const releaseDetailedLogData = useCallback(() => {
+    logPageRequestGenerationRef.current += 1;
     setExtraLogEntries([]);
     setRealtimeLogEntries([]);
     setLogPageLoadState({
@@ -1675,12 +1680,14 @@ export function WorkerConsoleView({
   const loadMoreLogs = useCallback(async () => {
     if (
       logPageLoadState.loadingMore ||
+      logPageLoadState.error !== undefined ||
       !logPageLoadState.hasMore ||
       !logPageLoadState.nextCursor
     ) {
       return;
     }
 
+    const requestGeneration = logPageRequestGenerationRef.current;
     setLogPageLoadState((current) => ({
       ...current,
       error: undefined,
@@ -1698,6 +1705,10 @@ export function WorkerConsoleView({
         })
       );
       const page = logs.page;
+      if (logPageRequestGenerationRef.current !== requestGeneration) {
+        return;
+      }
+
       if (!page) {
         setLogPageLoadState((current) => ({
           ...current,
@@ -1716,14 +1727,18 @@ export function WorkerConsoleView({
         nextCursor: page.cursor ?? null,
       });
     } catch (caught) {
-      setLogPageLoadState((current) => ({
-        ...current,
-        error: caught instanceof Error ? caught.message : "Could not load more logs.",
-        loadingMore: false,
-      }));
+      if (logPageRequestGenerationRef.current !== requestGeneration) {
+        return;
+      }
+
+      setLogPageLoadState((current) => stopAutomaticCursorPaginationAfterError(
+        current,
+        caught instanceof Error ? caught.message : "Could not load more logs."
+      ));
     }
   }, [
     connection,
+    logPageLoadState.error,
     logPageLoadState.hasMore,
     logPageLoadState.loadingMore,
     logPageLoadState.nextCursor,
@@ -1733,7 +1748,12 @@ export function WorkerConsoleView({
   ]);
 
   const loadMoreTimeline = useCallback(async () => {
-    if (timelinePageLoadState.loadingMore || !timelinePageLoadState.hasMore || !timelinePageLoadState.nextCursor) {
+    if (
+      timelinePageLoadState.loadingMore ||
+      timelinePageLoadState.error !== undefined ||
+      !timelinePageLoadState.hasMore ||
+      !timelinePageLoadState.nextCursor
+    ) {
       return;
     }
 
@@ -1781,15 +1801,15 @@ export function WorkerConsoleView({
         return;
       }
 
-      setTimelinePageLoadState((current) => ({
-        ...current,
-        error: caught instanceof Error ? caught.message : "Could not load more timeline events.",
-        loadingMore: false,
-      }));
+      setTimelinePageLoadState((current) => stopAutomaticCursorPaginationAfterError(
+        current,
+        caught instanceof Error ? caught.message : "Could not load more timeline events."
+      ));
     }
   }, [
     connection,
     normalizedSelectedTimelineFilters,
+    timelinePageLoadState.error,
     timelinePageLoadState.hasMore,
     timelinePageLoadState.loadingMore,
     timelinePageLoadState.nextCursor,
@@ -2094,12 +2114,11 @@ export function WorkerConsoleView({
 
     timelinePageRequestGenerationRef.current += 1;
     setExtraTimelineItems([]);
-    setTimelinePageLoadState({
-      error: undefined,
-      hasMore: timelineBasePage?.hasMore ?? false,
-      loadingMore: false,
-      nextCursor: timelineBasePage?.cursor ?? null,
-    });
+    setTimelinePageLoadState((current) => restoreBaseCursorPaginationAfterCompaction(
+      current,
+      timelineBasePage?.hasMore ?? false,
+      timelineBasePage?.cursor ?? null
+    ));
   }, [extraTimelineItems.length, timelineBasePage]);
   const forgetPushedTimelineItems = useCallback(() => {
     setRealtimeTimelineItems((current) => {
@@ -2516,6 +2535,8 @@ export function IterationConsoleView({
     hasMore: false,
     loadingMore: false,
   });
+  const iterationLogPageRequestGenerationRef = useRef(0);
+  const paginationConnectionScope = createWorkableConnectionScopeKey(connection);
   const focusedIterationHiddenSnapshotRef = useRef<ReadonlySet<IterationDetailPanelId> | null>(null);
   const relativeNow = useLiveRelativeTimeNow();
   const isOutputPanelVisible = !hiddenPanelIds.has("iterationOutput");
@@ -2539,7 +2560,8 @@ export function IterationConsoleView({
       includeOutput: isOutputPanelVisible,
       includeProfile: isProfilePanelVisible,
     }),
-    refreshToken
+    refreshToken,
+    { resetKey: `${workerId}:${sequence}` }
   );
   const landing = iterationOverview.data;
   const activeIteration = landing?.iteration;
@@ -2644,12 +2666,13 @@ export function IterationConsoleView({
   }, [enterIterationPanelFocus, exitIterationPanelFocus, focusedIterationPanel]);
 
   useEffect(() => {
+    iterationLogPageRequestGenerationRef.current += 1;
     setExtraIterationLogEntries([]);
     setIterationLogPageLoadState({
       hasMore: false,
       loadingMore: false,
     });
-  }, [iterationLogQueryKey, refreshToken, sequence, workerId]);
+  }, [iterationLogQueryKey, paginationConnectionScope, refreshToken, sequence, workerId]);
 
   useEffect(() => {
     if (!iterationLogBasePage) {
@@ -2668,12 +2691,14 @@ export function IterationConsoleView({
   const loadMoreIterationLogs = useCallback(async () => {
     if (
       iterationLogPageLoadState.loadingMore ||
+      iterationLogPageLoadState.error !== undefined ||
       !iterationLogPageLoadState.hasMore ||
       !iterationLogPageLoadState.nextCursor
     ) {
       return;
     }
 
+    const requestGeneration = iterationLogPageRequestGenerationRef.current;
     setIterationLogPageLoadState((current) => ({
       ...current,
       error: undefined,
@@ -2691,6 +2716,10 @@ export function IterationConsoleView({
         })
       );
       const page = logs.page;
+      if (iterationLogPageRequestGenerationRef.current !== requestGeneration) {
+        return;
+      }
+
       setExtraIterationLogEntries((current) => [...current, ...page.items]);
       setIterationLogPageLoadState({
         error: undefined,
@@ -2699,14 +2728,18 @@ export function IterationConsoleView({
         nextCursor: page.cursor ?? null,
       });
     } catch (caught) {
-      setIterationLogPageLoadState((current) => ({
-        ...current,
-        error: caught instanceof Error ? caught.message : "Could not load more logs.",
-        loadingMore: false,
-      }));
+      if (iterationLogPageRequestGenerationRef.current !== requestGeneration) {
+        return;
+      }
+
+      setIterationLogPageLoadState((current) => stopAutomaticCursorPaginationAfterError(
+        current,
+        caught instanceof Error ? caught.message : "Could not load more logs."
+      ));
     }
   }, [
     connection,
+    iterationLogPageLoadState.error,
     iterationLogPageLoadState.hasMore,
     iterationLogPageLoadState.loadingMore,
     iterationLogPageLoadState.nextCursor,
@@ -4195,17 +4228,24 @@ function IterationMessagePanel({
       }
 
       return {
-        ...current,
-        hasMore: current.baseHasMore,
+        ...restoreBaseCursorPaginationAfterCompaction(
+          current,
+          current.baseHasMore,
+          current.baseCursor ?? null
+        ),
         items: current.baseItems,
-        loadingMore: false,
-        nextCursor: current.baseCursor ?? null,
       };
     });
   }, [pagedMessageCount]);
 
   const loadMore = useCallback(() => {
-    if (messagesState.loading || messagesState.loadingMore || !messagesState.hasMore || !messagesState.nextCursor) {
+    if (
+      messagesState.loading ||
+      messagesState.loadingMore ||
+      messagesState.error !== undefined ||
+      !messagesState.hasMore ||
+      !messagesState.nextCursor
+    ) {
       return;
     }
 
@@ -4243,14 +4283,14 @@ function IterationMessagePanel({
           return;
         }
 
-        setMessagesState((current) => ({
-          ...current,
-          error: error instanceof Error ? error.message : "Unable to load more messages.",
-          loadingMore: false,
-        }));
+        setMessagesState((current) => stopAutomaticCursorPaginationAfterError(
+          current,
+          error instanceof Error ? error.message : "Unable to load more messages."
+        ));
       });
   }, [
     connection,
+    messagesState.error,
     messagesState.hasMore,
     messagesState.loading,
     messagesState.loadingMore,
@@ -4522,6 +4562,34 @@ type WorkerOverviewPageLoadState = {
   loadingMore: boolean;
   nextCursor?: string | null;
 };
+
+export function stopAutomaticCursorPaginationAfterError<
+  TState extends WorkerOverviewPageLoadState,
+>(current: TState, error: string): TState {
+  return {
+    ...current,
+    error,
+    hasMore: false,
+    loadingMore: false,
+    nextCursor: null,
+  };
+}
+
+export function restoreBaseCursorPaginationAfterCompaction<
+  TState extends WorkerOverviewPageLoadState,
+>(current: TState, baseHasMore: boolean, baseCursor: string | null): TState {
+  const stoppedAfterError = current.error !== undefined;
+  return {
+    ...current,
+    hasMore: !stoppedAfterError && baseHasMore,
+    loadingMore: false,
+    nextCursor: stoppedAfterError ? null : baseCursor,
+  };
+}
+
+function createWorkableConnectionScopeKey(connection: WorkableConnection) {
+  return `${connection.apiUrl.trim()}\n${connection.systemName?.trim() ?? ""}`;
+}
 
 const workerLogActivityPageSize = 50;
 const workerTimelineActivityPageSize = 25;
@@ -8279,15 +8347,18 @@ function useWorkableResource<T>(
   const systemName = connection.systemName;
   const retainDataOnNull = options?.retainDataOnNull === true;
   const resetKey = options?.resetKey ?? null;
-  const lastResetKeyRef = useRef<string | number | null>(resetKey);
+  const resourceScopeRef = useRef({ apiUrl, resetKey, systemName });
 
   useEffect(() => {
+    const previousScope = resourceScopeRef.current;
+    const scopeChanged = previousScope.apiUrl !== apiUrl ||
+      previousScope.systemName !== systemName ||
+      previousScope.resetKey !== resetKey;
+    resourceScopeRef.current = { apiUrl, resetKey, systemName };
+
     if (!path) {
       queueMicrotask(() => setState((current) => {
-        const sameResetKey = lastResetKeyRef.current === resetKey;
-        lastResetKeyRef.current = resetKey;
-
-        if (retainDataOnNull && sameResetKey && current.data !== undefined) {
+        if (retainDataOnNull && !scopeChanged && current.data !== undefined) {
           return {
             data: current.data,
             errorCause: undefined,
@@ -8302,16 +8373,17 @@ function useWorkableResource<T>(
     }
 
     let canceled = false;
-    lastResetKeyRef.current = resetKey;
     queueMicrotask(() => {
       if (!canceled) {
-        setState((current) => ({
-          ...current,
-          error: undefined,
-          errorCause: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
-        }));
+        setState((current) => scopeChanged
+          ? { loading: true }
+          : {
+              ...current,
+              error: undefined,
+              errorCause: undefined,
+              loading: current.data === undefined,
+              refreshing: current.data !== undefined,
+            });
       }
     });
 
