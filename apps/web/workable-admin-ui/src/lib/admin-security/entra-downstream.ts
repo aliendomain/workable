@@ -66,6 +66,7 @@ type EntraTargetTokenResponse = {
 type StoredEntraTargetAccessToken = {
   accessToken: string;
   accessTokenExpiresAt: number;
+  scopeRotationVersion: number;
 };
 
 type StoredEntraTargetTokenState = {
@@ -73,6 +74,7 @@ type StoredEntraTargetTokenState = {
   refreshToken?: string;
   issuedAt?: number;
   rotationVersion?: number;
+  scopeRotations?: Record<string, number>;
   snapshotId?: string;
   sourceCookieNames?: string[];
 };
@@ -83,6 +85,7 @@ type PersistedEntraTargetTokenState = {
   refreshToken?: string;
   issuedAt: number;
   rotationVersion: number;
+  scopeRotations?: Record<string, number>;
 };
 
 type EntraOpenIdConfiguration = {
@@ -93,6 +96,7 @@ type EntraTargetTokenBinding = {
   apiUrl: string;
   key: string;
   scope: string;
+  scopeRotationKey: string;
 };
 
 type EntraTargetAccessTokenSuccess = {
@@ -128,6 +132,7 @@ const clearedTokenOwners = new Map<string, true>();
 export function getEntraTargetTokenBindings(settings: AdminSecuritySettings) {
   const bindings: EntraTargetTokenBinding[] = [];
   const seen = new Set<string>();
+  const scopeRotationKeys = new Map<string, string>();
 
   for (const candidate of getConfiguredTargetApiCandidates(settings)) {
     const normalized = normalizeBinding(candidate.apiUrl, candidate.scope);
@@ -136,7 +141,12 @@ export function getEntraTargetTokenBindings(settings: AdminSecuritySettings) {
     }
 
     seen.add(normalized.key);
-    bindings.push(normalized);
+    let scopeRotationKey = scopeRotationKeys.get(normalized.scope);
+    if (scopeRotationKey === undefined) {
+      scopeRotationKey = scopeRotationKeys.size.toString(36);
+      scopeRotationKeys.set(normalized.scope, scopeRotationKey);
+    }
+    bindings.push({ ...normalized, scopeRotationKey });
   }
 
   return bindings;
@@ -220,6 +230,7 @@ export function createEntraTargetTokenCookieHeaders(
     ? {
       accessToken: tokens.access_token,
       accessTokenExpiresAt: Math.floor(Date.now() / 1000) + tokens.expires_in,
+      scopeRotationVersion: 0,
     } satisfies StoredEntraTargetAccessToken
     : undefined;
 
@@ -310,7 +321,12 @@ export async function getEntraTargetAccessToken(
     };
   }
 
-  const existing = readCachedAccessToken(stored.ownerBinding, binding.scope, secret);
+  const existing = readCachedAccessToken(
+    stored.ownerBinding,
+    binding.scope,
+    secret,
+    stored.scopeRotations?.[binding.scopeRotationKey] ?? 0
+  );
   if (existing && !options.forceRefresh) {
     return {
       ok: true,
@@ -414,7 +430,8 @@ async function coordinateEntraTargetAccessTokenRefresh(
     const coordinatedExisting = readCachedAccessToken(
       coordinator.latestState.ownerBinding,
       binding.scope,
-      secret
+      secret,
+      coordinator.latestState.scopeRotations?.[binding.scopeRotationKey] ?? 0
     );
     if (
       coordinatedExisting &&
@@ -442,15 +459,22 @@ async function coordinateEntraTargetAccessTokenRefresh(
     }
     const accessTokenExpiresAt = Math.floor(Date.now() / 1000) + (refreshed.expires_in ?? 0);
     const nextRefreshToken = refreshed.refresh_token ?? currentRefreshToken;
+    const nextRotationVersion = (coordinator.latestState.rotationVersion ?? 0) + 1;
     const accessToken: StoredEntraTargetAccessToken = {
       accessToken: refreshed.access_token ?? "",
       accessTokenExpiresAt,
+      scopeRotationVersion: nextRotationVersion,
     };
     coordinator.latestState = {
       ownerBinding: coordinator.latestState.ownerBinding,
       refreshToken: nextRefreshToken,
       issuedAt: coordinator.latestState.issuedAt,
-      rotationVersion: (coordinator.latestState.rotationVersion ?? 0) + 1,
+      rotationVersion: nextRotationVersion,
+      scopeRotations: recordScopeRotation(
+        coordinator.latestState.scopeRotations,
+        binding.scopeRotationKey,
+        nextRotationVersion
+      ),
       snapshotId: crypto.randomUUID(),
     };
     storeCachedAccessToken(
@@ -516,6 +540,7 @@ function cloneStoredState(state: StoredEntraTargetTokenState): StoredEntraTarget
     refreshToken: state.refreshToken,
     issuedAt: state.issuedAt,
     rotationVersion: state.rotationVersion,
+    scopeRotations: state.scopeRotations ? { ...state.scopeRotations } : undefined,
     snapshotId: state.snapshotId,
   };
 }
@@ -531,6 +556,10 @@ function mergeStoredStates(
     rotationVersion: Math.max(
       latest.rotationVersion ?? 0,
       incoming.rotationVersion ?? 0
+    ),
+    scopeRotations: mergeScopeRotations(
+      latest.scopeRotations,
+      incoming.scopeRotations
     ),
     snapshotId: latest.snapshotId,
   };
@@ -672,19 +701,23 @@ function readStoredTargetTokenState(
         continue;
       }
       const parsed = decoded as Partial<PersistedEntraTargetTokenState>;
+      const hasValidRotationVersion = Number.isSafeInteger(parsed.rotationVersion) &&
+        (parsed.rotationVersion ?? -1) >= 0;
+      const rotationVersion = hasValidRotationVersion ? parsed.rotationVersion ?? 0 : 0;
       if (typeof parsed.ownerBinding !== "string" ||
         (expectedOwnerBinding && !constantTimeEquals(parsed.ownerBinding, expectedOwnerBinding)) ||
         parsed.version !== TARGET_TOKEN_STATE_VERSION ||
-        !isValidRefreshToken(parsed.refreshToken)) {
+        !hasValidRotationVersion ||
+        !isValidRefreshToken(parsed.refreshToken) ||
+        !isValidScopeRotations(parsed.scopeRotations, settings, rotationVersion)) {
         continue;
       }
       states.push({
         ownerBinding: parsed.ownerBinding,
         refreshToken: typeof parsed.refreshToken === "string" ? parsed.refreshToken : undefined,
         issuedAt: typeof parsed.issuedAt === "number" ? parsed.issuedAt : 0,
-        rotationVersion: typeof parsed.rotationVersion === "number"
-          ? parsed.rotationVersion
-          : 0,
+        rotationVersion,
+        scopeRotations: parsed.scopeRotations,
         cookieName: name,
       });
     } catch {
@@ -701,6 +734,10 @@ function readStoredTargetTokenState(
     refreshToken: newest.refreshToken,
     issuedAt: newest.issuedAt,
     rotationVersion: newest.rotationVersion,
+    scopeRotations: states.reduce<Record<string, number> | undefined>(
+      (merged, state) => mergeScopeRotations(merged, state.scopeRotations),
+      undefined
+    ),
     sourceCookieNames: states.map((state) => state.cookieName),
   };
 }
@@ -832,7 +869,7 @@ function normalizeBinding(apiUrl?: string, scope?: string) {
       apiUrl: canonicalApiUrl,
       key: createBindingKey(canonicalApiUrl),
       scope: normalizedScope,
-    } satisfies EntraTargetTokenBinding;
+    };
   } catch {
     return null;
   }
@@ -863,6 +900,7 @@ function serializeStateCookie(
     refreshToken: state.refreshToken,
     issuedAt: Date.now(),
     rotationVersion: state.rotationVersion ?? 0,
+    scopeRotations: state.scopeRotations,
   };
   const payload = encrypt(JSON.stringify(persistedState), secret, TOKEN_COOKIE_PURPOSE);
   return serializeChunkedCookie(
@@ -927,6 +965,48 @@ function normalizeApiUrl(url: URL) {
 
 function createBindingKey(apiUrl: string) {
   return sha256Base64Url(apiUrl);
+}
+
+function recordScopeRotation(
+  existing: Record<string, number> | undefined,
+  key: string,
+  rotationVersion: number
+) {
+  return {
+    ...existing,
+    [key]: rotationVersion,
+  };
+}
+
+function mergeScopeRotations(
+  latest: Record<string, number> | undefined,
+  incoming: Record<string, number> | undefined
+) {
+  const merged = { ...incoming };
+  for (const [key, value] of Object.entries(latest ?? {})) {
+    merged[key] = Math.max(merged[key] ?? 0, value);
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function isValidScopeRotations(
+  value: unknown,
+  settings: AdminSecuritySettings,
+  maximumRotationVersion: number
+): value is Record<string, number> | undefined {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  const scopeCount = new Set(
+    getEntraTargetTokenBindings(settings).map((binding) => binding.scope)
+  ).size;
+  if (entries.length > Math.min(scopeCount, MAX_ACCESS_TOKEN_CACHE_ENTRIES)) return false;
+  return entries.every(([key, rotationVersion]) => {
+    const index = Number.parseInt(key, 36);
+    return Number.isSafeInteger(index) && index >= 0 && index < scopeCount &&
+      index.toString(36) === key && Number.isSafeInteger(rotationVersion) &&
+      rotationVersion >= 0 && rotationVersion <= maximumRotationVersion;
+  });
 }
 
 function serializeChunkedCookie(
@@ -1056,12 +1136,14 @@ function createAccessTokenCacheKey(
 function readCachedAccessToken(
   ownerBinding: string,
   scope: string,
-  secret: string
+  secret: string,
+  minimumRotationVersion: number
 ) {
   const key = createAccessTokenCacheKey(ownerBinding, scope, secret);
   const cached = accessTokenCache.get(key);
   if (!cached) return undefined;
-  if (isExpired(cached.accessTokenExpiresAt)) {
+  if (cached.scopeRotationVersion < minimumRotationVersion ||
+      isExpired(cached.accessTokenExpiresAt)) {
     accessTokenCache.delete(key);
     return undefined;
   }
