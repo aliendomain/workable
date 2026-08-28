@@ -403,10 +403,6 @@ export function IterationsView({
     setPanelVisible: setIterationsPanelVisible,
   } = usePanelVisibilityState<"iterations">();
   const openIterationRow = useCallback((iteration: WorkViewIterationGridDetailed) => {
-    if (!iteration.isFinal) {
-      return;
-    }
-
     setSelectedIterationRowKey(getIterationRowKey(iteration));
     setSelectedIterationResetKey(selectionScopeKey);
     onOpenIteration(iteration.workerId.value, iteration.sequence);

@@ -475,6 +475,88 @@ test("worker console exposes a view workflow action when the overview carries a 
   }
 });
 
+test("worker console shows the latest iteration failure while the worker remains active", async () => {
+  const fetchMock = installQueueFetch((call) => {
+    if (call.input.includes("/workers/worker-1/overview")) {
+      return Response.json(workerOverview({
+        latestIteration: {
+          attemptCount: 1,
+          completedAt: "2026-06-27T12:01:00.000Z",
+          executionDuration: "00:01:00",
+          failure: {
+            declaredByWork: true,
+            kind: "Failure",
+            message: "Iteration 1 failed without a log entry.",
+          },
+          sequence: 1,
+          startedAt: "2026-06-27T12:00:00.000Z",
+          status: "Failed",
+          workerId: { value: "worker-1" },
+        },
+        worker: {
+          ...workerOverview().worker,
+          nextRunAt: "2026-06-27T12:05:00.000Z",
+          state: "Waiting",
+          stateSequence: 2,
+        },
+      }));
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const initialUiState = {
+    focusedWorkerHiddenSnapshotPanelIds: ["workerConfiguration"],
+    focusedWorkerPanel: "workerLogs",
+    hiddenPanelIds: ["workerConfiguration", "workerDuration", "workerTimeline"],
+    logSortDirection: "desc",
+    selectedLogLevels: null,
+    selectedTimelineFilters: null,
+    timelineSortDirection: "desc",
+    workerConfigurationAutoShowAllValues: true,
+    workerConfigurationDisplayMode: "auto",
+    workerConfigurationPanelViewState: "compact",
+    workerControlsPanelViewState: "compact",
+    workerDurationPanelViewState: "standard",
+    workerId: "worker-1",
+    workerLogsPanelViewState: "detailed",
+    workerTimelinePanelViewState: "standard",
+  } satisfies WorkerConsoleViewUiStateSnapshot;
+  const element = (
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkerConsoleView
+        canViewDiagnostics={false}
+        clearSystemNotification={() => undefined}
+        connection={connection}
+        initialUiState={initialUiState}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onNavigateBack={() => undefined}
+        onOpenDefinitionCatalog={() => undefined}
+        onOpenIteration={() => undefined}
+        onOpenWorker={() => undefined}
+        onOpenWorkflowRun={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        refreshToken={0}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        reportSystemNotification={() => undefined}
+        workerId="worker-1"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+  const result = await renderDom(element);
+
+  try {
+    await result.waitFor(() => result.getByText("Iteration 1 failed without a log entry."));
+    assert.equal(result.getByText("Execution failed").closest("section")?.classList.contains("shrink-0"), true);
+    await result.click(result.getByRole("button", { name: "Dismiss failure banner" }));
+    assert.throws(() => result.getByText("Iteration 1 failed without a log entry."));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 test("worker pagination ignores failed and successful pages from an older connection generation", async () => {
   let overviewRequestCount = 0;
   let resolveStaleLogPage: ((response: Response) => void) | undefined;

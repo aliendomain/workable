@@ -345,7 +345,7 @@ test("workers view clears prior-system rows before a new system request fails", 
   }
 });
 
-test("iterations view loads filtered rows, appends another page, and opens final iterations", async () => {
+test("iterations view loads filtered rows, appends another page, and opens executing iterations", async () => {
   const openedIterations: Array<{ sequence: number; workerId: string }> = [];
   const fetchMock = installQueryFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/views/iterations") {
@@ -355,9 +355,11 @@ test("iterations view loads filtered rows, appends another page, and opens final
           iterations: [
             iteration({
               definitionName: "ImportOrders",
+              isFinal: false,
               sequence: 3,
-              status: "Completed",
+              status: "Executing",
               workerId: { value: "worker-final" },
+              workerState: "Running",
             }),
           ],
           skip: 0,
@@ -406,7 +408,7 @@ test("iterations view loads filtered rows, appends another page, and opens final
   try {
     await result.waitFor(() => result.getByText("ImportOrders"));
     result.getByText("#3 / worker-final");
-    result.getByText("Completed");
+    result.getByText("Executing");
     result.getByText("2 iterations");
 
     const firstQuery = fetchMock.calls.find((call) =>

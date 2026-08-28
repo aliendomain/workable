@@ -560,33 +560,24 @@ export function VirtualIterationTable({
                 return null;
               }
               const iterationKey = getIterationRowKey(iteration);
-              const isOpenable = iteration.isFinal;
               const isHighlighted = highlightedIterationKey
                 ? iterationKey === highlightedIterationKey
                 : iteration.workerId.value === highlightedWorkerId;
 
               return (
                 <TableRow
-                  className={`absolute flex h-16 w-full overflow-hidden ${
-                    isOpenable ? "cursor-pointer" : "cursor-default"
-                  } ${
+                  className={`absolute flex h-16 w-full cursor-pointer overflow-hidden ${
                     isHighlighted
                       ? "bg-sky-500/10 ring-1 ring-inset ring-sky-500/40"
                       : ""
                   }`}
                   data-index={virtualRow.index}
                   key={virtualRow.key}
-                  onClick={() => {
-                    if (isOpenable) {
-                      onSelect(iteration);
-                    }
-                  }}
+                  onClick={() => onSelect(iteration)}
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
-                  title={isOpenable
-                    ? `Open iteration #${iteration.sequence}`
-                    : "Iteration detail is only available after the iteration reaches a final state."}
+                  title={`Open iteration #${iteration.sequence}`}
                 >
                   <TableCell className="min-w-0 flex-[2_2_22rem] overflow-hidden">
                     <div className="font-mono text-xs">{iteration.definitionName}</div>

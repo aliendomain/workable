@@ -520,8 +520,9 @@ public class WorkableViewQueryAdapter
                 ? CreateWorkerOverviewLogSummary(allLogEntries)
                 : null,
             IsExpandedRealtimeShape(query.WorkerLogs)
-                ? filteredLogEntries
-                    .Take(InitialWorkerOverviewRealtimeActivityTake)
+                ? TakeLatestWorkerOverviewRealtimeActivity(
+                    filteredLogEntries,
+                    query.LogSortDirection)
                     .Select(record => new WorkWorkerOverviewLogEntry(
                         record.Entry.Id.ToString("N"),
                         record.Entry.OccurredAt,
@@ -541,7 +542,10 @@ public class WorkableViewQueryAdapter
                 ? CreateWorkerOverviewTimelineSummary(allTimelineItems)
                 : null,
             IsExpandedRealtimeShape(query.WorkerTimeline)
-                ? filteredTimelineItems.Take(InitialWorkerOverviewRealtimeActivityTake).ToArray()
+                ? TakeLatestWorkerOverviewRealtimeActivity(
+                    filteredTimelineItems,
+                    query.TimelineSortDirection)
+                    .ToArray()
                 : []);
     }
 
@@ -1244,6 +1248,13 @@ public class WorkableViewQueryAdapter
                 .ThenByDescending(entry => entry.Entry.Ordinal)
                 .ThenByDescending(GetWorkerOverviewLogEntryId, StringComparer.Ordinal)
                 .ToArray();
+
+    private static IEnumerable<T> TakeLatestWorkerOverviewRealtimeActivity<T>(
+        IReadOnlyList<T> items,
+        WorkWorkerOverviewSortDirection direction)
+        => direction == WorkWorkerOverviewSortDirection.Asc
+            ? items.Skip(Math.Max(0, items.Count - InitialWorkerOverviewRealtimeActivityTake))
+            : items.Take(InitialWorkerOverviewRealtimeActivityTake);
 
     private static WorkWorkerOverviewPage<WorkWorkerOverviewLogEntry> CreateWorkerOverviewLogPage(
         IReadOnlyList<WorkerOverviewLogRecord> entries,

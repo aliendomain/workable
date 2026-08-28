@@ -56,7 +56,7 @@ Additional practical command:
 
 - `.\node_modules\.bin\tsc.cmd --noEmit`
 
-Repository CI currently runs .NET restore/build/test only. It does not install, lint, typecheck, build, or test `apps/web/workable-admin-ui`.
+Repository CI now gives `apps/web/workable-admin-ui` its own validation job. It installs from the lockfile, runs the unit/component suite and coverage suite, and runs the Next.js production build so compiler and strict TypeScript failures are also gated.
 
 ## Commands Run And Current State
 
@@ -306,7 +306,7 @@ Workers and Iterations query-view burn-down batch:
 
 - Added mounted `WorkersView` coverage for filtered request shape, populated rows, total count, infinite append via scroll, row open behavior, shadcn/Radix action menu interaction, and Start & View mutation behavior.
 - Added mounted `WorkersView` error-state coverage for failed query responses and empty-state fallback.
-- Added mounted `IterationsView` coverage for filtered request shape, populated rows, total count, infinite append via scroll, and opening a final iteration row.
+- Added mounted `IterationsView` coverage for filtered request shape, populated rows, total count, infinite append via scroll, and opening an iteration row.
 - Added mounted `IterationsView` error-state coverage for failed query responses and empty-state fallback.
 - Tightened the jsdom harness for virtualized query tables with `IntersectionObserver`, richer `ResizeObserver` entries, element `scrollTo`, and a scroll helper.
 - Targeted command: `node --import ./test/tsx-register.mjs --test --test-isolation=none src/components/workable/console/query-screens-dom.test.tsx`: pass, 4/4.
@@ -339,6 +339,21 @@ Overview and permission burn-down batch:
 - `npm.cmd run build` inside sandbox: failed after successful compile during Next worker startup with `spawn EPERM`; classified as environment/sandbox issue.
 - `npm.cmd run build` outside sandbox with approval: pass. Routes generated: `/`, `/_not-found`, `/login`, `/icon.png`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/entra/login`, `/api/auth/entra/callback`, `/api/auth/entra/workable-token`, `/api/workable/[...path]`, plus Proxy middleware.
 
+Worker failure and iteration-navigation follow-up:
+
+- Added mounted worker-console coverage proving a failed latest iteration remains visible as an execution-failure banner while its recurring worker is still `Waiting`, including focused log-panel layout and dismissal.
+- Added mounted iteration-query coverage proving an executing iteration row can be opened, plus console-shell coverage proving the click mounts the matching worker/iteration detail request.
+- `npm test`: pass, 425/425.
+- `npm run test:coverage`: pass, 425/425; every branch changed by this follow-up is covered.
+- `npm run build -- --webpack`: pass. The default Turbopack build path could not bind its internal worker port in the Codex execution environment.
+
+Admin UI CI and logout-route follow-up:
+
+- Added an independent GitHub Actions job for `npm ci`, `npm test`, `npm run test:coverage`, and `npm run build` in the admin UI workspace.
+- Made logout-route coverage own and restore its signing configuration instead of depending on a CI secret. The route test now covers both the signed logout barrier and the intentional cleanup-only behavior when signing is unavailable.
+- `npm test`: pass, 426/426.
+- `npm run test:coverage`: pass, 426/426; the changed UI production branches remain fully covered.
+
 ## Strict Coverage Criteria
 
 This follow-up pass does not count generic "renders" checks, Tailwind class checks, or unrelated helper tests as meaningful feature coverage. Pure helper tests count only when the area itself is a pure helper boundary. Large user-facing features need route/component, DOM, or e2e coverage that exercises user-visible behavior, data states, mutations, permissions, and interactions.
@@ -355,7 +370,7 @@ Status legend:
 | Route/page | Source | Status | Meaningful coverage | Highest-value tests to add |
 | --- | --- | --- | --- | --- |
 | Root layout | `src/app/layout.tsx` | Not Worth Testing | Build/typecheck verify the static wrapper. No route logic beyond metadata, body classes, and `TooltipProvider`. | None unless layout gains auth/data logic. |
-| `/` | `src/app/page.tsx` -> `WorkableConsole` | Partially Covered | Mounted console coverage now proves the empty server state, Add server entrypoint, Sign out flow, authenticated persisted-host restore, host revalidation, overview success data, Workers/Iterations empty-state navigation, Catalog navigation, Catalog refresh, back/forward history, persisted view state, no-work-access overview, and read-only Workers mutation-control hiding. | Add e2e/integration coverage for unauthenticated redirect in a browser, populated/error query views through the shell, and detail/definition transitions. |
+| `/` | `src/app/page.tsx` -> `WorkableConsole` | Partially Covered | Mounted console coverage now proves the empty server state, Add server entrypoint, Sign out flow, authenticated persisted-host restore, host revalidation, overview success data, Workers/Iterations empty-state navigation, executing-iteration navigation into its detail request, Catalog navigation, Catalog refresh, back/forward history, persisted view state, no-work-access overview, and read-only Workers mutation-control hiding. | Add e2e/integration coverage for unauthenticated redirect in a browser, populated/error query views through the shell, and worker/definition detail transitions. |
 | `/login` | `src/app/login/page.tsx`, `login-form.tsx` | Covered | Page-level `searchParams.next/error/reason` normalization; Basic/Entra render states; Basic submit success, server validation failure, and request failure. | Optional e2e that proves browser-required fields, real route handler wiring, and post-login redirect. |
 | Global error boundary | `src/app/error.tsx` | Covered | DOM test verifies user-facing failure copy, error message display, and retry click. | Optional browser smoke if error boundary behavior changes. |
 | `/_not-found` | framework default | Not Worth Testing | No custom `not-found.tsx`. | None unless custom UI is added. |
@@ -374,7 +389,7 @@ Status legend:
 | --- | --- | --- | --- | --- |
 | Auth shell and logo | `components/layout/auth-shell.tsx`, `components/shared/workable-logo.tsx` | Partially Covered | Static markup checks exist, but they mostly assert classes and image path. | Fold into `/login` visual/e2e coverage; keep only accessibility/image-alt assertions if these components are refactored. |
 | Login form/page | `app/login/*` | Covered | Meaningful tests cover provider-specific UI, safe next-path normalization, errors, submit success/failure, and router calls. | Optional e2e with real route handlers. |
-| Main console route orchestration | `components/workable/console.tsx` | Partially Covered | Mounted tests cover empty server state, Add server entrypoint, Sign out mutation/router behavior, persisted authenticated host hydration, active system selection, overview data load, Workers/Iterations empty navigation, Catalog navigation, Catalog refresh, back/forward history, persisted view state, no-work-access overview, and read-only Workers mutation-control hiding. Helper tests cover storage and notifications. | Add mounted/e2e coverage for populated/error query data through the shell and details/definition transitions. |
+| Main console route orchestration | `components/workable/console.tsx` | Partially Covered | Mounted tests cover empty server state, Add server entrypoint, Sign out mutation/router behavior, persisted authenticated host hydration, active system selection, overview data load, Workers/Iterations empty navigation, executing-iteration navigation into its detail request, Catalog navigation, Catalog refresh, back/forward history, persisted view state, no-work-access overview, and read-only Workers mutation-control hiding. Helper tests cover storage and notifications. | Add mounted/e2e coverage for populated/error query data through the shell and worker/definition detail transitions. |
 | Console persistence and navigation history | `components/workable/console.tsx` helper exports | Partially Covered | Pure storage normalization and navigation-entry equality are tested. Mounted tests now prove seeded `localStorage` restore of host/system/view, back/forward buttons, state saving after navigation, and preserved active view. Scroll restoration remains untested. | Add scroll restoration only if that behavior is refactored. |
 | Sidebar server explorer and header breadcrumbs | `components/workable/console/navigation.tsx` | Partially Covered | Render checks cover expanded tree/header text; helper tests cover badges, names, lifecycle labels, and reconciliation. Mounted tests now prove lifecycle and Catalog queue controls are hidden for restricted access and visible/clickable for matching access. Expand/collapse, edit/remove, and breadcrumb callbacks remain thin. | DOM tests for expanding/collapsing hosts/systems, opening views, opening definition scopes, edit/remove buttons, lifecycle loading state, and breadcrumb/back/forward callbacks. |
 | Add/edit server dialog and host discovery | `ServerDialog`, `discoverHost` | Covered | DOM tests now cover Add dialog URL/name entry, discovery success, target API header, default selected systems, save payload, disabled save when all systems are unchecked, authorization failure messaging, edit-mode discovery refresh, matched-system preservation, missing-system removal, cancel/no-save behavior, loading-disabled actions, and retry after failed discovery. | Add only if host discovery UX expands, such as destructive removal through the main shell or additional per-system editing. |
@@ -537,7 +552,6 @@ Delete:
 
 Investigate:
 
-- Whether frontend validation belongs in CI. Current GitHub Actions omit the Next.js app entirely.
 - Whether to adopt React Testing Library/Vitest for future component tests. Do not add until the project decides; current harness is adequate for small batches but weak for accessible queries and async UI.
 - Whether to add Playwright for `/login` and main console flows. This is the best fit for Next async route/page behavior and Radix interactions.
 
@@ -547,7 +561,7 @@ Investigate:
 | --- | --- | --- | --- | --- | --- |
 | 1 | Main `/` console route mounted flow | Partially Covered | Empty state, Add server entrypoint, Sign out, persisted host restore, overview data, Workers empty state, Iterations empty state, Catalog navigation, Catalog refresh, back/forward history, persisted view state, no-work-access overview, and read-only Workers mutation hiding are now covered. Refactors can still break populated/error tables through the shell and detail transitions. | Largely reduced; finish remaining branches only if shell-to-detail or populated route transitions are refactored | Mounted/e2e coverage for populated/error data through the shell, details/definition transitions, and browser-level unauthenticated redirect. |
 | 2 | Add/edit server discovery dialog | Covered | Add discovery success, save payload, unchecked disabled state, authorization failure, edit discovery refresh, cancel/no-save, loading-disabled actions, retry, and saved-system reconciliation are covered. | No, unless dialog behavior expands | Optional DOM tests for additional per-system editing or destructive removal through the main shell. |
-| 3 | Workers and Iterations query views | Covered | Mounted tests now cover filtered populated results, error states, infinite append, row open, and a worker Start & View action. Helper tests cover action eligibility, not-found detection, and row merging. | No, unless the table/action behavior expands | Optional mounted tests for dedicated refresh UI, all worker action variants, 404 purge fallback, and non-final iteration row messaging. |
+| 3 | Workers and Iterations query views | Covered | Mounted tests now cover filtered populated results, error states, infinite append, active and final iteration row navigation, and a worker Start & View action. Helper tests cover action eligibility, not-found detection, and row merging. | No, unless the table/action behavior expands | Optional mounted tests for dedicated refresh UI, all worker action variants, and 404 purge fallback. |
 | 4 | Worker detail view actions/config/logs | Partially Covered | The worker detail screen has high state density: overview fetch, realtime merge, mutation actions, configuration editor, logs, timelines, and panel visibility. | Yes, if detail screens are in scope | Mounted test for load/error/populated worker, Start/Pause/Cancel/Push/Purge, reconfigure form save/failure, log/timeline filters, panel hide/focus. |
 | 5 | Queue dialog plus SchemaForm interactions | Covered | SchemaForm interaction coverage is strong, including shadcn select, booleans, numbers, URL, arrays, dictionaries, and presets. QueueDialog now has mounted coverage for schema defaults, generated input submit, manual JSON validation, manual subject/concurrency payload, Watch navigation, close callbacks, and server failure. | No, unless QueueDialog behavior expands | Optional follow-ups for configuration tab field editing and WaitForCompletion waiting banner. |
 | 6 | Overview dashboard mounted data and permission states | Covered | Mounted OverviewView tests now cover loading, request error, component error, panel controls, failed-worker Start mutation/refresh, no-operate action hiding, throughput mode/window/series controls, and execution chart rendering; mounted console covers overview success and no-work-access system-only requests; `OverviewCatalogFilter` covers category/definition apply and clear. | No, unless Overview chart/filter behavior is refactored further | Optional tests for realtime fallback details, refresh-disabled assertions, empty throughput chart state, and initial hidden-series rendering. |
@@ -610,7 +624,7 @@ This table is the active implementation queue. High gaps must be Done or Blocked
 6. The Overview throughput-control and iteration-panel refactor gates are done; add empty chart, initial hidden-series, completed-iteration row, or extra shape-variant tests only before changing those specific branches.
 7. Add responsive/mobile browser smoke coverage before sidebar/layout/mobile refactors.
 8. Add auth/proxy route-wrapper tests before auth/proxy refactors.
-9. Add frontend validation to CI: `npm ci`, `npm run lint`, `npm run test`, `tsc --noEmit`, `npm run build`.
+9. Keep the new frontend CI job aligned with the local validation set as the test and build commands evolve.
 10. Replace brittle class-string assertions during component refactors with role/name/state assertions or focused visual/e2e checks.
 
 ## Risks, Assumptions, And Open Questions
@@ -620,6 +634,6 @@ This table is the active implementation queue. High gaps must be Done or Blocked
 - Risk: many tests assert Tailwind class strings, which can produce false failures during legitimate shadcn/layout refactors.
 - Risk: mounted Radix dropdown/tooltip tests currently pass but emit non-failing React `act(...)` cleanup warnings; replace the custom harness or isolate Radix cleanup if the warning noise starts hiding real failures.
 - Risk: there is no browser e2e coverage for the main console or Radix interactions.
-- Risk: frontend tests are not in repository CI.
+- Risk: repository CI has no browser-level e2e suite; the frontend job currently covers unit/component behavior, changed-code coverage, and the production compiler/build.
 - Open question: should the project standardize on Vitest + React Testing Library, or keep evolving the custom Node/jsdom harness?
 - Open question: what fake/mocked Workable API fixture should drive e2e server discovery and main console scenarios?

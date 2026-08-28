@@ -13,6 +13,7 @@ import type {
   WorkComponentQueryResult,
   WorkDefinition,
   WorkSystemAccessSummary,
+  WorkViewIterationGridDetailed,
   WorkViewWorkerGridDetailed,
   WorkableHttpHostDescriptor,
   WorkerState,
@@ -117,6 +118,45 @@ test("workable console restores an authenticated host, loads overview data, and 
         .filter((value, index, values) => values.indexOf(value) === index),
       ["https://console.example.com/workable"]
     );
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workable console opens an executing iteration from the iteration list", async () => {
+  resetNextNavigationMock();
+  const access = fullAccess();
+  const fetchMock = installConsoleFetch(access, {
+    iterations: [iteration({
+      isFinal: false,
+      sequence: 3,
+      status: "Executing",
+      workerId: { value: "worker-active" },
+      workerState: "Running",
+    })],
+  });
+  const result = await renderDom(<WorkableConsole />, {
+    setupWindow: (window) => {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(consoleStorage(access)));
+      installVirtualLayout(window);
+    },
+  });
+
+  try {
+    await result.waitFor(() => result.getByText("Active workers"));
+    await result.click(result.getByRole("button", { name: "Iterations" }));
+    await result.waitFor(() => result.getByText("#3 / worker-active"));
+
+    await result.click(result.getByText("#3 / worker-active"));
+    await result.waitFor(() => {
+      assert.equal(
+        fetchMock.calls.some((call) =>
+          call.input.includes("/workers/worker-active/iterations/3/overview")
+        ),
+        true
+      );
+    });
   } finally {
     fetchMock.restore();
     await result.restore();
@@ -281,6 +321,7 @@ function installConsoleFetch(
   access: WorkSystemAccessSummary,
   options?: {
     definitions?: WorkDefinition[];
+    iterations?: WorkViewIterationGridDetailed[];
     workers?: WorkViewWorkerGridDetailed[];
   }
 ) {
@@ -313,10 +354,10 @@ function installConsoleFetch(
 
     if (call.input === "/api/workable/systems/Ops/views/iterations") {
       return Response.json(componentResult("iterationGrid", {
-        iterations: [],
+        iterations: options?.iterations ?? [],
         skip: 0,
         take: 50,
-        totalCount: 0,
+        totalCount: options?.iterations?.length ?? 0,
       }));
     }
 
@@ -356,6 +397,24 @@ function worker(overrides: Partial<WorkViewWorkerGridDetailed> = {}): WorkViewWo
     subjectId: null,
     totalExecutionDuration: "00:00:02",
     updatedAt: "2026-06-01T11:59:00.000Z",
+    ...overrides,
+  };
+}
+
+function iteration(
+  overrides: Partial<WorkViewIterationGridDetailed> = {}
+): WorkViewIterationGridDetailed {
+  return {
+    completedAt: "2026-06-01T12:00:00.000Z",
+    definitionName: "ImportOrders",
+    executionDuration: "00:00:01",
+    identifiers: [],
+    isFinal: true,
+    sequence: 1,
+    status: "Completed",
+    subjectId: null,
+    workerId: { value: "worker-1" },
+    workerState: "Completed",
     ...overrides,
   };
 }
