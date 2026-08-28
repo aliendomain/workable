@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "set NODE_OPTIONS=--use-system-ca && next dev",
+    "dev": "node --use-system-ca --max-http-header-size=32768 ./node_modules/next/dist/bin/next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node --max-http-header-size=32768 ./node_modules/next/dist/bin/next start",
     "lint": "eslint",
     "test": "node --import ./test/tsx-register.mjs --test --test-isolation=none \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "test:coverage": "node --import ./test/tsx-register.mjs --test --test-isolation=none --experimental-test-coverage \"--test-coverage-include=src/**/*.ts\" \"--test-coverage-include=src/**/*.tsx\" \"--test-coverage-exclude=src/**/*.test.ts\" \"--test-coverage-exclude=src/**/*.test.tsx\" \"--test-coverage-exclude=src/test/**\" \"src/**/*.test.ts\" \"src/**/*.test.tsx\""

@@ -38,6 +38,11 @@ const TOKEN_COOKIE_PURPOSE = "entra-target-token";
 const TOKEN_COOKIE_CHUNK_SIZE = 3000;
 const MAX_TOKEN_COOKIE_CHUNKS = 16;
 const MAX_TOKEN_COOKIE_SNAPSHOTS = 4;
+const MAX_TOKEN_COOKIE_SNAPSHOT_BYTES = 8192;
+const MAX_ACCESS_TOKEN_CACHE_ENTRIES = 256;
+const MAX_CLEARED_TOKEN_OWNERS = 256;
+const MAX_ACCESS_TOKEN_BYTES = 64 * 1024;
+const TARGET_TOKEN_STATE_VERSION = 2;
 const TOKEN_REFRESH_SKEW_SECONDS = 60;
 const noStoreHeaders = {
   "cache-control": "no-store",
@@ -66,9 +71,21 @@ type StoredEntraTargetAccessToken = {
 type StoredEntraTargetTokenState = {
   ownerBinding: string;
   refreshToken?: string;
+  // Read only for migration from the original cookie format. Access tokens
+  // are never written back to browser state.
   bindings: Record<string, StoredEntraTargetAccessToken>;
   issuedAt?: number;
+  rotationVersion?: number;
+  needsMigration?: boolean;
   sourceCookieNames?: string[];
+};
+
+type PersistedEntraTargetTokenState = {
+  version: typeof TARGET_TOKEN_STATE_VERSION;
+  ownerBinding: string;
+  refreshToken?: string;
+  issuedAt: number;
+  rotationVersion: number;
 };
 
 type EntraOpenIdConfiguration = {
@@ -105,6 +122,10 @@ type EntraRefreshCoordinator = {
 };
 
 const refreshCoordinators = new Map<string, EntraRefreshCoordinator>();
+const accessTokenCache = new Map<string, StoredEntraTargetAccessToken & {
+  ownerBinding: string;
+}>();
+const clearedTokenOwners = new Map<string, true>();
 
 export function getEntraTargetTokenBindings(settings: AdminSecuritySettings) {
   const bindings: EntraTargetTokenBinding[] = [];
@@ -208,7 +229,7 @@ export function createEntraTargetTokenCookieHeaders(
   }
 
   try {
-    return serializeStateCookie(
+    const headers = serializeStateCookie(
       state,
       request,
       settings,
@@ -217,6 +238,19 @@ export function createEntraTargetTokenCookieHeaders(
         settings.sessionAbsoluteMaxAgeSeconds
       )
     );
+    const initialBinding = bindings.length === 1 ? bindings[0] : undefined;
+    const initialAccessToken = initialBinding
+      ? state.bindings[initialBinding.key]
+      : undefined;
+    if (initialBinding && initialAccessToken) {
+      storeCachedAccessToken(
+        state.ownerBinding,
+        initialBinding.scope,
+        secret,
+        initialAccessToken
+      );
+    }
+    return headers;
   } catch {
     return createExpiredEntraTargetTokenCookies(request.headers, settings.isProduction);
   }
@@ -285,7 +319,11 @@ export async function getEntraTargetAccessToken(
     };
   }
 
-  const existing = stored.bindings[binding.key];
+  const existing = readCachedAccessToken(stored.ownerBinding, binding.scope, secret) ??
+    stored.bindings[binding.key];
+  if (existing && !isExpired(existing.accessTokenExpiresAt)) {
+    storeCachedAccessToken(stored.ownerBinding, binding.scope, secret, existing);
+  }
   if (existing && !options.forceRefresh && !isExpired(existing.accessTokenExpiresAt)) {
     return {
       ok: true,
@@ -323,8 +361,8 @@ export async function getEntraTargetAccessToken(
 
     return {
       ok: true,
-      accessToken: coordinated.state.bindings[binding.key]?.accessToken,
-      accessTokenExpiresAt: coordinated.state.bindings[binding.key]?.accessTokenExpiresAt,
+      accessToken: coordinated.accessToken.accessToken,
+      accessTokenExpiresAt: coordinated.accessToken.accessTokenExpiresAt,
       setCookieHeaders: serializeStateCookie(
         {
           ...coordinated.state,
@@ -385,13 +423,26 @@ async function coordinateEntraTargetAccessTokenRefresh(
     if (coordinator.version > requestedVersion && coordinator.lastError) {
       throw coordinator.lastError;
     }
-    const coordinatedExisting = coordinator.latestState.bindings[binding.key];
+    const coordinatedExisting = readCachedAccessToken(
+      coordinator.latestState.ownerBinding,
+      binding.scope,
+      secret
+    );
     if (
       coordinatedExisting &&
       !isExpired(coordinatedExisting.accessTokenExpiresAt) &&
       (!forceRefresh || coordinator.version > requestedVersion)
     ) {
-      return { state: cloneStoredState(coordinator.latestState) };
+      storeCachedAccessToken(
+        coordinator.latestState.ownerBinding,
+        binding.scope,
+        secret,
+        coordinatedExisting
+      );
+      return {
+        state: cloneStoredState(coordinator.latestState),
+        accessToken: coordinatedExisting,
+      };
     }
 
     const currentRefreshToken = coordinator.latestState.refreshToken ?? refreshToken;
@@ -410,21 +461,29 @@ async function coordinateEntraTargetAccessTokenRefresh(
     }
     const accessTokenExpiresAt = Math.floor(Date.now() / 1000) + (refreshed.expires_in ?? 0);
     const nextRefreshToken = refreshed.refresh_token ?? currentRefreshToken;
+    const accessToken: StoredEntraTargetAccessToken = {
+      accessToken: refreshed.access_token ?? "",
+      accessTokenExpiresAt,
+      apiUrl: binding.apiUrl,
+      scope: binding.scope,
+      tokenType: refreshed.token_type ?? coordinatedExisting?.tokenType ?? "Bearer",
+    };
     coordinator.latestState = {
       ownerBinding: coordinator.latestState.ownerBinding,
       refreshToken: nextRefreshToken,
       issuedAt: coordinator.latestState.issuedAt,
+      rotationVersion: (coordinator.latestState.rotationVersion ?? 0) + 1,
       bindings: {
         ...coordinator.latestState.bindings,
-        [binding.key]: {
-          accessToken: refreshed.access_token ?? "",
-          accessTokenExpiresAt,
-          apiUrl: binding.apiUrl,
-          scope: binding.scope,
-          tokenType: refreshed.token_type ?? coordinatedExisting?.tokenType ?? "Bearer",
-        },
+        [binding.key]: accessToken,
       },
     };
+    storeCachedAccessToken(
+      coordinator.latestState.ownerBinding,
+      binding.scope,
+      secret,
+      accessToken
+    );
     coordinator.lastError = undefined;
     coordinator.version++;
     registerRefreshCoordinator(
@@ -435,7 +494,7 @@ async function coordinateEntraTargetAccessTokenRefresh(
       ),
       coordinator
     );
-    return { state: cloneStoredState(coordinator.latestState) };
+    return { state: cloneStoredState(coordinator.latestState), accessToken };
   } finally {
     release();
     if (coordinator.tail === currentTurn) {
@@ -473,6 +532,8 @@ function cloneStoredState(state: StoredEntraTargetTokenState): StoredEntraTarget
     refreshToken: state.refreshToken,
     bindings: { ...state.bindings },
     issuedAt: state.issuedAt,
+    rotationVersion: state.rotationVersion,
+    needsMigration: state.needsMigration,
   };
 }
 
@@ -492,11 +553,41 @@ function mergeStoredStates(
     refreshToken: latest.refreshToken ?? incoming.refreshToken,
     bindings,
     issuedAt: Math.max(latest.issuedAt ?? 0, incoming.issuedAt ?? 0),
+    rotationVersion: Math.max(
+      latest.rotationVersion ?? 0,
+      incoming.rotationVersion ?? 0
+    ),
+    needsMigration: latest.needsMigration || incoming.needsMigration,
   };
 }
 
 export function resetEntraRefreshCoordinatorsForTests() {
   refreshCoordinators.clear();
+  accessTokenCache.clear();
+  clearedTokenOwners.clear();
+}
+
+export function entraTargetAccessTokenCacheSizeForTests() {
+  return accessTokenCache.size;
+}
+
+export function clearEntraTargetTokenServerState(
+  request: Request,
+  env: AdminSecurityEnvironment = process.env
+) {
+  const settings = getAdminSecuritySettings(env);
+  const session = readAdminSessionState(request.headers, settings);
+  const secret = sessionSecret(settings);
+  const identity = session.identity;
+  const expectedOwnerBinding = identity?.provider === "entra" && secret
+    ? createTargetTokenOwnerBinding(identity, settings, secret)
+    : undefined;
+  const stored = expectedOwnerBinding
+    ? readStoredTargetTokenState(request.headers, settings, expectedOwnerBinding)
+    : null;
+  if (stored) {
+    removeServerStateForOwner(stored.ownerBinding);
+  }
 }
 
 export async function createEntraTargetAccessTokenResponse(
@@ -600,18 +691,33 @@ function readStoredTargetTokenState(
     const cookieValue = readChunkedCookie(headers, name);
     if (!cookieValue) continue;
     try {
-      const parsed = JSON.parse(decrypt(cookieValue, secret, TOKEN_COOKIE_PURPOSE)) as StoredEntraTargetTokenState;
-      if (!parsed || typeof parsed !== "object" ||
-        typeof parsed.ownerBinding !== "string" ||
+      const decoded = JSON.parse(decrypt(cookieValue, secret, TOKEN_COOKIE_PURPOSE)) as unknown;
+      if (!decoded || typeof decoded !== "object") {
+        continue;
+      }
+      const parsed = decoded as Partial<
+        PersistedEntraTargetTokenState & StoredEntraTargetTokenState
+      >;
+      const legacyBindings = parsed.bindings;
+      const isCurrentState = parsed.version === TARGET_TOKEN_STATE_VERSION;
+      const isLegacyState = parsed.version === undefined &&
+        typeof legacyBindings === "object" && legacyBindings !== null;
+      if (typeof parsed.ownerBinding !== "string" ||
         (expectedOwnerBinding && !constantTimeEquals(parsed.ownerBinding, expectedOwnerBinding)) ||
-        typeof parsed.bindings !== "object" || parsed.bindings === null) {
+        (!isCurrentState && !isLegacyState)) {
         continue;
       }
       states.push({
         ownerBinding: parsed.ownerBinding,
         refreshToken: typeof parsed.refreshToken === "string" ? parsed.refreshToken : undefined,
-        bindings: Object.fromEntries(Object.entries(parsed.bindings).filter(([, value]) => isStoredBinding(value))),
+        bindings: legacyBindings && typeof legacyBindings === "object"
+          ? Object.fromEntries(Object.entries(legacyBindings).filter(([, value]) => isStoredBinding(value)))
+          : {},
         issuedAt: typeof parsed.issuedAt === "number" ? parsed.issuedAt : 0,
+        rotationVersion: typeof parsed.rotationVersion === "number"
+          ? parsed.rotationVersion
+          : 0,
+        needsMigration: isLegacyState,
         cookieName: name,
       });
     } catch {
@@ -619,13 +725,17 @@ function readStoredTargetTokenState(
     }
   }
   if (states.length === 0) return null;
-  states.sort((left, right) => (left.issuedAt ?? 0) - (right.issuedAt ?? 0));
+  states.sort((left, right) =>
+    (left.rotationVersion ?? 0) - (right.rotationVersion ?? 0) ||
+    (left.issuedAt ?? 0) - (right.issuedAt ?? 0));
   const newest = states.at(-1)!;
   return {
     ownerBinding: newest.ownerBinding,
     refreshToken: newest.refreshToken,
     bindings: Object.assign({}, ...states.map((state) => state.bindings)),
     issuedAt: newest.issuedAt,
+    rotationVersion: newest.rotationVersion,
+    needsMigration: states.some((state) => state.needsMigration),
     sourceCookieNames: states.map((state) => state.cookieName),
   };
 }
@@ -689,7 +799,8 @@ async function refreshEntraTargetAccessToken(
     },
     signal
   );
-  if (!response.ok || tokens.error || !tokens.access_token || !tokens.expires_in) {
+  if (!response.ok || tokens.error || !tokens.access_token || !tokens.expires_in ||
+      Buffer.byteLength(tokens.access_token) > MAX_ACCESS_TOKEN_BYTES) {
     throw new Error("Microsoft Entra ID token refresh failed.");
   }
 
@@ -778,11 +889,12 @@ function serializeStateCookie(
     ? TOKEN_COOKIE_NAME
     : DEVELOPMENT_TOKEN_COOKIE_NAME;
   const cookieName = `${cookieRoot}.${crypto.randomUUID()}`;
-  const persistedState: StoredEntraTargetTokenState = {
+  const persistedState: PersistedEntraTargetTokenState = {
+    version: TARGET_TOKEN_STATE_VERSION,
     ownerBinding: state.ownerBinding,
     refreshToken: state.refreshToken,
-    bindings: state.bindings,
     issuedAt: Date.now(),
+    rotationVersion: state.rotationVersion ?? 0,
   };
   const payload = encrypt(JSON.stringify(persistedState), secret, TOKEN_COOKIE_PURPOSE);
   return serializeChunkedCookie(
@@ -805,6 +917,7 @@ function shouldConsolidateState(
   request: Request,
   settings: AdminSecuritySettings
 ) {
+  if (state.needsMigration) return true;
   const names = state.sourceCookieNames ?? [];
   if (names.length !== 1) return true;
   const expectedRoot = shouldSecureCookie(request, settings.isProduction)
@@ -855,7 +968,7 @@ function isStoredBinding(value: unknown): value is StoredEntraTargetAccessToken 
   }
 
   const binding = value as Partial<StoredEntraTargetAccessToken>;
-  return typeof binding.accessToken === "string" &&
+  return typeof binding.accessToken === "string" && binding.accessToken.length > 0 &&
     typeof binding.accessTokenExpiresAt === "number" &&
     typeof binding.apiUrl === "string" &&
     typeof binding.scope === "string" &&
@@ -875,10 +988,17 @@ function serializeChunkedCookie(
     throw new Error("Microsoft Entra ID token state exceeds the supported cookie size.");
   }
 
-  return [
+  const headers = [
     serializeCookie(`${name}.parts`, String(chunks.length), options),
     ...chunks.map((chunk, index) => serializeCookie(`${name}.${index}`, chunk, options)),
   ];
+  const requestBytes = headers.reduce((total, header) =>
+    total + Buffer.byteLength(header.split(";", 1)[0]!) + 2, 0);
+  if (requestBytes > MAX_TOKEN_COOKIE_SNAPSHOT_BYTES) {
+    throw new Error("Microsoft Entra ID refresh state exceeds the supported cookie budget.");
+  }
+
+  return headers;
 }
 
 function readChunkedCookie(headers: Headers, name: string) {
@@ -957,6 +1077,69 @@ function splitIntoChunks(value: string, chunkSize: number) {
 
 function isExpired(expiresAt: number) {
   return expiresAt <= Math.floor(Date.now() / 1000) + TOKEN_REFRESH_SKEW_SECONDS;
+}
+
+function createAccessTokenCacheKey(
+  ownerBinding: string,
+  scope: string,
+  secret: string
+) {
+  return sign(`workable.admin.entra.access-cache.v1\0${ownerBinding}\0${scope}`, secret);
+}
+
+function readCachedAccessToken(
+  ownerBinding: string,
+  scope: string,
+  secret: string
+) {
+  const key = createAccessTokenCacheKey(ownerBinding, scope, secret);
+  const cached = accessTokenCache.get(key);
+  if (!cached) return undefined;
+  if (isExpired(cached.accessTokenExpiresAt)) {
+    accessTokenCache.delete(key);
+    return undefined;
+  }
+
+  accessTokenCache.delete(key);
+  accessTokenCache.set(key, cached);
+  return cached;
+}
+
+function storeCachedAccessToken(
+  ownerBinding: string,
+  scope: string,
+  secret: string,
+  token: StoredEntraTargetAccessToken
+) {
+  if (Buffer.byteLength(token.accessToken) > MAX_ACCESS_TOKEN_BYTES ||
+      isExpired(token.accessTokenExpiresAt) ||
+      clearedTokenOwners.has(ownerBinding)) return;
+  const key = createAccessTokenCacheKey(ownerBinding, scope, secret);
+  accessTokenCache.delete(key);
+  while (accessTokenCache.size >= MAX_ACCESS_TOKEN_CACHE_ENTRIES) {
+    const oldest = accessTokenCache.keys().next().value as string;
+    accessTokenCache.delete(oldest);
+  }
+  accessTokenCache.set(key, { ...token, ownerBinding });
+}
+
+function removeServerStateForOwner(ownerBinding: string) {
+  clearedTokenOwners.delete(ownerBinding);
+  while (clearedTokenOwners.size >= MAX_CLEARED_TOKEN_OWNERS) {
+    const oldest = clearedTokenOwners.keys().next().value as string;
+    clearedTokenOwners.delete(oldest);
+  }
+  clearedTokenOwners.set(ownerBinding, true);
+  for (const [key, cached] of accessTokenCache) {
+    if (constantTimeEquals(cached.ownerBinding, ownerBinding)) {
+      accessTokenCache.delete(key);
+    }
+  }
+  for (const coordinator of new Set(refreshCoordinators.values())) {
+    if (constantTimeEquals(coordinator.latestState.ownerBinding, ownerBinding)) {
+      removeRefreshCoordinator(coordinator);
+    }
+  }
 }
 
 function withCookies(

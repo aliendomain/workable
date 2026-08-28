@@ -40,6 +40,7 @@ export {
   getAdminAuthProvider,
 } from "./admin-security/entra.ts";
 export {
+  clearEntraTargetTokenServerState,
   createEntraTargetAccessTokenResponse,
   createExpiredEntraTargetTokenCookies,
   getEntraTargetAccessToken,
