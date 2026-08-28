@@ -3165,6 +3165,7 @@ test("proxy streams hosted responses and forwards client cancellation", async ()
   );
 
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-workable-upstream-response"), "true");
   assert.equal(forwardedSignal, request.signal);
   cancellation.abort();
   assert.equal(forwardedSignal?.aborted, true);

@@ -47,6 +47,7 @@ const realtimeAccessTokenRefreshSkewMs = 60 * 1000;
 let loginRedirectInFlight = false;
 let requestHeadersTooLargeFailure: WorkableRequestHeadersTooLargeError | null = null;
 const adminUiAuthRequiredError = "Authentication is required for the Workable admin UI.";
+const workableUpstreamResponseHeader = "x-workable-upstream-response";
 
 export function hasWorkableRequestHeadersTooLargeFailure() {
   return requestHeadersTooLargeFailure !== null;
@@ -200,7 +201,8 @@ async function fetchWorkable<T>(
     },
   });
 
-  if (response.status === 431) {
+  if (response.status === 431 &&
+      response.headers.get(workableUpstreamResponseHeader) !== "true") {
     throw stopWorkableRequestsForOversizedHeaders()!;
   }
 

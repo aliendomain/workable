@@ -177,6 +177,47 @@ test("a 431 opens a page-wide circuit breaker for subsequent Workable requests",
   }
 });
 
+test("an upstream 431 remains request-scoped and leaves other systems available", async () => {
+  let fetchCount = 0;
+  const restoreFetch = mockFetch(async () => {
+    fetchCount++;
+    if (fetchCount === 1) {
+      return jsonResponse(
+        { error: "The hosted Workable API rejected oversized request headers." },
+        {
+          headers: { "x-workable-upstream-response": "true" },
+          status: 431,
+        }
+      );
+    }
+
+    return jsonResponse({ ok: true });
+  });
+
+  resetWorkableRequestHeadersTooLargeFailureForTests();
+  try {
+    await assert.rejects(
+      workableFetch(connection, "views/workers"),
+      (error) => {
+        assert.equal(error instanceof WorkableApiError, true);
+        assert.equal((error as WorkableApiError).status, 431);
+        assert.match((error as Error).message, /hosted Workable API/i);
+        return true;
+      }
+    );
+
+    assert.equal(hasWorkableRequestHeadersTooLargeFailure(), false);
+    assert.deepEqual(
+      await workableFetch({ ...connection, apiUrl: "https://healthy.example.com/workable" }, "views/overview"),
+      { ok: true }
+    );
+    assert.equal(fetchCount, 2);
+  } finally {
+    resetWorkableRequestHeadersTooLargeFailureForTests();
+    restoreFetch();
+  }
+});
+
 test("oversized-header detection recognizes fetch and SignalR error shapes", () => {
   const terminal = new WorkableRequestHeadersTooLargeError();
 
