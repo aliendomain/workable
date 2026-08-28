@@ -38,11 +38,14 @@ const TOKEN_COOKIE_PURPOSE = "entra-target-token";
 const TOKEN_COOKIE_CHUNK_SIZE = 3000;
 const MAX_TOKEN_COOKIE_CHUNKS = 16;
 const MAX_TOKEN_COOKIE_SNAPSHOTS = 4;
-const MAX_TOKEN_COOKIE_SNAPSHOT_BYTES = 8192;
+const MAX_TOKEN_COOKIE_SNAPSHOT_BYTES = 6 * 1024;
 const MAX_ACCESS_TOKEN_CACHE_ENTRIES = 256;
 const MAX_CLEARED_TOKEN_OWNERS = 256;
+const MAX_REFRESH_COORDINATOR_KEYS = 8;
 const MAX_ACCESS_TOKEN_BYTES = 64 * 1024;
-const TARGET_TOKEN_STATE_VERSION = 2;
+const MAX_REFRESH_TOKEN_BYTES = 4 * 1024;
+const MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
+const TARGET_TOKEN_STATE_VERSION = 1;
 const TOKEN_REFRESH_SKEW_SECONDS = 60;
 const noStoreHeaders = {
   "cache-control": "no-store",
@@ -63,20 +66,14 @@ type EntraTargetTokenResponse = {
 type StoredEntraTargetAccessToken = {
   accessToken: string;
   accessTokenExpiresAt: number;
-  apiUrl: string;
-  scope: string;
-  tokenType: string;
 };
 
 type StoredEntraTargetTokenState = {
   ownerBinding: string;
   refreshToken?: string;
-  // Read only for migration from the original cookie format. Access tokens
-  // are never written back to browser state.
-  bindings: Record<string, StoredEntraTargetAccessToken>;
   issuedAt?: number;
   rotationVersion?: number;
-  needsMigration?: boolean;
+  snapshotId?: string;
   sourceCookieNames?: string[];
 };
 
@@ -115,6 +112,7 @@ type EntraTargetAccessTokenOptions = {
 };
 
 type EntraRefreshCoordinator = {
+  keys: Set<string>;
   lastError?: unknown;
   latestState: StoredEntraTargetTokenState;
   tail: Promise<void>;
@@ -201,32 +199,29 @@ export function createEntraTargetTokenCookieHeaders(
   if (!secret || identity.provider !== "entra" || !identity.entraSubject?.trim()) {
     return createExpiredEntraTargetTokenCookies(request.headers, settings.isProduction);
   }
+  if (!isValidRefreshToken(tokens.refresh_token)) {
+    return createExpiredEntraTargetTokenCookies(request.headers, settings.isProduction);
+  }
 
   const bindings = getEntraTargetTokenBindings(settings);
   const state: StoredEntraTargetTokenState = {
     ownerBinding: createTargetTokenOwnerBinding(identity, settings, secret),
-    bindings: {},
     refreshToken: tokens.refresh_token,
   };
   if (!identity.sessionId?.trim()) {
     return createExpiredEntraTargetTokenCookies(request.headers, settings.isProduction);
   }
 
-  if (
-    bindings.length === 1 &&
-    tokens.access_token &&
-    tokens.expires_in &&
-    tokens.expires_in > 0
-  ) {
-    const binding = bindings[0];
-    state.bindings[binding.key] = {
+  const initialBinding = bindings.length === 1 ? bindings[0] : undefined;
+  const initialAccessToken = initialBinding &&
+    typeof tokens.access_token === "string" &&
+    tokens.access_token.length > 0 &&
+    isValidAccessTokenLifetime(tokens.expires_in)
+    ? {
       accessToken: tokens.access_token,
       accessTokenExpiresAt: Math.floor(Date.now() / 1000) + tokens.expires_in,
-      apiUrl: binding.apiUrl,
-      scope: binding.scope,
-      tokenType: tokens.token_type ?? "Bearer",
-    };
-  }
+    } satisfies StoredEntraTargetAccessToken
+    : undefined;
 
   try {
     const headers = serializeStateCookie(
@@ -238,10 +233,6 @@ export function createEntraTargetTokenCookieHeaders(
         settings.sessionAbsoluteMaxAgeSeconds
       )
     );
-    const initialBinding = bindings.length === 1 ? bindings[0] : undefined;
-    const initialAccessToken = initialBinding
-      ? state.bindings[initialBinding.key]
-      : undefined;
     if (initialBinding && initialAccessToken) {
       storeCachedAccessToken(
         state.ownerBinding,
@@ -319,12 +310,8 @@ export async function getEntraTargetAccessToken(
     };
   }
 
-  const existing = readCachedAccessToken(stored.ownerBinding, binding.scope, secret) ??
-    stored.bindings[binding.key];
-  if (existing && !isExpired(existing.accessTokenExpiresAt)) {
-    storeCachedAccessToken(stored.ownerBinding, binding.scope, secret, existing);
-  }
-  if (existing && !options.forceRefresh && !isExpired(existing.accessTokenExpiresAt)) {
+  const existing = readCachedAccessToken(stored.ownerBinding, binding.scope, secret);
+  if (existing && !options.forceRefresh) {
     return {
       ok: true,
       accessToken: existing.accessToken,
@@ -402,6 +389,7 @@ async function coordinateEntraTargetAccessTokenRefresh(
   let coordinator = refreshCoordinators.get(coordinatorKey);
   if (!coordinator) {
     coordinator = {
+      keys: new Set(),
       latestState: cloneStoredState(stored),
       tail: Promise.resolve(),
       version: 0,
@@ -430,15 +418,8 @@ async function coordinateEntraTargetAccessTokenRefresh(
     );
     if (
       coordinatedExisting &&
-      !isExpired(coordinatedExisting.accessTokenExpiresAt) &&
       (!forceRefresh || coordinator.version > requestedVersion)
     ) {
-      storeCachedAccessToken(
-        coordinator.latestState.ownerBinding,
-        binding.scope,
-        secret,
-        coordinatedExisting
-      );
       return {
         state: cloneStoredState(coordinator.latestState),
         accessToken: coordinatedExisting,
@@ -464,19 +445,13 @@ async function coordinateEntraTargetAccessTokenRefresh(
     const accessToken: StoredEntraTargetAccessToken = {
       accessToken: refreshed.access_token ?? "",
       accessTokenExpiresAt,
-      apiUrl: binding.apiUrl,
-      scope: binding.scope,
-      tokenType: refreshed.token_type ?? coordinatedExisting?.tokenType ?? "Bearer",
     };
     coordinator.latestState = {
       ownerBinding: coordinator.latestState.ownerBinding,
       refreshToken: nextRefreshToken,
       issuedAt: coordinator.latestState.issuedAt,
       rotationVersion: (coordinator.latestState.rotationVersion ?? 0) + 1,
-      bindings: {
-        ...coordinator.latestState.bindings,
-        [binding.key]: accessToken,
-      },
+      snapshotId: crypto.randomUUID(),
     };
     storeCachedAccessToken(
       coordinator.latestState.ownerBinding,
@@ -516,24 +491,32 @@ function createRefreshCoordinatorKey(
 
 function registerRefreshCoordinator(key: string, coordinator: EntraRefreshCoordinator) {
   refreshCoordinators.set(key, coordinator);
+  coordinator.keys.add(key);
+  while (coordinator.keys.size > MAX_REFRESH_COORDINATOR_KEYS) {
+    const oldest = coordinator.keys.values().next().value as string;
+    coordinator.keys.delete(oldest);
+    if (refreshCoordinators.get(oldest) === coordinator) {
+      refreshCoordinators.delete(oldest);
+    }
+  }
 }
 
 function removeRefreshCoordinator(coordinator: EntraRefreshCoordinator) {
-  for (const [key, candidate] of refreshCoordinators) {
-    if (candidate === coordinator) {
+  for (const key of coordinator.keys) {
+    if (refreshCoordinators.get(key) === coordinator) {
       refreshCoordinators.delete(key);
     }
   }
+  coordinator.keys.clear();
 }
 
 function cloneStoredState(state: StoredEntraTargetTokenState): StoredEntraTargetTokenState {
   return {
     ownerBinding: state.ownerBinding,
     refreshToken: state.refreshToken,
-    bindings: { ...state.bindings },
     issuedAt: state.issuedAt,
     rotationVersion: state.rotationVersion,
-    needsMigration: state.needsMigration,
+    snapshotId: state.snapshotId,
   };
 }
 
@@ -541,23 +524,15 @@ function mergeStoredStates(
   latest: StoredEntraTargetTokenState,
   incoming: StoredEntraTargetTokenState
 ): StoredEntraTargetTokenState {
-  const bindings = { ...incoming.bindings };
-  for (const [key, value] of Object.entries(latest.bindings)) {
-    // The coordinator's state is authoritative for bindings it has already
-    // refreshed. A concurrent request can carry an older token with a later
-    // advertised expiry even though that token was rejected downstream.
-    bindings[key] = value;
-  }
   return {
     ownerBinding: latest.ownerBinding,
     refreshToken: latest.refreshToken ?? incoming.refreshToken,
-    bindings,
     issuedAt: Math.max(latest.issuedAt ?? 0, incoming.issuedAt ?? 0),
     rotationVersion: Math.max(
       latest.rotationVersion ?? 0,
       incoming.rotationVersion ?? 0
     ),
-    needsMigration: latest.needsMigration || incoming.needsMigration,
+    snapshotId: latest.snapshotId,
   };
 }
 
@@ -571,6 +546,10 @@ export function entraTargetAccessTokenCacheSizeForTests() {
   return accessTokenCache.size;
 }
 
+export function entraRefreshCoordinatorSizeForTests() {
+  return refreshCoordinators.size;
+}
+
 export function clearEntraTargetTokenServerState(
   request: Request,
   env: AdminSecurityEnvironment = process.env
@@ -582,11 +561,8 @@ export function clearEntraTargetTokenServerState(
   const expectedOwnerBinding = identity?.provider === "entra" && secret
     ? createTargetTokenOwnerBinding(identity, settings, secret)
     : undefined;
-  const stored = expectedOwnerBinding
-    ? readStoredTargetTokenState(request.headers, settings, expectedOwnerBinding)
-    : null;
-  if (stored) {
-    removeServerStateForOwner(stored.ownerBinding);
+  if (expectedOwnerBinding) {
+    removeServerStateForOwner(expectedOwnerBinding);
   }
 }
 
@@ -695,29 +671,20 @@ function readStoredTargetTokenState(
       if (!decoded || typeof decoded !== "object") {
         continue;
       }
-      const parsed = decoded as Partial<
-        PersistedEntraTargetTokenState & StoredEntraTargetTokenState
-      >;
-      const legacyBindings = parsed.bindings;
-      const isCurrentState = parsed.version === TARGET_TOKEN_STATE_VERSION;
-      const isLegacyState = parsed.version === undefined &&
-        typeof legacyBindings === "object" && legacyBindings !== null;
+      const parsed = decoded as Partial<PersistedEntraTargetTokenState>;
       if (typeof parsed.ownerBinding !== "string" ||
         (expectedOwnerBinding && !constantTimeEquals(parsed.ownerBinding, expectedOwnerBinding)) ||
-        (!isCurrentState && !isLegacyState)) {
+        parsed.version !== TARGET_TOKEN_STATE_VERSION ||
+        !isValidRefreshToken(parsed.refreshToken)) {
         continue;
       }
       states.push({
         ownerBinding: parsed.ownerBinding,
         refreshToken: typeof parsed.refreshToken === "string" ? parsed.refreshToken : undefined,
-        bindings: legacyBindings && typeof legacyBindings === "object"
-          ? Object.fromEntries(Object.entries(legacyBindings).filter(([, value]) => isStoredBinding(value)))
-          : {},
         issuedAt: typeof parsed.issuedAt === "number" ? parsed.issuedAt : 0,
         rotationVersion: typeof parsed.rotationVersion === "number"
           ? parsed.rotationVersion
           : 0,
-        needsMigration: isLegacyState,
         cookieName: name,
       });
     } catch {
@@ -732,10 +699,8 @@ function readStoredTargetTokenState(
   return {
     ownerBinding: newest.ownerBinding,
     refreshToken: newest.refreshToken,
-    bindings: Object.assign({}, ...states.map((state) => state.bindings)),
     issuedAt: newest.issuedAt,
     rotationVersion: newest.rotationVersion,
-    needsMigration: states.some((state) => state.needsMigration),
     sourceCookieNames: states.map((state) => state.cookieName),
   };
 }
@@ -799,8 +764,11 @@ async function refreshEntraTargetAccessToken(
     },
     signal
   );
-  if (!response.ok || tokens.error || !tokens.access_token || !tokens.expires_in ||
-      Buffer.byteLength(tokens.access_token) > MAX_ACCESS_TOKEN_BYTES) {
+  if (!response.ok || tokens.error || typeof tokens.access_token !== "string" ||
+      tokens.access_token.length === 0 ||
+      !isValidAccessTokenLifetime(tokens.expires_in) ||
+      Buffer.byteLength(tokens.access_token) > MAX_ACCESS_TOKEN_BYTES ||
+      !isValidRefreshToken(tokens.refresh_token)) {
     throw new Error("Microsoft Entra ID token refresh failed.");
   }
 
@@ -888,7 +856,7 @@ function serializeStateCookie(
   const cookieRoot = shouldSecureCookie(request, settings.isProduction)
     ? TOKEN_COOKIE_NAME
     : DEVELOPMENT_TOKEN_COOKIE_NAME;
-  const cookieName = `${cookieRoot}.${crypto.randomUUID()}`;
+  const cookieName = `${cookieRoot}.${state.snapshotId ?? crypto.randomUUID()}`;
   const persistedState: PersistedEntraTargetTokenState = {
     version: TARGET_TOKEN_STATE_VERSION,
     ownerBinding: state.ownerBinding,
@@ -917,7 +885,6 @@ function shouldConsolidateState(
   request: Request,
   settings: AdminSecuritySettings
 ) {
-  if (state.needsMigration) return true;
   const names = state.sourceCookieNames ?? [];
   if (names.length !== 1) return true;
   const expectedRoot = shouldSecureCookie(request, settings.isProduction)
@@ -960,19 +927,6 @@ function normalizeApiUrl(url: URL) {
 
 function createBindingKey(apiUrl: string) {
   return sha256Base64Url(apiUrl);
-}
-
-function isStoredBinding(value: unknown): value is StoredEntraTargetAccessToken {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const binding = value as Partial<StoredEntraTargetAccessToken>;
-  return typeof binding.accessToken === "string" && binding.accessToken.length > 0 &&
-    typeof binding.accessTokenExpiresAt === "number" &&
-    typeof binding.apiUrl === "string" &&
-    typeof binding.scope === "string" &&
-    typeof binding.tokenType === "string";
 }
 
 function serializeChunkedCookie(
@@ -1079,6 +1033,18 @@ function isExpired(expiresAt: number) {
   return expiresAt <= Math.floor(Date.now() / 1000) + TOKEN_REFRESH_SKEW_SECONDS;
 }
 
+function isValidAccessTokenLifetime(value: unknown): value is number {
+  return Number.isSafeInteger(value) &&
+    (value as number) > 0 &&
+    (value as number) <= MAX_ACCESS_TOKEN_LIFETIME_SECONDS;
+}
+
+function isValidRefreshToken(value: unknown): value is string | undefined {
+  return value === undefined ||
+    (typeof value === "string" && value.length > 0 &&
+      Buffer.byteLength(value) <= MAX_REFRESH_TOKEN_BYTES);
+}
+
 function createAccessTokenCacheKey(
   ownerBinding: string,
   scope: string,
@@ -1111,7 +1077,7 @@ function storeCachedAccessToken(
   secret: string,
   token: StoredEntraTargetAccessToken
 ) {
-  if (Buffer.byteLength(token.accessToken) > MAX_ACCESS_TOKEN_BYTES ||
+  if (!token.accessToken || Buffer.byteLength(token.accessToken) > MAX_ACCESS_TOKEN_BYTES ||
       isExpired(token.accessTokenExpiresAt) ||
       clearedTokenOwners.has(ownerBinding)) return;
   const key = createAccessTokenCacheKey(ownerBinding, scope, secret);

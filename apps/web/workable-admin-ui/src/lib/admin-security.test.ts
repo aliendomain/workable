@@ -23,13 +23,13 @@ import {
   clearEntraTargetTokenServerState,
   createExpiredEntraTargetTokenCookies,
   createEntraTargetTokenCookieHeaders,
+  entraRefreshCoordinatorSizeForTests,
   entraTargetAccessTokenCacheSizeForTests,
   resetEntraRefreshCoordinatorsForTests,
 } from "./admin-security/entra-downstream.ts";
 import { normalizeAdminReturnPath } from "./admin-security/return-path.ts";
 import {
   encrypt,
-  sha256Base64Url,
   sign as signAdminValue,
 } from "./admin-security/crypto.ts";
 import { createSignedAdminSessionCookie } from "./admin-security/session.ts";
@@ -2576,6 +2576,14 @@ test("concurrent forced Entra refreshes share one rotation-safe token exchange",
   assert.equal(tokenCalls, 1);
   assert.equal((await first.json() as { accessToken: string }).accessToken, "shared-replacement-token");
   assert.equal((await second.json() as { accessToken: string }).accessToken, "shared-replacement-token");
+  const snapshotRoots = [first, second].flatMap((response) =>
+    getSetCookies(response.headers)
+      .filter((cookie) => !/Max-Age=0/i.test(cookie))
+      .map((cookie) => cookie.match(
+        /(__Host-workable_admin_entra_target_token\.[0-9a-f-]{36})\.(?:parts|\d+)=/i
+      )?.[1])
+      .filter((root): root is string => Boolean(root)));
+  assert.equal(new Set(snapshotRoots).size, 1);
 });
 
 test("concurrent refresh cleanup remains bounded to each request's snapshot", async () => {
@@ -2690,7 +2698,7 @@ test("concurrent failed Entra refreshes share one failure without retry amplific
   assert.deepEqual(responses.map((response) => response.status), [401, 401]);
 });
 
-test("concurrent target refreshes serialize rotation and preserve both target bindings", async () => {
+test("concurrent target refreshes serialize rotation and cache both target scopes", async () => {
   resetEntraBackchannelCachesForTests();
   resetEntraRefreshCoordinatorsForTests();
   const env = entraEnv({
@@ -2757,7 +2765,7 @@ test("concurrent target refreshes serialize rotation and preserve both target bi
     ),
     env,
     async () => {
-      throw new Error("Merged target binding should not refresh.");
+      throw new Error("The first target scope should remain cached.");
     }
   );
   assert.equal((await cachedFirst.json() as { accessToken: string }).accessToken, "target-token-1");
@@ -2913,105 +2921,51 @@ test("delegated access tokens are individually size-bounded in server memory", a
   assert.equal(entraTargetAccessTokenCacheSizeForTests(), 0);
 });
 
-test("legacy delegated-token cookies migrate to compact state without another sign-in", async () => {
-  resetEntraRefreshCoordinatorsForTests();
+test("malformed delegated token responses fail closed without entering server caches", async () => {
+  resetEntraBackchannelCachesForTests();
   const apiUrl = "https://workable.example.com/workable";
-  const scope = "api://actually-client-id/workable.access";
   const env = entraEnv({
-    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{ apiUrl, scope }]),
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{
+      apiUrl,
+      scope: "api://actually-client-id/workable.access",
+    }]),
   });
-  const request = new Request("https://admin.example.com/");
-  const session = createAdminSessionCookie(
-    "admin",
-    request,
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
     env,
-    "entra",
-    TEST_ENTRA_SUBJECT
+    new Request("https://admin.example.com/"),
+    { refresh_token: "bounded-refresh-authority" }
   );
-  assert.equal(session.ok, true);
-  if (!session.ok) return;
-  const secret = env.WORKABLE_ADMIN_UI_SESSION_SECRET as string;
-  const ownerBinding = signAdminValue(JSON.stringify([
-    "workable.admin.entra.target-token-owner.v2",
-    "entra",
-    TEST_ENTRA_SUBJECT,
-    session.identity.sessionId,
-    "tenant-id",
-    "client-id",
-    "https://login.microsoftonline.com",
-    apiUrl,
-    scope,
-  ]), secret);
-  const legacyPayload = encrypt(JSON.stringify({
-    ownerBinding,
-    refreshToken: "legacy-refresh-authority",
-    bindings: {
-      [sha256Base64Url(apiUrl)]: {
-        accessToken: "legacy-access-token.".repeat(300),
-        accessTokenExpiresAt: Math.floor(Date.now() / 1000) + 3600,
-        apiUrl,
-        scope,
-        tokenType: "Bearer",
-      },
-    },
-    issuedAt: Date.now(),
-  }), secret, "entra-target-token");
-  const legacyRoot = "__Host-workable_admin_entra_target_token.00000000-0000-4000-8000-000000000001";
-  const legacyChunks = Array.from(
-    { length: Math.ceil(legacyPayload.length / 3000) },
-    (_, index) => legacyPayload.slice(index * 3000, (index + 1) * 3000)
-  );
-  const legacyCookieHeader = [
-    session.header.split(";", 1)[0]!,
-    `${legacyRoot}.parts=${legacyChunks.length}`,
-    ...legacyChunks.map((chunk, index) => `${legacyRoot}.${index}=${chunk}`),
-  ].join("; ");
-  const migrated = await createEntraTargetAccessTokenResponse(
-    new Request(
-      `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
-      { headers: { cookie: legacyCookieHeader } }
-    ),
-    env,
-    async () => { throw new Error("A valid legacy access token should seed the server cache."); }
-  );
-  const migratedCookies = getSetCookies(migrated.headers);
-  const compactPairs = migratedCookies
-    .filter((cookie) => !/Max-Age=0/i.test(cookie))
-    .map((cookie) => cookie.split(";", 1)[0]!)
-    .filter((pair) => /workable_admin_entra_target_token/.test(pair));
+  const invalidResponses: Array<Record<string, unknown>> = [
+    { access_token: "", expires_in: 3600 },
+    { access_token: "token", expires_in: "3600" },
+    { access_token: "token", expires_in: 0 },
+    { access_token: "token", expires_in: 86_401 },
+    { access_token: "token", expires_in: 3600, refresh_token: "" },
+    { access_token: "token", expires_in: 3600, refresh_token: "r".repeat(4_097) },
+  ];
 
-  assert.equal(migrated.status, 200);
-  assert.match(
-    (await migrated.json() as { accessToken: string }).accessToken,
-    /^legacy-access-token\./
-  );
-  assert.ok(migratedCookies.some((cookie) =>
-    cookie.startsWith(`${legacyRoot}.`) && /Max-Age=0/i.test(cookie)));
-  assert.ok(Buffer.byteLength(compactPairs.join("; ")) < 1024);
+  for (const invalidResponse of invalidResponses) {
+    resetEntraRefreshCoordinatorsForTests();
+    const response = await createEntraTargetAccessTokenResponse(
+      new Request(
+        `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
+        { headers: { cookie: cookieHeader } }
+      ),
+      env,
+      async (url) => Response.json(
+        String(url).includes(".well-known/openid-configuration")
+          ? { token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token" }
+          : invalidResponse
+      )
+    );
 
-  resetEntraRefreshCoordinatorsForTests();
-  let refreshAuthority = "";
-  const afterRestart = await createEntraTargetAccessTokenResponse(
-    new Request(
-      `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
-      { headers: { cookie: [session.header.split(";", 1)[0]!, ...compactPairs].join("; ") } }
-    ),
-    env,
-    async (url, init) => {
-      if (String(url).includes(".well-known/openid-configuration")) {
-        return Response.json({
-          token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
-        });
-      }
-      refreshAuthority = (init?.body as URLSearchParams).get("refresh_token") ?? "";
-      return Response.json({ access_token: "post-migration-token", expires_in: 3600 });
-    }
-  );
-  assert.equal(afterRestart.status, 200);
-  assert.equal(refreshAuthority, "legacy-refresh-authority");
+    assert.equal(response.status, 401);
+    assert.equal(entraTargetAccessTokenCacheSizeForTests(), 0);
+    assert.ok(getSetCookies(response.headers).some((cookie) => /Max-Age=0/.test(cookie)));
+  }
 });
 
-test("unrecognized delegated-token state versions and primitive payloads fail closed", async () => {
+test("unversioned, unrecognized, and primitive delegated-token state fails closed", async () => {
   resetEntraRefreshCoordinatorsForTests();
   const apiUrl = "https://workable.example.com/workable";
   const scope = "api://actually-client-id/workable.access";
@@ -3037,6 +2991,7 @@ test("unrecognized delegated-token state versions and primitive payloads fail cl
   ]), secret);
   const payloads = [
     null,
+    { ownerBinding, refreshToken: "unversioned-refresh" },
     { version: 999, ownerBinding, refreshToken: "unknown-version-refresh" },
   ];
 
@@ -3120,6 +3075,53 @@ test("four concurrent target groups remain below the legacy request-header ceili
     Buffer.byteLength(browserCookieHeader) < 16_384,
     `expected the four-group cookie header below 16 KiB, received ${Buffer.byteLength(browserCookieHeader)} bytes`
   );
+});
+
+test("concurrent target rotations keep refresh coordinator aliases bounded", async () => {
+  resetEntraBackchannelCachesForTests();
+  resetEntraRefreshCoordinatorsForTests();
+  const targets = Array.from({ length: 12 }, (_, index) => ({
+    apiUrl: `https://coordinator-${index + 1}.example.com/workable`,
+    scope: `api://coordinator-${index + 1}/workable.access`,
+  }));
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify(targets),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    { refresh_token: "initial-coordinator-refresh" }
+  );
+  const observedCoordinatorSizes: number[] = [];
+  let tokenCalls = 0;
+  const responses = await Promise.all(targets.map((target) =>
+    createEntraTargetAccessTokenResponse(
+      new Request(
+        `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(target.apiUrl)}`,
+        { headers: { cookie: cookieHeader } }
+      ),
+      env,
+      async (url) => {
+        if (String(url).includes(".well-known/openid-configuration")) {
+          return Response.json({
+            token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+          });
+        }
+        observedCoordinatorSizes.push(entraRefreshCoordinatorSizeForTests());
+        tokenCalls++;
+        return Response.json({
+          access_token: `coordinator-access-${tokenCalls}`,
+          expires_in: 3600,
+          refresh_token: `coordinator-refresh-${tokenCalls}`,
+        });
+      }
+    )
+  ));
+
+  assert.deepEqual(responses.map((response) => response.status), Array(12).fill(200));
+  assert.equal(tokenCalls, 12);
+  assert.equal(Math.max(...observedCoordinatorSizes), 8);
+  assert.equal(entraRefreshCoordinatorSizeForTests(), 0);
 });
 
 test("configured APIs with the same delegated scope share one cached access token", async () => {
@@ -3235,6 +3237,13 @@ test("delegated token cache and cleared-owner tracking stay bounded", async () =
   }
 
   assert.equal(entraTargetAccessTokenCacheSizeForTests(), 256);
+  const sessionOnlyCookie = cookieHeaders.at(-1)!.split("; ")
+    .filter((pair) => !/workable_admin_entra_target_token/.test(pair))
+    .join("; ");
+  clearEntraTargetTokenServerState(new Request("https://admin.example.com/", {
+    headers: { cookie: sessionOnlyCookie },
+  }), env);
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 255);
   for (const cookie of cookieHeaders) {
     clearEntraTargetTokenServerState(new Request("https://admin.example.com/", {
       headers: { cookie },
@@ -4076,6 +4085,19 @@ test("oversized Entra target token state expires cookies instead of writing unre
   );
   assert.equal(session.ok, true);
   if (!session.ok) return;
+
+  const maximumCookies = createEntraTargetTokenCookieHeaders(
+    { refresh_token: "r".repeat(4_096) },
+    request,
+    getAdminSecuritySettings(env),
+    session.identity
+  );
+  const maximumRequestBytes = maximumCookies.reduce((total, cookie) =>
+    total + Buffer.byteLength(cookie.split(";", 1)[0]!) + 2, 0);
+  const sessionRequestBytes = Buffer.byteLength(session.header.split(";", 1)[0]!) + 2;
+  assert.ok(maximumCookies.every((cookie) => !/Max-Age=0/.test(cookie)));
+  assert.ok(maximumRequestBytes <= 6 * 1024);
+  assert.ok(sessionRequestBytes + maximumRequestBytes * 4 < 32 * 1024);
 
   const cookies = createEntraTargetTokenCookieHeaders(
     {
