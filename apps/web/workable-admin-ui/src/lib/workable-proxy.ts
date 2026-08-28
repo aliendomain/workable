@@ -17,6 +17,7 @@ const noStoreHeaders = {
   "cache-control": "no-store",
   "x-content-type-options": "nosniff",
 };
+const workableUpstreamResponseHeader = "x-workable-upstream-response";
 
 const hostedIssuerMismatchError =
   "The hosted Workable API rejected the bearer token because the token issuer does not match its Entra configuration. Check that the target API app registration is configured to issue v2 access tokens.";
@@ -141,6 +142,7 @@ export async function proxyWorkableRequest(
           "content-type": createSafeProxyContentType(
             response.headers.get("content-type")
           ),
+          [workableUpstreamResponseHeader]: "true",
         },
         [
           ...targetAccessToken.setCookieHeaders,

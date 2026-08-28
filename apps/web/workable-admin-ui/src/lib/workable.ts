@@ -1264,14 +1264,19 @@ export type QueueRequestSchemaField = {
 
 export {
   WorkableApiError,
+  WorkableRequestHeadersTooLargeError,
   WorkableRealtimeAuthenticationError,
   createWorkableRealtimeUrl,
   formatDateTime,
   getWorkableRealtimeAccessToken,
+  hasWorkableRequestHeadersTooLargeFailure,
   invalidateWorkableRealtimeAccessToken,
+  isWorkableRequestHeadersTooLargeError,
   isWorkableRealtimeAuthenticationError,
+  resetWorkableRequestHeadersTooLargeFailureForTests,
   safeJsonParse,
   stateTone,
+  stopWorkableRequestsForOversizedHeaders,
   workableFetch,
   workableQueryFetch,
 } from "./workable-client";
