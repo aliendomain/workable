@@ -769,8 +769,17 @@ public sealed class WorkableViewQueryAdapterTests
                 WorkerLogs: WorkComponentShapes.Standard,
                 WorkerDuration: WorkComponentShapes.Standard,
                 WorkerTimeline: WorkComponentShapes.Standard)));
+        var ascending = Require(await adapter.WorkerOverviewRealtimeState(
+            session,
+            RequiredWorkerId(handle),
+            new WorkWorkerOverviewRealtimeCriteria(
+                WorkerLogs: WorkComponentShapes.Standard,
+                LogSortDirection: WorkWorkerOverviewSortDirection.Asc)));
 
         Assert.Equal(50, expanded.LogEntries.Count);
+        Assert.Equal(50, ascending.LogEntries.Count);
+        Assert.Equal("flood log 150", ascending.LogEntries[0].Message);
+        Assert.Equal("flood log 199", ascending.LogEntries[^1].Message);
     }
 
     [Fact]

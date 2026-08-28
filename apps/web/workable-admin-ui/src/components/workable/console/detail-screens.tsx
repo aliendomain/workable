@@ -1310,11 +1310,11 @@ export function WorkerConsoleView({
       worker,
     ]
   );
-  const terminalFailure = worker && worker.state === "Failed" && landing?.latestIteration?.failure
+  const latestIterationFailure = landing?.latestIteration?.failure
     ? createWorkerFailureDetailsFromLandingFailure(landing.latestIteration.failure)
     : null;
-  const terminalFailureKey = terminalFailure && worker
-    ? `${worker.id.value}:${worker.stateSequence}:failed`
+  const latestIterationFailureKey = latestIterationFailure && worker && landing?.latestIteration
+    ? `${worker.id.value}:${landing.latestIteration.sequence}:failed`
     : null;
   const [dismissedWorkerFailureKey, setDismissedWorkerFailureKey] = useState<string | null>(null);
   const workerActionRefreshInProgress = landingSnapshot.loading || landingSnapshot.refreshing === true;
@@ -2394,12 +2394,12 @@ export function WorkerConsoleView({
                 )}
               </PanelShell>
             ) : null}
-            {terminalFailure && terminalFailureKey !== dismissedWorkerFailureKey ? (
+            {latestIterationFailure && latestIterationFailureKey !== dismissedWorkerFailureKey ? (
               <WorkerFailureBanner
-                key={terminalFailureKey}
-                details={terminalFailure}
+                key={latestIterationFailureKey}
+                details={latestIterationFailure}
                 now={relativeNow}
-                onDismiss={() => setDismissedWorkerFailureKey(terminalFailureKey)}
+                onDismiss={() => setDismissedWorkerFailureKey(latestIterationFailureKey)}
               />
             ) : null}
             {landingSnapshot.error && (
@@ -5961,7 +5961,7 @@ function WorkerFailureBanner({
     : null;
 
   return (
-    <section className={`rounded-xl border p-4 shadow-lg ${semanticBadgeToneClass("danger")}`}>
+    <section className={`shrink-0 rounded-xl border p-4 shadow-lg ${semanticBadgeToneClass("danger")}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -6344,7 +6344,7 @@ export function shouldRenderTimelineDescription(
 export function renderTimelineItemMeta(item: WorkerTimelineItem, now: number) {
   if (item.liveText?.kind === "state") {
     return item.liveText.nextRunAt
-      ? formatFutureRelativeTime(item.liveText.nextRunAt, now)
+      ? formatCompactFutureTimelineRelativeTime(item.liveText.nextRunAt, now)
       : formatElapsedSince(item.liveText.stateChangedAt ?? item.liveText.updatedAt, now);
   }
 
@@ -6353,6 +6353,29 @@ export function renderTimelineItemMeta(item: WorkerTimelineItem, now: number) {
   }
 
   return formatCompactTimelineRelativeTime(item.at, now);
+}
+
+export function formatCompactFutureTimelineRelativeTime(value: string, now: number) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || timestamp <= now) {
+    return "0.00s";
+  }
+
+  const seconds = (timestamp - now) / 1000;
+  if (seconds < 10) {
+    return `${seconds.toFixed(2)}s`;
+  }
+  if (seconds < 60) {
+    return `${Math.ceil(seconds)}s`;
+  }
+  if (seconds < 60 * 60) {
+    return `${Math.ceil(seconds / 60)}m`;
+  }
+  if (seconds < 24 * 60 * 60) {
+    return `${Math.ceil(seconds / (60 * 60))}h`;
+  }
+
+  return `${Math.ceil(seconds / (24 * 60 * 60))}d`;
 }
 
 export function createTimelineRows(items: WorkerTimelineItem[]): WorkerTimelineRow[] {

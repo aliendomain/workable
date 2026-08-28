@@ -413,11 +413,11 @@ Those panel modes materially change what the server pushes:
 
 - controls are always live, but latest output is only pushed when controls are `standard`
 - logs in `compact` push only summary counts
-- logs in `standard` or `detailed` push summary counts plus matching log rows
+- logs in `standard` or `detailed` push summary counts plus the latest 50 matching log rows, arranged in the requested sort direction
 - recent iterations in `compact` push nothing
 - recent iterations in `standard` or `detailed` push matching iteration lifecycle rows
 - timeline in `compact` pushes nothing
-- timeline in `standard` or `detailed` pushes matching timeline rows
+- timeline in `standard` or `detailed` pushes the latest 50 matching timeline rows, arranged in the requested sort direction
 
 Worker-overview updates are grouped by:
 

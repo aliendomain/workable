@@ -46,6 +46,7 @@ import {
   filterWorkerOverviewLogEntriesBySelectedLevels,
   findTabBasePath,
   formatCollapsedStackEntry,
+  formatCompactFutureTimelineRelativeTime,
   formatCompactTimelineRelativeTime,
   formatConfigurationValue,
   formatDurationLabel,
@@ -727,6 +728,13 @@ test("worker configuration request helpers diff values and clone queue state wit
 test("timeline, duration, hidden panel, and catalog helpers cover ordering and boundary behavior", () => {
   const now = Date.parse("2026-05-30T10:02:00.000Z");
   assert.equal(formatFutureRelativeTime("2026-05-30T10:01:00.000Z", now), "0.00s");
+  assert.equal(formatCompactFutureTimelineRelativeTime("not-a-date", now), "0.00s");
+  assert.equal(formatCompactFutureTimelineRelativeTime("2026-05-30T10:02:05.000Z", now), "5.00s");
+  assert.equal(formatCompactFutureTimelineRelativeTime("2026-05-30T10:02:11.200Z", now), "12s");
+  assert.equal(formatCompactFutureTimelineRelativeTime("2026-05-30T10:51:00.000Z", now), "49m");
+  assert.equal(formatCompactFutureTimelineRelativeTime("2026-05-30T12:02:00.000Z", now), "2h");
+  assert.equal(formatCompactFutureTimelineRelativeTime("2026-06-01T10:02:00.000Z", now), "2d");
+  assert.equal(formatCompactFutureTimelineRelativeTime("2026-05-30T10:01:00.000Z", now), "0.00s");
   assert.equal(formatElapsedSince("2026-05-30T10:01:58.500Z", now), "1.50s");
   assert.equal(formatElapsedSince("not-a-date", now), "-");
   assert.equal(formatCompactTimelineRelativeTime("2026-05-30T10:01:15.000Z", now), "45.00s");
