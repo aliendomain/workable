@@ -2422,15 +2422,18 @@ function useWorkableResource<T>(
   const systemName = connection.systemName;
   const retainDataOnNull = options?.retainDataOnNull === true;
   const resetKey = options?.resetKey ?? null;
-  const lastResetKeyRef = useRef<string | number | null>(resetKey);
+  const resourceScopeRef = useRef({ apiUrl, resetKey, systemName });
 
   useEffect(() => {
+    const previousScope = resourceScopeRef.current;
+    const scopeChanged = previousScope.apiUrl !== apiUrl ||
+      previousScope.systemName !== systemName ||
+      previousScope.resetKey !== resetKey;
+    resourceScopeRef.current = { apiUrl, resetKey, systemName };
+
     if (!path) {
       queueMicrotask(() => setState((current) => {
-        const sameResetKey = lastResetKeyRef.current === resetKey;
-        lastResetKeyRef.current = resetKey;
-
-        if (retainDataOnNull && sameResetKey && current.data !== undefined) {
+        if (retainDataOnNull && !scopeChanged && current.data !== undefined) {
           return {
             data: current.data,
             errorCause: undefined,
@@ -2445,16 +2448,17 @@ function useWorkableResource<T>(
     }
 
     let canceled = false;
-    lastResetKeyRef.current = resetKey;
     queueMicrotask(() => {
       if (!canceled) {
-        setState((current) => ({
-          ...current,
-          error: undefined,
-          errorCause: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
-        }));
+        setState((current) => scopeChanged
+          ? { loading: true }
+          : {
+              ...current,
+              error: undefined,
+              errorCause: undefined,
+              loading: current.data === undefined,
+              refreshing: current.data !== undefined,
+            });
       }
     });
 

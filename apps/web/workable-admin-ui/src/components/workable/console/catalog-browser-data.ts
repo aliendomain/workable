@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Loadable } from "@/components/features/console/types";
 import {
   WorkableApiError,
@@ -26,6 +26,10 @@ const definitionCatalogLevelCacheListeners = new Set<() => void>();
 let definitionCatalogLevelCacheVersion = 0;
 
 export function clearDefinitionCatalogLevelCache() {
+  if (definitionCatalogLevelCache.size === 0) {
+    return;
+  }
+
   definitionCatalogLevelCache.clear();
   publishDefinitionCatalogLevelCacheChange();
 }
@@ -104,9 +108,13 @@ export function useDefinitionCatalogLevel(
   });
   const apiUrl = connection?.apiUrl ?? "";
   const systemName = connection?.systemName;
+  const hasConnection = connection !== null;
+  const scopeKeyRef = useRef(cacheKey);
 
   useEffect(() => {
-    if (!connection || !path) {
+    const scopeChanged = scopeKeyRef.current !== cacheKey;
+    scopeKeyRef.current = cacheKey;
+    if (!hasConnection || !path) {
       queueMicrotask(() => setState({ loading: false }));
       return;
     }
@@ -125,10 +133,10 @@ export function useDefinitionCatalogLevel(
     queueMicrotask(() => {
       if (!canceled) {
         setState((current) => ({
-          ...current,
+          ...(scopeChanged ? {} : current),
           error: undefined,
-          loading: current.data === undefined,
-          refreshing: current.data !== undefined,
+          loading: scopeChanged || current.data === undefined,
+          refreshing: !scopeChanged && current.data !== undefined,
         }));
       }
     });
@@ -146,14 +154,16 @@ export function useDefinitionCatalogLevel(
       .catch((error) => {
         if (!canceled) {
           if (error instanceof WorkableApiError && error.status === 404) {
-            clearDefinitionCatalogLevelCache();
+            invalidateDefinitionCatalogLevelCache(requestConnection);
           }
           const detail = error instanceof Error ? error.message : "Request failed.";
           setState((current) =>
             current.error === detail && !current.loading && !current.refreshing
               ? current
               : {
-                  data: current.data,
+                  data: error instanceof WorkableApiError && error.status === 404
+                    ? undefined
+                    : current.data,
                   error: detail,
                   loading: false,
                   refreshing: false,
@@ -165,7 +175,7 @@ export function useDefinitionCatalogLevel(
     return () => {
       canceled = true;
     };
-  }, [apiUrl, systemName, path, refreshToken, connection, cacheKey, cacheVersion]);
+  }, [apiUrl, systemName, path, refreshToken, hasConnection, cacheKey, cacheVersion]);
 
   return state;
 }

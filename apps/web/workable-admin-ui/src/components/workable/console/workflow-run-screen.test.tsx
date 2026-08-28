@@ -143,6 +143,50 @@ test("workflow run screen renders structure nodes and drills into workers from t
   }
 });
 
+test("workflow run screen clears prior-system data before a new system request fails", async () => {
+  const betaConnection: WorkableConnection = {
+    ...connection,
+    systemName: "Beta",
+  };
+  const fetchMock = installWorkflowFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json(parallelWorkflowRun());
+    }
+
+    if (call.input === "/api/workable/systems/Beta/workflow-runs/run-123?childSampleSize=12") {
+      return Response.json({ error: "Beta workflow unavailable." }, { status: 502 });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const element = (activeConnection: WorkableConnection) => (
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkflowRunConsoleView
+        connection={activeConnection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onOpenWorker={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        refreshToken={0}
+        workflowRunId="run-123"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+  const result = await renderDom(element(connection));
+
+  try {
+    await result.waitFor(() => result.getByText("fan-out"));
+    await result.rerender(element(betaConnection));
+    await result.waitFor(() => result.getByText("Beta workflow unavailable."));
+    assert.throws(() => result.getByText("fan-out"));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 test("workflow run screen switches the worker list when a workflow node is clicked", async () => {
   const fetchMock = installWorkflowFetch((call) => {
     if (call.input === "/api/workable/systems/Ops/workflow-runs/run-123?childSampleSize=12") {

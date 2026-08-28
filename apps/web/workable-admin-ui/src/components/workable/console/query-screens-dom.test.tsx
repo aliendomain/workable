@@ -227,6 +227,124 @@ test("workers view surfaces query errors", async () => {
   }
 });
 
+test("workers view stops automatic pagination after a failed page", async () => {
+  const fetchMock = installQueryFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/views/workers") {
+      const options = componentOptions(call);
+      if (options.skip === 0) {
+        return Response.json(componentResult("workerGrid", {
+          skip: 0,
+          take: 50,
+          totalCount: 2,
+          workers: [worker({ id: { value: "worker-loaded" } })],
+        }));
+      }
+
+      return Response.json({ error: "Next worker page unavailable" }, { status: 502 });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <WorkersView
+      categoryFilter=""
+      connection={connection}
+      definitionFilter=""
+      isLoadingTarget
+      isVisible
+      keyKindFilter="Any"
+      keyTypeFilter=""
+      keyValueFilter=""
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+      stateFilter={[]}
+    />,
+    { setupWindow: installVirtualLayout }
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("worker-loaded"));
+    const viewport = queryViewport(result);
+    await result.scroll(viewport, {
+      clientHeight: 100,
+      scrollHeight: 240,
+      scrollTop: 160,
+    });
+    await result.waitFor(() =>
+      result.getByText("Worker query failed. Next worker page unavailable")
+    );
+    result.getByText("Showing 1 worker");
+
+    await result.scroll(viewport, {
+      clientHeight: 100,
+      scrollHeight: 240,
+      scrollTop: 160,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(
+      fetchMock.calls.filter((call) =>
+        call.input === "/api/workable/systems/Ops/views/workers"
+      ).length,
+      2
+    );
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("workers view clears prior-system rows before a new system request fails", async () => {
+  const fetchMock = installQueryFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/views/workers") {
+      return Response.json(componentResult("workerGrid", {
+        skip: 0,
+        take: 50,
+        totalCount: 1,
+        workers: [worker({ id: { value: "ops-worker" } })],
+      }));
+    }
+
+    if (call.input === "/api/workable/systems/Restricted/views/workers") {
+      return Response.json({ error: "Restricted workers unavailable" }, { status: 502 });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const element = (nextConnection: WorkableConnection) => (
+    <WorkersView
+      categoryFilter=""
+      connection={nextConnection}
+      definitionFilter=""
+      isLoadingTarget
+      isVisible
+      keyKindFilter="Any"
+      keyTypeFilter=""
+      keyValueFilter=""
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+      stateFilter={[]}
+    />
+  );
+  const result = await renderDom(element(connection), { setupWindow: installVirtualLayout });
+
+  try {
+    await result.waitFor(() => result.getByText("ops-worker"));
+    await result.rerender(element({ ...connection, systemName: "Restricted" }));
+    await result.waitFor(() =>
+      result.getByText("Worker query failed. Restricted workers unavailable")
+    );
+
+    assert.equal(result.queryByText("ops-worker"), null);
+    result.getByText("No workers matched the current query.");
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 test("iterations view loads filtered rows, appends another page, and opens final iterations", async () => {
   const openedIterations: Array<{ sequence: number; workerId: string }> = [];
   const fetchMock = installQueryFetch((call) => {
@@ -359,6 +477,124 @@ test("iterations view surfaces query errors", async () => {
 
   try {
     await result.waitFor(() => result.getByText("Iteration query failed. Iterations unavailable"));
+    result.getByText("No iterations matched the current query.");
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("iterations view stops automatic pagination after a failed page", async () => {
+  const fetchMock = installQueryFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/views/iterations") {
+      const options = componentOptions(call);
+      if (options.skip === 0) {
+        return Response.json(componentResult("iterationGrid", {
+          iterations: [iteration({ workerId: { value: "iteration-worker-loaded" } })],
+          skip: 0,
+          take: 50,
+          totalCount: 2,
+        }));
+      }
+
+      return Response.json({ error: "Next iteration page unavailable" }, { status: 502 });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const result = await renderDom(
+    <IterationsView
+      categoryFilter=""
+      connection={connection}
+      definitionFilter=""
+      isLoadingTarget
+      isVisible
+      keyKindFilter="Any"
+      keyTypeFilter=""
+      keyValueFilter=""
+      onOpenIteration={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+      statusFilter={[]}
+    />,
+    { setupWindow: installVirtualLayout }
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("#1 / iteration-worker-loaded"));
+    const viewport = queryViewport(result);
+    await result.scroll(viewport, {
+      clientHeight: 100,
+      scrollHeight: 240,
+      scrollTop: 160,
+    });
+    await result.waitFor(() =>
+      result.getByText("Iteration query failed. Next iteration page unavailable")
+    );
+    result.getByText("Showing 1 iteration");
+
+    await result.scroll(viewport, {
+      clientHeight: 100,
+      scrollHeight: 240,
+      scrollTop: 160,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(
+      fetchMock.calls.filter((call) =>
+        call.input === "/api/workable/systems/Ops/views/iterations"
+      ).length,
+      2
+    );
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("iterations view clears prior-system rows before a new system request fails", async () => {
+  const fetchMock = installQueryFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/views/iterations") {
+      return Response.json(componentResult("iterationGrid", {
+        iterations: [iteration({ workerId: { value: "ops-iteration-worker" } })],
+        skip: 0,
+        take: 50,
+        totalCount: 1,
+      }));
+    }
+
+    if (call.input === "/api/workable/systems/Restricted/views/iterations") {
+      return Response.json({ error: "Restricted iterations unavailable" }, { status: 502 });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const element = (nextConnection: WorkableConnection) => (
+    <IterationsView
+      categoryFilter=""
+      connection={nextConnection}
+      definitionFilter=""
+      isLoadingTarget
+      isVisible
+      keyKindFilter="Any"
+      keyTypeFilter=""
+      keyValueFilter=""
+      onOpenIteration={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+      statusFilter={[]}
+    />
+  );
+  const result = await renderDom(element(connection), { setupWindow: installVirtualLayout });
+
+  try {
+    await result.waitFor(() => result.getByText("#1 / ops-iteration-worker"));
+    await result.rerender(element({ ...connection, systemName: "Restricted" }));
+    await result.waitFor(() =>
+      result.getByText("Iteration query failed. Restricted iterations unavailable")
+    );
+
+    assert.equal(result.queryByText("#1 / ops-iteration-worker"), null);
     result.getByText("No iterations matched the current query.");
   } finally {
     fetchMock.restore();

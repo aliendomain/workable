@@ -4,6 +4,7 @@ import {
   OverviewCatalogFilter,
   QueryFilterPanelContent,
 } from "@/components/workable/console/filters";
+import { DefinitionCatalogBrowser } from "@/components/workable/console/catalog-browser";
 import { clearDefinitionCatalogLevelCache } from "@/components/workable/console/catalog-browser-data";
 import { renderDom } from "@/test/dom";
 import type { WorkableConnection, WorkerState } from "@/lib/workable";
@@ -253,6 +254,95 @@ test("overview catalog filter applies definition selections and clears active sc
     await render.click(render.getByText("Clear"));
 
     assert.equal(clearCount, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await render.restore();
+    clearDefinitionCatalogLevelCache();
+  }
+});
+
+test("catalog 404 does not republish an empty cache and request forever", async () => {
+  clearDefinitionCatalogLevelCache();
+  const previousFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    calls.push(String(input));
+    return Response.json({ error: "Catalog missing" }, { status: 404 });
+  }) as typeof fetch;
+  const render = await renderDom(
+    <DefinitionCatalogBrowser
+      connection={connection}
+      emptyState={<div>No entries</div>}
+      loadingState={<div>Loading catalog</div>}
+      onNavigate={() => undefined}
+      path=""
+      renderCategory={(category) => <div>{category.label}</div>}
+      renderDefinition={(definition) => <div>{definition.name}</div>}
+      renderError={(error) => <div>{error}</div>}
+    />
+  );
+
+  try {
+    await render.waitFor(() => render.getByText("Catalog missing"));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(calls, ["/api/workable/systems/Ops/definitions?level=true"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await render.restore();
+    clearDefinitionCatalogLevelCache();
+  }
+});
+
+test("catalog failure invalidation stays isolated to the affected connection", async () => {
+  clearDefinitionCatalogLevelCache();
+  const previousFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const path = String(input);
+    calls.push(path);
+    if (path === "/api/workable/systems/Alpha/definitions?level=true") {
+      return Response.json({
+        categories: [],
+        definitions: [{ category: "Ops", id: { value: "alpha-1" }, name: "AlphaWork" }],
+      });
+    }
+
+    if (path === "/api/workable/systems/Beta/definitions?level=true") {
+      return Response.json({ error: "Beta catalog missing" }, { status: 404 });
+    }
+
+    return Response.json({ error: `Unhandled request: ${path}` }, { status: 500 });
+  }) as typeof fetch;
+  const browser = (systemName: string) => (
+    <DefinitionCatalogBrowser
+      connection={{ apiUrl: connection.apiUrl, systemName }}
+      emptyState={<div>No entries</div>}
+      loadingState={<div>Loading catalog</div>}
+      onNavigate={() => undefined}
+      path=""
+      renderCategory={(category) => <div>{category.label}</div>}
+      renderDefinition={(definition) => <div>{definition.name}</div>}
+      renderError={(error) => <div>{error}</div>}
+    />
+  );
+  const render = await renderDom(browser("Alpha"));
+
+  try {
+    await render.waitFor(() => render.getByText("AlphaWork"));
+    await render.rerender(browser("Beta"));
+    await render.waitFor(() => render.getByText("Beta catalog missing"));
+    assert.equal(render.queryByText("AlphaWork"), null);
+
+    await render.rerender(browser("Alpha"));
+    await render.waitFor(() => render.getByText("AlphaWork"));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(
+      calls.filter((path) =>
+        path === "/api/workable/systems/Alpha/definitions?level=true"
+      ).length,
+      1
+    );
   } finally {
     globalThis.fetch = previousFetch;
     await render.restore();

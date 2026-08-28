@@ -113,6 +113,48 @@ test("catalog renders diagnostic capture controls before definitions and refresh
   }
 });
 
+test("catalog clears prior-system definitions before a new system request fails", async () => {
+  const betaConnection: WorkableConnection = {
+    ...connection,
+    systemName: "Beta",
+  };
+  const fetchMock = installQueueFetch((call) => {
+    if (call.input === "/api/workable/systems/Ops/definitions") {
+      return Response.json([definition()]);
+    }
+
+    if (call.input === "/api/workable/systems/Beta/definitions") {
+      return Response.json({ error: "Beta unavailable." }, { status: 502 });
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const element = (activeConnection: WorkableConnection) => (
+    <DefinitionsView
+      canControlSystem={false}
+      canViewDiagnostics={false}
+      catalogScope={null}
+      connection={activeConnection}
+      onCatalogScopeChange={() => undefined}
+      onOpenDefinition={() => undefined}
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+  const result = await renderDom(element(connection));
+
+  try {
+    await result.waitFor(() => result.getByText("ImportOrders"));
+    await result.rerender(element(betaConnection));
+    await result.waitFor(() => result.getByText("Beta unavailable."));
+    assert.throws(() => result.getByText("ImportOrders"));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 test("iteration profile SQL availability prefers the live overview capability over stored navigation state", () => {
   assert.equal(
     resolveIterationSqlProfilingAvailable({
@@ -427,6 +469,90 @@ test("worker console exposes a view workflow action when the overview carries a 
     await result.click(result.getByRole("button", { name: "View Workflow" }));
     assert.deepEqual(openedWorkflowRuns, ["run-123"]);
   } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("worker log pagination ignores a failed page from an older refresh generation", async () => {
+  let overviewRequestCount = 0;
+  let resolveStaleLogPage: ((response: Response) => void) | undefined;
+  const staleLogPage = new Promise<Response>((resolve) => {
+    resolveStaleLogPage = resolve;
+  });
+  const fetchMock = installQueueFetch((call) => {
+    if (call.input.includes("/workers/worker-1/overview/logs?")) {
+      return staleLogPage;
+    }
+
+    if (call.input.includes("/workers/worker-1/overview?")) {
+      overviewRequestCount += 1;
+      const overview = workerOverview();
+      if (overview.logs?.page) {
+        overview.logs.page.cursor = `cursor-${overviewRequestCount}`;
+        overview.logs.page.hasMore = true;
+      }
+      return Response.json(overview);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const element = (refreshToken: number) => (
+    <ConsoleHeaderCapabilitiesProvider>
+      <WorkerConsoleView
+        canViewDiagnostics={false}
+        clearSystemNotification={() => undefined}
+        connection={connection}
+        onActiveRealtimeConnectionCountChange={() => undefined}
+        onNavigateBack={() => undefined}
+        onOpenDefinitionCatalog={() => undefined}
+        onOpenIteration={() => undefined}
+        onOpenWorker={() => undefined}
+        onOpenWorkflowRun={() => undefined}
+        onRealtimePayloadOpenChange={() => undefined}
+        refreshToken={refreshToken}
+        realtimePayloadCaptureEnabled={false}
+        realtimePayloadMaxMessages={20}
+        realtimePayloadOpen={false}
+        reportSystemNotification={() => undefined}
+        workerId="worker-1"
+      />
+    </ConsoleHeaderCapabilitiesProvider>
+  );
+  const result = await renderDom(element(0));
+
+  try {
+    await result.waitFor(() => result.getByText("Scroll to load more"));
+    const loadMoreLabel = result.getByText("Scroll to load more");
+    const viewport = loadMoreLabel.parentElement?.parentElement;
+    assert.ok(viewport instanceof result.dom.window.HTMLElement);
+    await result.scroll(viewport, {
+      clientHeight: 100,
+      scrollHeight: 240,
+      scrollTop: 160,
+    });
+    await result.waitFor(() => {
+      assert.equal(
+        fetchMock.calls.some((call) =>
+          call.input.includes("/workers/worker-1/overview/logs?")
+        ),
+        true
+      );
+    });
+
+    await result.rerender(element(1));
+    await result.waitFor(() => assert.equal(overviewRequestCount, 2));
+    resolveStaleLogPage?.(
+      Response.json({ error: "Old log page unavailable" }, { status: 502 })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(result.queryByText("Old log page unavailable"), null);
+    result.getByText("Scroll to load more");
+  } finally {
+    resolveStaleLogPage?.(
+      Response.json({ error: "Test cleanup" }, { status: 500 })
+    );
     fetchMock.restore();
     await result.restore();
   }

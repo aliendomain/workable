@@ -102,6 +102,7 @@ import {
   stackFrameKindLabel,
   stackTraceLineTone,
   startsWithCategoryPath,
+  stopAutomaticCursorPaginationAfterError,
   stripInvocationConfiguration,
   summarizeWorkerLogEntries,
   updateSelectedLogLevels,
@@ -518,6 +519,76 @@ test("iteration console view loads the overview landing response and renders the
   }
 });
 
+test("iteration log pagination ignores a failed page from an older refresh generation", async () => {
+  let overviewRequestCount = 0;
+  let resolveStaleLogPage: ((response: Response) => void) | undefined;
+  const staleLogPage = new Promise<Response>((resolve) => {
+    resolveStaleLogPage = resolve;
+  });
+  const fetchMock = installIterationOverviewFetch((call) => {
+    if (call.input.includes("/workers/worker-1/iterations/7/overview/logs?")) {
+      return staleLogPage;
+    }
+
+    if (call.input === "/api/workable/systems/Ops/workers/worker-1/iterations/7/overview?activity=Logs") {
+      overviewRequestCount += 1;
+      const overview = iterationOverviewComponent();
+      const logPage = overview.logs.page;
+      assert.ok(logPage);
+      logPage.cursor = `cursor-${overviewRequestCount}`;
+      logPage.hasMore = true;
+      return Response.json(overview);
+    }
+
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const element = (refreshToken: number) => createElement(IterationConsoleView, {
+    connection,
+    onNavigateBack: () => undefined,
+    onOpenDefinition: () => undefined,
+    refreshToken,
+    sequence: 7,
+    workerId: "worker-1",
+  });
+  const result = await renderDom(element(0));
+
+  try {
+    await result.waitFor(() => result.getByText("Scroll to load more"));
+    const loadMoreLabel = result.getByText("Scroll to load more");
+    const viewport = loadMoreLabel.parentElement?.parentElement;
+    assert.ok(viewport instanceof result.dom.window.HTMLElement);
+    await result.scroll(viewport, {
+      clientHeight: 100,
+      scrollHeight: 240,
+      scrollTop: 160,
+    });
+    await result.waitFor(() => {
+      assert.equal(
+        fetchMock.calls.some((call) =>
+          call.input.includes("/workers/worker-1/iterations/7/overview/logs?")
+        ),
+        true
+      );
+    });
+
+    await result.rerender(element(1));
+    await result.waitFor(() => assert.equal(overviewRequestCount, 2));
+    resolveStaleLogPage?.(
+      Response.json({ error: "Old iteration log page unavailable" }, { status: 502 })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(result.queryByText("Old iteration log page unavailable"), null);
+    result.getByText("Scroll to load more");
+  } finally {
+    resolveStaleLogPage?.(
+      Response.json({ error: "Test cleanup" }, { status: 500 })
+    );
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 test("queue json and configuration helpers parse, clone, sanitize, and enforce persistent concurrency rules", () => {
   assert.equal(parseSchemaJsonValue(""), null);
   assert.deepEqual(parseSchemaJsonValue("{\"type\":\"object\"}"), { type: "object" });
@@ -837,6 +908,20 @@ test("timeline, duration, hidden panel, and catalog helpers cover ordering and b
 });
 
 test("worker log helpers filter, sort, cap, summarize, and compare entries", () => {
+  assert.deepEqual(
+    stopAutomaticCursorPaginationAfterError({
+      hasMore: true,
+      loadingMore: true,
+      nextCursor: "cursor-2",
+    }, "Page unavailable"),
+    {
+      error: "Page unavailable",
+      hasMore: false,
+      loadingMore: false,
+      nextCursor: null,
+    }
+  );
+
   assert.equal(getWorkerLogStreamCardClassName("compact").includes("min-h-[24rem]"), false);
   assert.ok(getWorkerLogStreamCardClassName("standard").includes("min-h-[24rem] max-h-[70vh]"));
   assert.ok(getWorkerLogStreamCardClassName("detailed").includes("min-h-[24rem] max-h-[calc(100svh-11rem)]"));
