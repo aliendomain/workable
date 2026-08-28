@@ -1,4 +1,5 @@
 import {
+  clearEntraTargetTokenServerState,
   createExpiredAdminSessionCookie,
   createAdminLogoutTombstoneCookies,
   createExpiredEntraTransactionCookies,
@@ -23,6 +24,8 @@ export async function POST(request: Request) {
       }
     );
   }
+
+  clearEntraTargetTokenServerState(request);
 
   const headers = new Headers(noStoreHeaders);
   headers.append("set-cookie", createExpiredAdminSessionCookie());

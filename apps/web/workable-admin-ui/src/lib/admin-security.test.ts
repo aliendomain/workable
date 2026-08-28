@@ -20,12 +20,18 @@ import {
 } from "./admin-security.ts";
 import { getAdminSecuritySettings } from "./admin-security/config.ts";
 import {
+  clearEntraTargetTokenServerState,
   createExpiredEntraTargetTokenCookies,
   createEntraTargetTokenCookieHeaders,
+  entraRefreshCoordinatorSizeForTests,
+  entraTargetAccessTokenCacheSizeForTests,
   resetEntraRefreshCoordinatorsForTests,
 } from "./admin-security/entra-downstream.ts";
 import { normalizeAdminReturnPath } from "./admin-security/return-path.ts";
-import { sign as signAdminValue } from "./admin-security/crypto.ts";
+import {
+  encrypt,
+  sign as signAdminValue,
+} from "./admin-security/crypto.ts";
 import { createSignedAdminSessionCookie } from "./admin-security/session.ts";
 import {
   authenticateBasicRequest,
@@ -2570,6 +2576,14 @@ test("concurrent forced Entra refreshes share one rotation-safe token exchange",
   assert.equal(tokenCalls, 1);
   assert.equal((await first.json() as { accessToken: string }).accessToken, "shared-replacement-token");
   assert.equal((await second.json() as { accessToken: string }).accessToken, "shared-replacement-token");
+  const snapshotRoots = [first, second].flatMap((response) =>
+    getSetCookies(response.headers)
+      .filter((cookie) => !/Max-Age=0/i.test(cookie))
+      .map((cookie) => cookie.match(
+        /(__Host-workable_admin_entra_target_token\.[0-9a-f-]{36})\.(?:parts|\d+)=/i
+      )?.[1])
+      .filter((root): root is string => Boolean(root)));
+  assert.equal(new Set(snapshotRoots).size, 1);
 });
 
 test("concurrent refresh cleanup remains bounded to each request's snapshot", async () => {
@@ -2684,7 +2698,7 @@ test("concurrent failed Entra refreshes share one failure without retry amplific
   assert.deepEqual(responses.map((response) => response.status), [401, 401]);
 });
 
-test("concurrent target refreshes serialize rotation and preserve both target bindings", async () => {
+test("concurrent target refreshes serialize rotation and cache both target scopes", async () => {
   resetEntraBackchannelCachesForTests();
   resetEntraRefreshCoordinatorsForTests();
   const env = entraEnv({
@@ -2751,13 +2765,13 @@ test("concurrent target refreshes serialize rotation and preserve both target bi
     ),
     env,
     async () => {
-      throw new Error("Merged target binding should not refresh.");
+      throw new Error("The first target scope should remain cached.");
     }
   );
   assert.equal((await cachedFirst.json() as { accessToken: string }).accessToken, "target-token-1");
 });
 
-test("out-of-order delegated-token responses merge immutable snapshots without refresh rollback", async () => {
+test("out-of-order delegated-token responses retain usable refresh authority after restart", async () => {
   resetEntraBackchannelCachesForTests();
   const env = entraEnv({
     WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
@@ -2799,20 +2813,726 @@ test("out-of-order delegated-token responses merge immutable snapshots without r
       .map((cookie) => cookie.split(";")[0]!)
       .filter((cookie) => /workable_admin_entra_target_token/.test(cookie)));
   const combined = [sessionPair, ...snapshotPairs].join("; ");
+  resetEntraRefreshCoordinatorsForTests();
+  let refreshAuthority = "";
+  const afterRestart = await createEntraTargetAccessTokenResponse(
+    requestFor("https://first.example.com/workable", combined),
+    env,
+    async (url, init) => {
+      if (String(url).includes(".well-known/openid-configuration")) {
+        return Response.json({
+          token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+        });
+      }
+      refreshAuthority = (init?.body as URLSearchParams).get("refresh_token") ?? "";
+      return Response.json({
+        access_token: "token-after-process-restart",
+        expires_in: 3600,
+        refresh_token: "rotated-after-process-restart",
+      });
+    }
+  );
 
-  for (const apiUrl of [
-    "https://first.example.com/workable",
-    "https://second.example.com/workable",
-  ]) {
-    const cached = await createEntraTargetAccessTokenResponse(
-      requestFor(apiUrl, combined),
+  assert.equal(afterRestart.status, 200);
+  assert.ok([
+    "rotated-api://first/access",
+    "rotated-api://second/access",
+  ].includes(refreshAuthority));
+  assert.equal(
+    (await afterRestart.json() as { accessToken: string }).accessToken,
+    "token-after-process-restart"
+  );
+  assert.ok(getSetCookies(afterRestart.headers).some((cookie) => /Max-Age=0/.test(cookie)));
+});
+
+test("delegated-token cookies persist refresh authority without access-token payloads", async () => {
+  resetEntraRefreshCoordinatorsForTests();
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{
+      apiUrl: "https://workable.example.com/workable",
+      scope: "api://actually-client-id/workable.access",
+    }]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    {
+      access_token: "access-token-body.".repeat(800),
+      expires_in: 3600,
+      refresh_token: "refresh-authority.".repeat(100),
+    }
+  );
+  const targetCookieBytes = Buffer.byteLength(
+    cookieHeader.split("; ")
+      .filter((pair) => /workable_admin_entra_target_token/.test(pair))
+      .join("; ")
+  );
+
+  assert.ok(targetCookieBytes < 4096, `expected compact target cookies, received ${targetCookieBytes} bytes`);
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 1);
+  const cached = await createEntraTargetAccessTokenResponse(
+    new Request(
+      "https://admin.example.com/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
+      { headers: { cookie: cookieHeader } }
+    ),
+    env,
+    async () => { throw new Error("The initial access token should come from server cache."); }
+  );
+  assert.match(
+    (await cached.json() as { accessToken: string }).accessToken,
+    /^access-token-body\./
+  );
+});
+
+test("delegated access tokens are individually size-bounded in server memory", async () => {
+  resetEntraBackchannelCachesForTests();
+  resetEntraRefreshCoordinatorsForTests();
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{
+      apiUrl: "https://workable.example.com/workable",
+      scope: "api://actually-client-id/workable.access",
+    }]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    {
+      access_token: "a".repeat(65_537),
+      expires_in: 3600,
+      refresh_token: "bounded-refresh-authority",
+    }
+  );
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 0);
+
+  const response = await createEntraTargetAccessTokenResponse(
+    new Request(
+      "https://admin.example.com/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
+      { headers: { cookie: cookieHeader } }
+    ),
+    env,
+    async (url) => Response.json(
+      String(url).includes(".well-known/openid-configuration")
+        ? { token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token" }
+        : { access_token: "b".repeat(65_537), expires_in: 3600 }
+    )
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 0);
+});
+
+test("malformed delegated token responses fail closed without entering server caches", async () => {
+  resetEntraBackchannelCachesForTests();
+  const apiUrl = "https://workable.example.com/workable";
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{
+      apiUrl,
+      scope: "api://actually-client-id/workable.access",
+    }]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    { refresh_token: "bounded-refresh-authority" }
+  );
+  const invalidResponses: Array<Record<string, unknown>> = [
+    { access_token: "", expires_in: 3600 },
+    { access_token: "token", expires_in: "3600" },
+    { access_token: "token", expires_in: 0 },
+    { access_token: "token", expires_in: 86_401 },
+    { access_token: "token", expires_in: 3600, refresh_token: "" },
+    { access_token: "token", expires_in: 3600, refresh_token: "r".repeat(4_097) },
+  ];
+
+  for (const invalidResponse of invalidResponses) {
+    resetEntraRefreshCoordinatorsForTests();
+    const response = await createEntraTargetAccessTokenResponse(
+      new Request(
+        `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
+        { headers: { cookie: cookieHeader } }
+      ),
       env,
-      async () => { throw new Error("Merged immutable snapshots must not refresh."); }
+      async (url) => Response.json(
+        String(url).includes(".well-known/openid-configuration")
+          ? { token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token" }
+          : invalidResponse
+      )
     );
-    assert.equal(cached.status, 200);
-    assert.match((await cached.json() as { accessToken: string }).accessToken, /^token-for-/);
-    assert.ok(getSetCookies(cached.headers).some((cookie) => /Max-Age=0/.test(cookie)));
+
+    assert.equal(response.status, 401);
+    assert.equal(entraTargetAccessTokenCacheSizeForTests(), 0);
+    assert.ok(getSetCookies(response.headers).some((cookie) => /Max-Age=0/.test(cookie)));
   }
+});
+
+test("unversioned, unrecognized, and primitive delegated-token state fails closed", async () => {
+  resetEntraRefreshCoordinatorsForTests();
+  const apiUrl = "https://workable.example.com/workable";
+  const scope = "api://actually-client-id/workable.access";
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{ apiUrl, scope }]),
+  });
+  const request = new Request("https://admin.example.com/");
+  const session = createAdminSessionCookie(
+    "admin", request, env, "entra", TEST_ENTRA_SUBJECT);
+  assert.equal(session.ok, true);
+  if (!session.ok) return;
+  const secret = env.WORKABLE_ADMIN_UI_SESSION_SECRET as string;
+  const ownerBinding = signAdminValue(JSON.stringify([
+    "workable.admin.entra.target-token-owner.v2",
+    "entra",
+    TEST_ENTRA_SUBJECT,
+    session.identity.sessionId,
+    "tenant-id",
+    "client-id",
+    "https://login.microsoftonline.com",
+    apiUrl,
+    scope,
+  ]), secret);
+  const payloads = [
+    null,
+    { ownerBinding, refreshToken: "unversioned-refresh" },
+    { version: 999, ownerBinding, refreshToken: "unknown-version-refresh" },
+    {
+      version: 1,
+      ownerBinding,
+      refreshToken: "invalid-global-rotation",
+      issuedAt: Date.now(),
+      rotationVersion: -1,
+    },
+    ...[
+      null,
+      [],
+      "invalid",
+      { 0: 1, 1: 1 },
+      { "!": 1 },
+      { "-1": 1 },
+      { 1: 1 },
+      { "00": 1 },
+      { 0: "1" },
+      { 0: -1 },
+    ].map((scopeRotations) => ({
+      version: 1,
+      ownerBinding,
+      refreshToken: "invalid-scope-watermark-shape",
+      issuedAt: Date.now(),
+      rotationVersion: 1,
+      scopeRotations,
+    })),
+    {
+      version: 1,
+      ownerBinding,
+      refreshToken: "invalid-scope-watermark",
+      issuedAt: Date.now(),
+      rotationVersion: 1,
+      scopeRotations: { 0: 2 },
+    },
+  ];
+
+  for (const [index, state] of payloads.entries()) {
+    const payload = encrypt(JSON.stringify(state), secret, "entra-target-token");
+    const root = `__Host-workable_admin_entra_target_token.00000000-0000-4000-8000-${(index + 10)
+      .toString(16)
+      .padStart(12, "0")}`;
+    const response = await createEntraTargetAccessTokenResponse(
+      new Request(
+        `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
+        {
+          headers: {
+            cookie: [
+              session.header.split(";", 1)[0]!,
+              `${root}.parts=1`,
+              `${root}.0=${payload}`,
+            ].join("; "),
+          },
+        }
+      ),
+      env,
+      async () => { throw new Error("Unsupported cookie state must fail before backchannel work."); }
+    );
+    assert.equal(response.status, 401);
+  }
+
+  const unsupportedPayload = encrypt(
+    JSON.stringify({ ownerBinding, refreshToken: "unversioned-refresh" }),
+    secret,
+    "entra-target-token"
+  );
+  const unsupportedRoot =
+    "__Host-workable_admin_entra_target_token.00000000-0000-4000-8000-000000000099";
+  const proxyResponse = await proxyWorkableRequest(
+    new Request("https://admin.example.com/api/workable/host", {
+      headers: {
+        cookie: [
+          session.header.split(";", 1)[0]!,
+          `${unsupportedRoot}.parts=1`,
+          `${unsupportedRoot}.0=${unsupportedPayload}`,
+        ].join("; "),
+      },
+    }),
+    ["host"],
+    {
+      env,
+      fetch: async () => {
+        throw new Error("Unsupported cookie state must fail before proxy backchannel work.");
+      },
+    }
+  );
+
+  assert.equal(proxyResponse.status, 401);
+  assert.equal(
+    proxyResponse.headers.get("x-workable-admin-reauthenticate"),
+    "true"
+  );
+  assert.ok(
+    getSetCookies(proxyResponse.headers).some((cookie) =>
+      cookie.startsWith(`${unsupportedRoot}.parts=`) && /Max-Age=0/.test(cookie)
+    )
+  );
+});
+
+test("four concurrent target groups remain below the legacy request-header ceiling", async () => {
+  resetEntraBackchannelCachesForTests();
+  resetEntraRefreshCoordinatorsForTests();
+  const targets = Array.from({ length: 4 }, (_, index) => ({
+    apiUrl: `https://group-${index + 1}.example.com/workable`,
+    scope: `api://group-${index + 1}/workable.access`,
+  }));
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify(targets),
+  });
+  const initial = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    { refresh_token: "initial-refresh-authority.".repeat(70) }
+  );
+  let tokenCalls = 0;
+  const responses = await Promise.all(targets.map((target) =>
+    createEntraTargetAccessTokenResponse(
+      new Request(
+        `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(target.apiUrl)}`,
+        { headers: { cookie: initial } }
+      ),
+      env,
+      async (url, init) => {
+        if (String(url).includes(".well-known/openid-configuration")) {
+          return Response.json({
+            token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+          });
+        }
+        tokenCalls++;
+        return Response.json({
+          access_token: `access-${tokenCalls}.` + "x".repeat(12_000),
+          expires_in: 3600,
+          refresh_token: `rotation-${tokenCalls}.` + "r".repeat(1_600),
+          scope: (init?.body as URLSearchParams).get("scope"),
+        });
+      }
+    )
+  ));
+  const sessionPair = initial.split("; ").find((pair) =>
+    pair.startsWith(`${getAdminSecuritySettings(env).sessionCookieName}=`))!;
+  const snapshotPairs = responses.flatMap((response) =>
+    getSetCookies(response.headers)
+      .filter((cookie) => !/Max-Age=0/i.test(cookie))
+      .map((cookie) => cookie.split(";", 1)[0]!)
+      .filter((pair) => /workable_admin_entra_target_token/.test(pair)));
+  const browserCookieHeader = [sessionPair, ...snapshotPairs].join("; ");
+
+  assert.deepEqual(responses.map((response) => response.status), [200, 200, 200, 200]);
+  assert.equal(tokenCalls, 4);
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 4);
+  assert.ok(
+    Buffer.byteLength(browserCookieHeader) < 16_384,
+    `expected the four-group cookie header below 16 KiB, received ${Buffer.byteLength(browserCookieHeader)} bytes`
+  );
+});
+
+test("delayed browser snapshots stay on one session-bound refresh coordinator", async () => {
+  resetEntraBackchannelCachesForTests();
+  resetEntraRefreshCoordinatorsForTests();
+  const targets = Array.from({ length: 13 }, (_, index) => ({
+    apiUrl: `https://coordinator-${index + 1}.example.com/workable`,
+    scope: `api://coordinator-${index + 1}/workable.access`,
+  }));
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify(targets),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    { refresh_token: "initial-coordinator-refresh" }
+  );
+  const observedCoordinatorSizes: number[] = [];
+  const refreshAuthorities: string[] = [];
+  let ninthRefreshStarted!: () => void;
+  const ninthRefreshHasStarted = new Promise<void>((resolve) => {
+    ninthRefreshStarted = resolve;
+  });
+  let finishNinthRefresh!: () => void;
+  const ninthRefreshCanFinish = new Promise<void>((resolve) => {
+    finishNinthRefresh = resolve;
+  });
+  let tokenCalls = 0;
+  const requestTarget = (target: (typeof targets)[number]) =>
+    createEntraTargetAccessTokenResponse(
+      new Request(
+        `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(target.apiUrl)}`,
+        { headers: { cookie: cookieHeader } }
+      ),
+      env,
+      async (url, init) => {
+        if (String(url).includes(".well-known/openid-configuration")) {
+          return Response.json({
+            token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+          });
+        }
+        observedCoordinatorSizes.push(entraRefreshCoordinatorSizeForTests());
+        tokenCalls++;
+        refreshAuthorities.push(
+          (init?.body as URLSearchParams).get("refresh_token") ?? ""
+        );
+        if (tokenCalls === 9) {
+          ninthRefreshStarted();
+          await ninthRefreshCanFinish;
+        }
+        return Response.json({
+          access_token: `coordinator-access-${tokenCalls}`,
+          expires_in: 3600,
+          refresh_token: `coordinator-refresh-${tokenCalls}`,
+        });
+      }
+    );
+
+  const firstResponses = Promise.all(targets.slice(0, 12).map(requestTarget));
+  await ninthRefreshHasStarted;
+  const delayedResponse = requestTarget(targets[12]!);
+  await Promise.resolve();
+  await Promise.resolve();
+  finishNinthRefresh();
+  const responses = [...await firstResponses, await delayedResponse];
+
+  assert.deepEqual(responses.map((response) => response.status), Array(13).fill(200));
+  assert.equal(tokenCalls, 13);
+  assert.equal(
+    refreshAuthorities.filter((authority) => authority === "initial-coordinator-refresh").length,
+    1
+  );
+  assert.deepEqual(
+    refreshAuthorities.slice(1),
+    Array.from({ length: 12 }, (_, index) => `coordinator-refresh-${index + 1}`)
+  );
+  assert.equal(Math.max(...observedCoordinatorSizes), 1);
+  assert.equal(entraRefreshCoordinatorSizeForTests(), 0);
+});
+
+test("configured APIs with the same delegated scope share one cached access token", async () => {
+  resetEntraBackchannelCachesForTests();
+  resetEntraRefreshCoordinatorsForTests();
+  const sharedScope = "api://shared/workable.access";
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([
+      { apiUrl: "https://one.example.com/workable", scope: sharedScope },
+      { apiUrl: "https://two.example.com/workable", scope: sharedScope },
+    ]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    { refresh_token: "shared-scope-refresh" }
+  );
+  let tokenCalls = 0;
+  const fetcher: typeof fetch = async (url) => {
+    if (String(url).includes(".well-known/openid-configuration")) {
+      return Response.json({
+        token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+      });
+    }
+    tokenCalls++;
+    return Response.json({
+      access_token: "shared-scope-access-token",
+      expires_in: 3600,
+      refresh_token: "shared-scope-rotated-refresh",
+    });
+  };
+  const requestFor = (apiUrl: string) => new Request(
+    `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(apiUrl)}`,
+    { headers: { cookie: cookieHeader } }
+  );
+
+  const first = await createEntraTargetAccessTokenResponse(
+    requestFor("https://one.example.com/workable"), env, fetcher);
+  const second = await createEntraTargetAccessTokenResponse(
+    requestFor("https://two.example.com/workable"), env, fetcher);
+
+  assert.equal(tokenCalls, 1);
+  assert.equal((await first.json() as { accessToken: string }).accessToken, "shared-scope-access-token");
+  assert.equal((await second.json() as { accessToken: string }).accessToken, "shared-scope-access-token");
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 1);
+});
+
+test("a newer browser rotation invalidates an older process-local access token", async () => {
+  resetEntraBackchannelCachesForTests();
+  resetEntraRefreshCoordinatorsForTests();
+  const firstTarget = {
+    apiUrl: "https://workable.example.com/workable",
+    scope: "api://actually-client-id/workable.access",
+  };
+  const secondTarget = {
+    apiUrl: "https://operations.example.com/workable",
+    scope: "api://operations-client-id/workable.access",
+  };
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([firstTarget, secondTarget]),
+  });
+  const request = new Request("https://admin.example.com/");
+  const session = createAdminSessionCookie(
+    "admin", request, env, "entra", TEST_ENTRA_SUBJECT);
+  assert.equal(session.ok, true);
+  if (!session.ok) return;
+  const initialTargetCookies = createEntraTargetTokenCookieHeaders(
+    { refresh_token: "original-refresh-authority" },
+    request,
+    getAdminSecuritySettings(env),
+    session.identity
+  );
+  const initialCookieHeader = [session.header, ...initialTargetCookies]
+    .map((header) => header.split(";", 1)[0]!)
+    .join("; ");
+  const seeded = await createEntraTargetAccessTokenResponse(
+    new Request(
+      `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(firstTarget.apiUrl)}`,
+      { headers: { cookie: initialCookieHeader } }
+    ),
+    env,
+    async (url) => Response.json(
+      String(url).includes(".well-known/openid-configuration")
+        ? { token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token" }
+        : {
+          access_token: "rejected-on-another-process",
+          expires_in: 3600,
+          refresh_token: "process-a-refresh-authority",
+        }
+    )
+  );
+  assert.equal(seeded.status, 200);
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 1);
+
+  const secret = env.WORKABLE_ADMIN_UI_SESSION_SECRET as string;
+  const ownerBinding = signAdminValue(JSON.stringify([
+    "workable.admin.entra.target-token-owner.v2",
+    "entra",
+    TEST_ENTRA_SUBJECT,
+    session.identity.sessionId,
+    "tenant-id",
+    "client-id",
+    "https://login.microsoftonline.com",
+    firstTarget.apiUrl,
+    firstTarget.scope,
+    secondTarget.apiUrl,
+    secondTarget.scope,
+  ]), secret);
+  const firstNewerPayload = encrypt(JSON.stringify({
+    version: 1,
+    ownerBinding,
+    refreshToken: "first-concurrent-refresh-authority",
+    issuedAt: Date.now(),
+    rotationVersion: 2,
+    scopeRotations: { 0: 2 },
+  }), secret, "entra-target-token");
+  const secondNewerPayload = encrypt(JSON.stringify({
+    version: 1,
+    ownerBinding,
+    refreshToken: "second-concurrent-refresh-authority",
+    issuedAt: Date.now() + 1,
+    rotationVersion: 2,
+    scopeRotations: { 1: 2 },
+  }), secret, "entra-target-token");
+  const firstNewerRoot = "__Host-workable_admin_entra_target_token.00000000-0000-4000-8000-000000000021";
+  const secondNewerRoot = "__Host-workable_admin_entra_target_token.00000000-0000-4000-8000-000000000022";
+  const newerCookieHeader = [
+    session.header.split(";", 1)[0]!,
+    `${firstNewerRoot}.parts=1`,
+    `${firstNewerRoot}.0=${firstNewerPayload}`,
+    `${secondNewerRoot}.parts=1`,
+    `${secondNewerRoot}.0=${secondNewerPayload}`,
+  ].join("; ");
+  let tokenCalls = 0;
+  let suppliedRefreshAuthority = "";
+
+  const response = await createEntraTargetAccessTokenResponse(
+    new Request(
+      `https://admin.example.com/api/auth/entra/workable-token?apiUrl=${encodeURIComponent(firstTarget.apiUrl)}`,
+      { headers: { cookie: newerCookieHeader } }
+    ),
+    env,
+    async (url, init) => {
+      if (String(url).includes(".well-known/openid-configuration")) {
+        return Response.json({
+          token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+        });
+      }
+      tokenCalls++;
+      suppliedRefreshAuthority = (init?.body as URLSearchParams).get("refresh_token") ?? "";
+      return Response.json({
+        access_token: "replacement-from-newer-rotation",
+        expires_in: 3600,
+        refresh_token: "next-refresh-authority",
+      });
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(tokenCalls, 1);
+  assert.equal(suppliedRefreshAuthority, "second-concurrent-refresh-authority");
+  assert.equal(
+    (await response.json() as { accessToken: string }).accessToken,
+    "replacement-from-newer-rotation"
+  );
+});
+
+test("expired delegated access tokens are removed from the server cache before refresh", async () => {
+  resetEntraBackchannelCachesForTests();
+  resetEntraRefreshCoordinatorsForTests();
+  const originalNow = Date.now;
+  const issuedAt = 1_900_000_000_000;
+  Date.now = () => issuedAt;
+  try {
+    const env = entraEnv({
+      WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{
+        apiUrl: "https://workable.example.com/workable",
+        scope: "api://actually-client-id/workable.access",
+      }]),
+    });
+    const cookieHeader = createEntraAuthenticatedCookieHeader(
+      env,
+      new Request("https://admin.example.com/"),
+      {
+        access_token: "soon-expired-access-token",
+        expires_in: 120,
+        refresh_token: "refresh-after-cache-expiry",
+      }
+    );
+    assert.equal(entraTargetAccessTokenCacheSizeForTests(), 1);
+    Date.now = () => issuedAt + 61_000;
+
+    const response = await createEntraTargetAccessTokenResponse(
+      new Request(
+        "https://admin.example.com/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
+        { headers: { cookie: cookieHeader } }
+      ),
+      env,
+      async (url) => Response.json(
+        String(url).includes(".well-known/openid-configuration")
+          ? { token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token" }
+          : { access_token: "replacement-after-cache-expiry", expires_in: 3600 }
+      )
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(
+      (await response.json() as { accessToken: string }).accessToken,
+      "replacement-after-cache-expiry"
+    );
+    assert.equal(entraTargetAccessTokenCacheSizeForTests(), 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("delegated token cache and cleared-owner tracking stay bounded", async () => {
+  resetEntraRefreshCoordinatorsForTests();
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{
+      apiUrl: "https://workable.example.com/workable",
+      scope: "api://actually-client-id/workable.access",
+    }]),
+  });
+  const request = new Request("https://admin.example.com/");
+  const cookieHeaders: string[] = [];
+  for (let index = 0; index < 300; index++) {
+    cookieHeaders.push(createEntraAuthenticatedCookieHeader(env, request, {
+      access_token: `cached-token-${index}`,
+      expires_in: 3600,
+      refresh_token: `refresh-token-${index}`,
+    }));
+  }
+
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 256);
+  const sessionOnlyCookie = cookieHeaders.at(-1)!.split("; ")
+    .filter((pair) => !/workable_admin_entra_target_token/.test(pair))
+    .join("; ");
+  clearEntraTargetTokenServerState(new Request("https://admin.example.com/", {
+    headers: { cookie: sessionOnlyCookie },
+  }), env);
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 255);
+  for (const cookie of cookieHeaders) {
+    clearEntraTargetTokenServerState(new Request("https://admin.example.com/", {
+      headers: { cookie },
+    }), env);
+  }
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 0);
+
+  const oldestOwnerWasEvicted = await createEntraTargetAccessTokenResponse(
+    new Request(
+      "https://admin.example.com/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
+      { headers: { cookie: cookieHeaders[0]! } }
+    ),
+    env,
+    async (url) => Response.json(
+      String(url).includes(".well-known/openid-configuration")
+        ? { token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token" }
+        : { access_token: "reacquired-after-bound", expires_in: 3600 }
+    )
+  );
+  assert.equal(oldestOwnerWasEvicted.status, 200);
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 1);
+});
+
+test("logout prevents an in-flight refresh from repopulating the access-token cache", async () => {
+  resetEntraBackchannelCachesForTests();
+  resetEntraRefreshCoordinatorsForTests();
+  const env = entraEnv({
+    WORKABLE_ADMIN_ENTRA_TARGET_APIS_JSON: JSON.stringify([{
+      apiUrl: "https://workable.example.com/workable",
+      scope: "api://actually-client-id/workable.access",
+    }]),
+  });
+  const cookieHeader = createEntraAuthenticatedCookieHeader(
+    env,
+    new Request("https://admin.example.com/"),
+    { refresh_token: "refresh-during-logout" }
+  );
+  const request = new Request(
+    "https://admin.example.com/api/auth/entra/workable-token?apiUrl=https%3A%2F%2Fworkable.example.com%2Fworkable",
+    { headers: { cookie: cookieHeader } }
+  );
+  let finishRefresh!: () => void;
+  let tokenRequestStarted!: () => void;
+  const refreshCanFinish = new Promise<void>((resolve) => { finishRefresh = resolve; });
+  const tokenRequestHasStarted = new Promise<void>((resolve) => { tokenRequestStarted = resolve; });
+  const responsePromise = createEntraTargetAccessTokenResponse(request, env, async (url) => {
+    if (String(url).includes(".well-known/openid-configuration")) {
+      return Response.json({
+        token_endpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+      });
+    }
+    tokenRequestStarted();
+    await refreshCanFinish;
+    return Response.json({
+      access_token: "must-not-remain-cached",
+      expires_in: 3600,
+      refresh_token: "rotated-during-logout",
+    });
+  });
+
+  await tokenRequestHasStarted;
+  clearEntraTargetTokenServerState(request, env);
+  finishRefresh();
+  const response = await responsePromise;
+
+  assert.equal(response.status, 200);
+  assert.equal(entraTargetAccessTokenCacheSizeForTests(), 0);
 });
 
 test("hosted token refresh refuses cross-origin discovery endpoints before sending secrets", async () => {
@@ -3588,11 +4308,24 @@ test("oversized Entra target token state expires cookies instead of writing unre
   assert.equal(session.ok, true);
   if (!session.ok) return;
 
+  const maximumCookies = createEntraTargetTokenCookieHeaders(
+    { refresh_token: "r".repeat(4_096) },
+    request,
+    getAdminSecuritySettings(env),
+    session.identity
+  );
+  const maximumRequestBytes = maximumCookies.reduce((total, cookie) =>
+    total + Buffer.byteLength(cookie.split(";", 1)[0]!) + 2, 0);
+  const sessionRequestBytes = Buffer.byteLength(session.header.split(";", 1)[0]!) + 2;
+  assert.ok(maximumCookies.every((cookie) => !/Max-Age=0/.test(cookie)));
+  assert.ok(maximumRequestBytes <= 6 * 1024);
+  assert.ok(sessionRequestBytes + maximumRequestBytes * 4 < 32 * 1024);
+
   const cookies = createEntraTargetTokenCookieHeaders(
     {
       access_token: "a".repeat(80_000),
       expires_in: 3600,
-      refresh_token: "b".repeat(80_000),
+      refresh_token: "b".repeat(7_000),
       token_type: "Bearer",
     },
     request,

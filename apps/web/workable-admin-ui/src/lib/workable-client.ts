@@ -46,8 +46,8 @@ const realtimeMissingAccessTokenTtlMs = 5 * 60 * 1000;
 const realtimeAccessTokenRefreshSkewMs = 60 * 1000;
 let loginRedirectInFlight = false;
 let requestHeadersTooLargeFailure: WorkableRequestHeadersTooLargeError | null = null;
-const adminUiAuthRequiredError = "Authentication is required for the Workable admin UI.";
 const workableUpstreamResponseHeader = "x-workable-upstream-response";
+const adminReauthenticationHeader = "x-workable-admin-reauthenticate";
 
 export function hasWorkableRequestHeadersTooLargeFailure() {
   return requestHeadersTooLargeFailure !== null;
@@ -214,7 +214,7 @@ async function fetchWorkable<T>(
 
   if (!response.ok) {
     const message = getWorkableErrorMessage(response.status, body);
-    if (shouldRedirectToLogin(response.status, body)) {
+    if (shouldRedirectToLogin(response)) {
       redirectToLogin(connection.apiUrl, "unauthorized");
     }
     throw new WorkableApiError(message, response.status, body);
@@ -447,8 +447,9 @@ function getWorkableErrorMessage(status: number, body: unknown) {
   return `Workable request failed with ${status}.`;
 }
 
-function shouldRedirectToLogin(status: number, body: unknown) {
-  return status === 401 && getWorkableErrorMessage(status, body) === adminUiAuthRequiredError;
+function shouldRedirectToLogin(response: Response) {
+  return response.status === 401 &&
+    response.headers.get(adminReauthenticationHeader) === "true";
 }
 
 function createScopedWorkablePath(connection: WorkableConnection, path: string) {

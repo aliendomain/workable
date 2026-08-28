@@ -18,6 +18,7 @@ const noStoreHeaders = {
   "x-content-type-options": "nosniff",
 };
 const workableUpstreamResponseHeader = "x-workable-upstream-response";
+const adminReauthenticationHeader = "x-workable-admin-reauthenticate";
 
 const hostedIssuerMismatchError =
   "The hosted Workable API rejected the bearer token because the token issuer does not match its Entra configuration. Check that the target API app registration is configured to issue v2 access tokens.";
@@ -38,7 +39,12 @@ export async function proxyWorkableRequest(
       { error: authentication.error },
       {
         status: authentication.status,
-        headers: secureJsonHeaders(failureHeaders(authentication)),
+        headers: secureJsonHeaders({
+          ...failureHeaders(authentication),
+          ...(authentication.status === 401
+            ? { [adminReauthenticationHeader]: "true" }
+            : {}),
+        }),
       }
     );
   }
@@ -85,7 +91,10 @@ export async function proxyWorkableRequest(
       {
         status: targetAccessToken.status,
         headers: withCookies(
-          secureJsonHeaders(failureHeaders(targetAccessToken)),
+          secureJsonHeaders({
+            ...failureHeaders(targetAccessToken),
+            [adminReauthenticationHeader]: "true",
+          }),
           targetAccessToken.setCookieHeaders
         ),
       }
