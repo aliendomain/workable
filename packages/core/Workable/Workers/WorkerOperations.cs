@@ -1036,8 +1036,8 @@ internal sealed class WorkerOperations :
             return outcome;
         }
 
-        worker.TrackCompletion(this.LaunchWorkerExecution(worker, executionToken));
         this.iterationTransitions.RecordWorkerStarted(worker);
+        worker.TrackCompletion(this.LaunchWorkerExecution(worker, executionToken));
         return outcome;
     }
 

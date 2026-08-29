@@ -13,7 +13,7 @@ The sample enables the standard adapters, but not every adapter is exposed the s
 
 The sample uses fake path-based authentication so local authorization scenarios are easy to exercise without an identity provider.
 
-The fake-auth setup demonstrates Workable authorization profiles, not production Entra authentication. It does not show Workable registering JWT validation. Production hosts own their authentication handlers, schemes, token validation, endpoint policies, and challenge responses; see [Microsoft Entra Authentication](../../../docs/guides/entra-authentication.md).
+The fake-auth setup registers only a local sample authentication scheme to demonstrate Workable authorization profiles; it is not production Entra authentication and does not validate JWTs. Production hosts own their authentication handlers, schemes, token validation, endpoint policies, and challenge responses; see [Microsoft Entra Authentication](../../../docs/guides/entra-authentication.md).
 
 Run it from the repository root:
 
