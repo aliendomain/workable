@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Authentication;
 using SampleHost.Demo;
 using Workable;
 using Workable.SampleHost;
@@ -24,6 +25,12 @@ builder.Logging.AddFilter("System", LogLevel.Warning);
 builder.Logging.AddFilter("Workable", LogLevel.Information);
 
 await using var samplePersistence = await SampleSqlServerPersistenceTarget.Resolve();
+
+builder.Services
+    .AddAuthentication(SampleFakeAuthenticationHandler.SchemeName)
+    .AddScheme<AuthenticationSchemeOptions, SampleFakeAuthenticationHandler>(
+        SampleFakeAuthenticationHandler.SchemeName,
+        static _ => { });
 
 builder.Services.AddCors(options =>
 {
@@ -521,6 +528,8 @@ app.Use((context, next) =>
 
 app.UseRouting();
 app.UseWorkableSignalRAccessTokens();
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapGet("/", (HttpContext context) =>
 {
