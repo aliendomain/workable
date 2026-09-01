@@ -56,7 +56,7 @@ SET NUMERIC_ROUNDABORT OFF;
         this.systemNames[context.WorkSystemId] = NormalizeSystemName(context.WorkSystemName);
         try
         {
-            await this.schemaInitializer.InitializeExecutionDiagnostics(cancellationToken);
+            await this.schemaInitializer.InitializeExecutionDiagnostics(context.WorkSystemId, cancellationToken);
         }
         catch (SqlException exception) when (IsStoreUnavailable(exception))
         {

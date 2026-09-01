@@ -284,6 +284,8 @@ Creating a new session measured 49.31 ns / 456 B with healthy diagnostics and 49
 
 The installed-schema startup rerun measured 28.49 ms, 120.63 ms, and 454.51 ms for 1, 8, and 32 systems, respectively; the preceding post-change run measured 27.82 ms, 119.98 ms, and 461.51 ms. The unavailable-database rerun measured 10.50 ms, 10.20 ms, and 11.16 ms versus 10.57 ms, 10.18 ms, and 12.20 ms previously. Both startup paths remain within run variance, and the unavailable path remains nearly flat as system count grows.
 
+After narrowing failed-result reuse so durable components and repeated same-system initialization can recover independently, the unavailable-database benchmark measured 10.14 ms, 10.59 ms, and 11.25 ms for 1, 8, and 32 systems. The curve remains nearly flat, confirming that the retry correction does not restore the multi-system connection burst.
+
 ### Iteration status stream comparison
 
 The iteration status stream performance review on 2026-08-07 ran on an Apple M5 Max with .NET 10.0.8 and BenchmarkDotNet 0.15.6. The replay-buffer comparison isolates the original `List.RemoveRange(0, ...)` eviction algorithm from indexed eviction; the remaining cases exercise the production stream implementation.

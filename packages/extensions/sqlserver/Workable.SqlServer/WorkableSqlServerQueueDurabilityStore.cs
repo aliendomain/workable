@@ -63,7 +63,7 @@ SET NUMERIC_ROUNDABORT OFF;
     {
         try
         {
-            await this.schemaInitializer.InitializeQueue(cancellationToken);
+            await this.schemaInitializer.InitializeQueue(context.WorkSystemId, cancellationToken);
         }
         catch (SqlException exception) when (IsStoreUnavailable(exception))
         {
@@ -87,7 +87,7 @@ SET NUMERIC_ROUNDABORT OFF;
     {
         try
         {
-            await this.schemaInitializer.InitializeWorkflows(cancellationToken);
+            await this.schemaInitializer.InitializeWorkflows(context.PersistenceScope, cancellationToken);
         }
         catch (SqlException exception) when (IsStoreUnavailable(exception))
         {

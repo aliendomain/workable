@@ -9,6 +9,8 @@ public sealed class WorkableSqlServerSchemaInitializerShould
     {
         var deployments = 0;
         var validations = new Dictionary<WorkableSqlServerSchemaComponent, int>();
+        var firstSystemId = WorkSystemId.New();
+        var secondSystemId = WorkSystemId.New();
         var initializer = new WorkableSqlServerSchemaInitializer(
             autoDeploySchema: true,
             _ =>
@@ -23,11 +25,11 @@ public sealed class WorkableSqlServerSchemaInitializerShould
             });
 
         await Task.WhenAll(
-            initializer.InitializeExecutionDiagnostics(CancellationToken.None),
-            initializer.InitializeExecutionDiagnostics(CancellationToken.None),
-            initializer.InitializeQueue(CancellationToken.None),
-            initializer.InitializeQueue(CancellationToken.None),
-            initializer.InitializeWorkflows(CancellationToken.None));
+            initializer.InitializeExecutionDiagnostics(firstSystemId, CancellationToken.None),
+            initializer.InitializeExecutionDiagnostics(secondSystemId, CancellationToken.None),
+            initializer.InitializeQueue(firstSystemId, CancellationToken.None),
+            initializer.InitializeQueue(secondSystemId, CancellationToken.None),
+            initializer.InitializeWorkflows("first", CancellationToken.None));
 
         Assert.True(initializer.AutoDeploySchema);
         Assert.Equal(1, deployments);
@@ -37,17 +39,20 @@ public sealed class WorkableSqlServerSchemaInitializerShould
     }
 
     [Fact]
-    public async Task CacheDeploymentFailureAcrossComponents()
+    public async Task ShareDeploymentFailureAcrossSystemsThenRetryForRepeatedSystemInitialization()
     {
         var deployments = 0;
         var validations = 0;
+        var firstSystemId = WorkSystemId.New();
+        var secondSystemId = WorkSystemId.New();
         var failure = new InvalidOperationException("Database unavailable.");
         var initializer = new WorkableSqlServerSchemaInitializer(
             autoDeploySchema: true,
             _ =>
             {
-                Interlocked.Increment(ref deployments);
-                return Task.FromException(failure);
+                return Interlocked.Increment(ref deployments) == 1
+                    ? Task.FromException(failure)
+                    : Task.CompletedTask;
             },
             (_, _) =>
             {
@@ -56,20 +61,50 @@ public sealed class WorkableSqlServerSchemaInitializerShould
             });
 
         var first = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            initializer.InitializeExecutionDiagnostics(CancellationToken.None));
+            initializer.InitializeExecutionDiagnostics(firstSystemId, CancellationToken.None));
         var second = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            initializer.InitializeQueue(CancellationToken.None));
+            initializer.InitializeExecutionDiagnostics(secondSystemId, CancellationToken.None));
+        await initializer.InitializeExecutionDiagnostics(firstSystemId, CancellationToken.None);
 
         Assert.Same(failure, first);
         Assert.Same(failure, second);
-        Assert.Equal(1, deployments);
-        Assert.Equal(0, validations);
+        Assert.Equal(2, deployments);
+        Assert.Equal(1, validations);
+    }
+
+    [Fact]
+    public async Task RetryDeploymentForDurabilityAfterDiagnosticsDeploymentFails()
+    {
+        var deployments = 0;
+        var validations = new Dictionary<WorkableSqlServerSchemaComponent, int>();
+        var systemId = WorkSystemId.New();
+        var failure = new InvalidOperationException("Database unavailable for diagnostics initialization.");
+        var initializer = new WorkableSqlServerSchemaInitializer(
+            autoDeploySchema: true,
+            _ => Interlocked.Increment(ref deployments) == 1
+                ? Task.FromException(failure)
+                : Task.CompletedTask,
+            (component, _) =>
+            {
+                validations[component] = validations.GetValueOrDefault(component) + 1;
+                return Task.CompletedTask;
+            });
+
+        var diagnosticsFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            initializer.InitializeExecutionDiagnostics(systemId, CancellationToken.None));
+        await initializer.InitializeQueue(systemId, CancellationToken.None);
+
+        Assert.Same(failure, diagnosticsFailure);
+        Assert.Equal(2, deployments);
+        Assert.Equal(0, validations.GetValueOrDefault(WorkableSqlServerSchemaComponent.ExecutionDiagnostics));
+        Assert.Equal(1, validations[WorkableSqlServerSchemaComponent.QueueDurability]);
     }
 
     [Fact]
     public async Task RetryDeploymentAfterCancellation()
     {
         var deployments = 0;
+        var systemId = WorkSystemId.New();
         using var canceled = new CancellationTokenSource();
         var initializer = new WorkableSqlServerSchemaInitializer(
             autoDeploySchema: true,
@@ -86,8 +121,8 @@ public sealed class WorkableSqlServerSchemaInitializerShould
             (_, _) => Task.CompletedTask);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            initializer.InitializeQueue(CancellationToken.None));
-        await initializer.InitializeQueue(CancellationToken.None);
+            initializer.InitializeQueue(systemId, CancellationToken.None));
+        await initializer.InitializeQueue(systemId, CancellationToken.None);
 
         Assert.Equal(2, deployments);
     }
@@ -97,6 +132,8 @@ public sealed class WorkableSqlServerSchemaInitializerShould
     {
         var deployments = 0;
         var validations = new Dictionary<WorkableSqlServerSchemaComponent, int>();
+        var firstSystemId = WorkSystemId.New();
+        var secondSystemId = WorkSystemId.New();
         var initializer = new WorkableSqlServerSchemaInitializer(
             autoDeploySchema: false,
             _ =>
@@ -110,9 +147,9 @@ public sealed class WorkableSqlServerSchemaInitializerShould
                 return Task.CompletedTask;
             });
 
-        await initializer.InitializeExecutionDiagnostics(CancellationToken.None);
-        await initializer.InitializeQueue(CancellationToken.None);
-        await initializer.InitializeExecutionDiagnostics(CancellationToken.None);
+        await initializer.InitializeExecutionDiagnostics(firstSystemId, CancellationToken.None);
+        await initializer.InitializeQueue(firstSystemId, CancellationToken.None);
+        await initializer.InitializeExecutionDiagnostics(secondSystemId, CancellationToken.None);
 
         Assert.False(initializer.AutoDeploySchema);
         Assert.Equal(0, deployments);
@@ -121,10 +158,12 @@ public sealed class WorkableSqlServerSchemaInitializerShould
     }
 
     [Fact]
-    public async Task CacheComponentValidationFailureWithoutBlockingOtherComponents()
+    public async Task ShareComponentValidationFailureAcrossSystemsThenRetryRepeatedSystemInitialization()
     {
         var diagnosticsValidations = 0;
         var queueValidations = 0;
+        var firstSystemId = WorkSystemId.New();
+        var secondSystemId = WorkSystemId.New();
         var failure = new InvalidOperationException("Diagnostics schema is incomplete.");
         var initializer = new WorkableSqlServerSchemaInitializer(
             autoDeploySchema: false,
@@ -141,14 +180,15 @@ public sealed class WorkableSqlServerSchemaInitializerShould
             });
 
         var first = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            initializer.InitializeExecutionDiagnostics(CancellationToken.None));
+            initializer.InitializeExecutionDiagnostics(firstSystemId, CancellationToken.None));
         var second = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            initializer.InitializeExecutionDiagnostics(CancellationToken.None));
-        await initializer.InitializeQueue(CancellationToken.None);
+            initializer.InitializeExecutionDiagnostics(secondSystemId, CancellationToken.None));
+        await initializer.InitializeQueue(firstSystemId, CancellationToken.None);
+        await initializer.InitializeExecutionDiagnostics(firstSystemId, CancellationToken.None);
 
         Assert.Same(failure, first);
         Assert.Same(failure, second);
-        Assert.Equal(1, diagnosticsValidations);
+        Assert.Equal(2, diagnosticsValidations);
         Assert.Equal(1, queueValidations);
 
         Task CountQueueValidation()

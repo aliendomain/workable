@@ -9,8 +9,8 @@ internal sealed class WorkableSqlServerSchemaInitializer
     private readonly Func<CancellationToken, Task> deploy;
     private readonly Func<WorkableSqlServerSchemaComponent, CancellationToken, Task> validate;
     private readonly HashSet<WorkableSqlServerSchemaComponent> validatedComponents = [];
-    private readonly Dictionary<WorkableSqlServerSchemaComponent, ExceptionDispatchInfo> validationFailures = [];
-    private ExceptionDispatchInfo? deploymentFailure;
+    private readonly Dictionary<WorkableSqlServerSchemaComponent, InitializationFailure> deploymentFailures = [];
+    private readonly Dictionary<WorkableSqlServerSchemaComponent, InitializationFailure> validationFailures = [];
     private bool deploymentCompleted;
 
     public WorkableSqlServerSchemaInitializer(
@@ -42,35 +42,47 @@ internal sealed class WorkableSqlServerSchemaInitializer
 
     public bool AutoDeploySchema => this.autoDeploySchema;
 
-    public Task InitializeQueue(CancellationToken cancellationToken)
-        => this.Initialize(WorkableSqlServerSchemaComponent.QueueDurability, cancellationToken);
+    public Task InitializeQueue(WorkSystemId workSystemId, CancellationToken cancellationToken)
+        => this.Initialize(
+            WorkableSqlServerSchemaComponent.QueueDurability,
+            workSystemId.ToString(),
+            cancellationToken);
 
-    public Task InitializeWorkflows(CancellationToken cancellationToken)
-        => this.Initialize(WorkableSqlServerSchemaComponent.WorkflowPersistence, cancellationToken);
+    public Task InitializeWorkflows(string persistenceScope, CancellationToken cancellationToken)
+        => this.Initialize(
+            WorkableSqlServerSchemaComponent.WorkflowPersistence,
+            persistenceScope,
+            cancellationToken);
 
-    public Task InitializeExecutionDiagnostics(CancellationToken cancellationToken)
-        => this.Initialize(WorkableSqlServerSchemaComponent.ExecutionDiagnostics, cancellationToken);
+    public Task InitializeExecutionDiagnostics(WorkSystemId workSystemId, CancellationToken cancellationToken)
+        => this.Initialize(
+            WorkableSqlServerSchemaComponent.ExecutionDiagnostics,
+            workSystemId.ToString(),
+            cancellationToken);
 
     private async Task Initialize(
         WorkableSqlServerSchemaComponent component,
+        string initializationScope,
         CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(initializationScope);
         await this.gate.WaitAsync(cancellationToken);
         try
         {
             if (this.autoDeploySchema)
             {
-                this.deploymentFailure?.Throw();
                 if (!this.deploymentCompleted)
                 {
+                    this.ThrowOrAllowRetry(this.deploymentFailures, component, initializationScope);
                     try
                     {
                         await this.deploy(cancellationToken);
                         this.deploymentCompleted = true;
+                        this.deploymentFailures.Clear();
                     }
                     catch (Exception exception) when (ShouldCache(exception))
                     {
-                        this.deploymentFailure = ExceptionDispatchInfo.Capture(exception);
+                        this.deploymentFailures[component] = new InitializationFailure(exception, initializationScope);
                         throw;
                     }
                 }
@@ -81,19 +93,17 @@ internal sealed class WorkableSqlServerSchemaInitializer
                 return;
             }
 
-            if (this.validationFailures.TryGetValue(component, out var validationFailure))
-            {
-                validationFailure.Throw();
-            }
+            this.ThrowOrAllowRetry(this.validationFailures, component, initializationScope);
 
             try
             {
                 await this.validate(component, cancellationToken);
                 this.validatedComponents.Add(component);
+                this.validationFailures.Remove(component);
             }
             catch (Exception exception) when (ShouldCache(exception))
             {
-                this.validationFailures[component] = ExceptionDispatchInfo.Capture(exception);
+                this.validationFailures[component] = new InitializationFailure(exception, initializationScope);
                 throw;
             }
         }
@@ -101,6 +111,24 @@ internal sealed class WorkableSqlServerSchemaInitializer
         {
             this.gate.Release();
         }
+    }
+
+    private void ThrowOrAllowRetry(
+        Dictionary<WorkableSqlServerSchemaComponent, InitializationFailure> failures,
+        WorkableSqlServerSchemaComponent component,
+        string initializationScope)
+    {
+        if (!failures.TryGetValue(component, out var failure))
+        {
+            return;
+        }
+
+        if (failure.TryObserve(initializationScope))
+        {
+            failure.Exception.Throw();
+        }
+
+        failures.Remove(component);
     }
 
     private static bool ShouldCache(Exception exception)
@@ -121,6 +149,19 @@ internal sealed class WorkableSqlServerSchemaInitializer
                 WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(connectionString, schemaName, cancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown Workable SQL Server schema component."),
         };
+
+    private sealed class InitializationFailure(Exception exception, string initializationScope)
+    {
+        private readonly HashSet<string> observedScopes = new(StringComparer.Ordinal)
+        {
+            initializationScope,
+        };
+
+        public ExceptionDispatchInfo Exception { get; } = ExceptionDispatchInfo.Capture(exception);
+
+        public bool TryObserve(string initializationScope)
+            => this.observedScopes.Add(initializationScope);
+    }
 }
 
 internal enum WorkableSqlServerSchemaComponent
