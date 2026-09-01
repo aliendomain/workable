@@ -113,7 +113,10 @@ public sealed class WorkableHttpTopologyResolver(
             session.Diagnostics.Retention,
             session.Diagnostics.Concurrency,
             session.Diagnostics.Durability,
-            session.Diagnostics.Idempotency);
+            session.Diagnostics.Idempotency)
+        {
+            ExecutionDiagnosticsPersistence = session.Diagnostics.ExecutionDiagnosticsPersistence,
+        };
     }
 
     internal static async Task<WorkableHttpSystemStopResult> Stop(

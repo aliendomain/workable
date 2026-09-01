@@ -5,7 +5,7 @@ namespace Workable;
 internal sealed class WorkSystemSessionFactory(
     WorkSystemId systemId,
     string? systemName,
-    WorkSystemCapabilities capabilities,
+    Func<WorkSystemCapabilities> getCapabilities,
     Func<WorkSystemState> getSystemState,
     WorkSystemDiagnostics diagnostics,
     WorkSystemCatalog catalog,
@@ -75,7 +75,7 @@ internal sealed class WorkSystemSessionFactory(
         return new WorkSystemSession(
             systemName,
             requestContext,
-            capabilities,
+            getCapabilities(),
             getSystemState,
             (worker, changes) => this.CanReconfigureWorker(
                 projection.Authorization,
@@ -250,7 +250,7 @@ internal sealed class WorkSystemSessionFactory(
         return new WorkSystemSession(
             systemName,
             requestContext,
-            capabilities,
+            getCapabilities(),
             getSystemState,
             (_, _) => true,
             sessionDiagnostics,

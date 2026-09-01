@@ -3724,6 +3724,8 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected JSON response.");
         var readModel = json["readModel"]
             ?? throw new InvalidOperationException("Expected read model diagnostics.");
+        var executionDiagnosticsPersistence = json["executionDiagnosticsPersistence"]
+            ?? throw new InvalidOperationException("Expected execution diagnostics persistence health.");
         var queue = json["queue"]
             ?? throw new InvalidOperationException("Expected queue diagnostics.");
         var retention = json["retention"]
@@ -3736,6 +3738,10 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected idempotency diagnostics.");
 
         Assert.Equal("Started", json["state"]?.GetValue<string>());
+        Assert.Equal("NotConfigured", executionDiagnosticsPersistence["status"]?.GetValue<string>());
+        Assert.True(executionDiagnosticsPersistence["isHealthy"]?.GetValue<bool>());
+        Assert.False(executionDiagnosticsPersistence["persistenceAvailable"]?.GetValue<bool>());
+        Assert.Null(executionDiagnosticsPersistence["initializationFailedAt"]);
         Assert.Equal(0, queue["rejectedWorkCount"]?.GetValue<long>());
         Assert.Null(queue["lastRejectedAt"]);
         Assert.True(readModel["enqueuedSequence"]?.GetValue<long>() > 0);
@@ -3759,6 +3765,55 @@ public sealed class WorkableHttpApiTests
         Assert.False(durability["hasCleanupFailure"]?.GetValue<bool>());
         Assert.True(idempotency["duplicateRejectionCount"]?.GetValue<long>() >= 0);
         Assert.True(idempotency.AsObject().ContainsKey("lastDuplicateRejectedStorage"));
+    }
+
+    [Fact]
+    public async Task MappedHttpDiagnosticsRouteReportsExecutionDiagnosticsInitializationFailure()
+    {
+        var repository = new TestExecutionDiagnosticsRepository
+        {
+            InitializeException = new InvalidOperationException("Sensitive database details."),
+        };
+        using var host = await CreateHttpHost(
+            configureServices: services =>
+                services.AddSingleton<IWorkExecutionDiagnosticsRepository>(repository));
+        var client = host.GetTestClient();
+
+        var response = await client.GetAsync("/workable/diagnostics");
+
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var persistence = json["executionDiagnosticsPersistence"]
+            ?? throw new InvalidOperationException("Expected execution diagnostics persistence health.");
+        var captureStateResponse = await client.GetAsync(
+            "/workable/execution-diagnostics/capture-rules");
+        var createRuleResponse = await client.PostAsJsonAsync(
+            "/workable/execution-diagnostics/capture-rules",
+            new
+            {
+                minimumLogLevel = "Information",
+                activeForMinutes = 15,
+                artifactRetentionMinutes = 60,
+            });
+        var captureState = JsonNode.Parse(await captureStateResponse.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected execution diagnostics capture state.");
+        var createRuleBody = await createRuleResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal("Unhealthy", persistence["status"]?.GetValue<string>());
+        Assert.False(persistence["isHealthy"]?.GetValue<bool>());
+        Assert.False(persistence["persistenceAvailable"]?.GetValue<bool>());
+        Assert.NotNull(persistence["initializationFailedAt"]);
+        Assert.DoesNotContain("Sensitive database details", persistence.ToJsonString(), StringComparison.Ordinal);
+        Assert.True(captureStateResponse.IsSuccessStatusCode);
+        Assert.False(captureState["persistenceAvailable"]?.GetValue<bool>());
+        Assert.Equal(HttpStatusCode.Conflict, createRuleResponse.StatusCode);
+        Assert.Contains(
+            "Persistent execution diagnostics are not currently available",
+            createRuleBody,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("Register an execution diagnostics repository", createRuleBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("Sensitive database details", createRuleBody, StringComparison.Ordinal);
     }
 
     [Fact]

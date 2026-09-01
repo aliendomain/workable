@@ -8,7 +8,7 @@ using Microsoft.Data.SqlClient;
 
 namespace Workable.SqlServer;
 
-internal sealed class WorkableSqlServerQueueDurabilityStore(WorkableSqlServerQueueDurabilityOptions options) : IWorkPersistenceStore
+internal sealed class WorkableSqlServerQueueDurabilityStore : IWorkPersistenceStore
 {
     private const string RequiredDmlSetOptions = """
 SET ANSI_NULLS ON;
@@ -30,14 +30,32 @@ SET NUMERIC_ROUNDABORT OFF;
         },
     };
 
-    private readonly string entriesTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkEntries]";
-    private readonly string queueTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkQueueEntries]";
-    private readonly string workflowRunsTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkflowRuns]";
+    private readonly WorkableSqlServerQueueDurabilityOptions options;
+    private readonly WorkableSqlServerSchemaInitializer schemaInitializer;
+    private readonly string entriesTable;
+    private readonly string queueTable;
+    private readonly string workflowRunsTable;
     private readonly object enqueueBatchSync = new();
     private readonly List<PendingEnqueue> pendingEnqueues = [];
-    private readonly int enqueueBatchSize = options.EnqueueBatchSize;
-    private readonly TimeSpan enqueueBatchWindow = options.EnqueueBatchWindow;
+    private readonly int enqueueBatchSize;
+    private readonly TimeSpan enqueueBatchWindow;
     private int scheduledEnqueueBatchFlushes;
+
+    public WorkableSqlServerQueueDurabilityStore(
+        WorkableSqlServerQueueDurabilityOptions options,
+        WorkableSqlServerSchemaInitializer? schemaInitializer = null)
+    {
+        this.options = options;
+        this.schemaInitializer = schemaInitializer ?? new(
+            options.ConnectionString,
+            options.SchemaName,
+            options.AutoDeploySchema);
+        this.entriesTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkEntries]";
+        this.queueTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkQueueEntries]";
+        this.workflowRunsTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkflowRuns]";
+        this.enqueueBatchSize = options.EnqueueBatchSize;
+        this.enqueueBatchWindow = options.EnqueueBatchWindow;
+    }
 
     public bool SupportsFailedWorkerRecovery => true;
 
@@ -45,25 +63,18 @@ SET NUMERIC_ROUNDABORT OFF;
     {
         try
         {
-            if (options.AutoDeploySchema)
-            {
-                await WorkableSqlServerSchema.Apply(options.ConnectionString, options.SchemaName, cancellationToken);
-                await WorkableSqlServerSchema.ValidateInstalled(options.ConnectionString, options.SchemaName, cancellationToken);
-                return;
-            }
-
-            await WorkableSqlServerSchema.ValidateInstalled(options.ConnectionString, options.SchemaName, cancellationToken);
+            await this.schemaInitializer.InitializeQueue(cancellationToken);
         }
         catch (SqlException exception) when (IsStoreUnavailable(exception))
         {
-            var action = options.AutoDeploySchema ? "deploying or validating" : "validating";
+            var action = this.schemaInitializer.AutoDeploySchema ? "deploying or validating" : "validating";
             throw new WorkPersistenceStoreUnavailableException(
                 $"Workable.SqlServer could not reach SQL Server while {action} schema '{options.SchemaName}'.",
                 exception);
         }
         catch (Exception exception) when (exception is SqlException or InvalidOperationException)
         {
-            var action = options.AutoDeploySchema ? "deploy" : "validate";
+            var action = this.schemaInitializer.AutoDeploySchema ? "deploy" : "validate";
             throw new WorkableSqlServerSchemaDeploymentException(
                 $"Workable.SqlServer could not {action} schema '{options.SchemaName}'.",
                 exception);
@@ -76,25 +87,18 @@ SET NUMERIC_ROUNDABORT OFF;
     {
         try
         {
-            if (options.AutoDeploySchema)
-            {
-                await WorkableSqlServerSchema.Apply(options.ConnectionString, options.SchemaName, cancellationToken);
-                await WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(options.ConnectionString, options.SchemaName, cancellationToken);
-                return;
-            }
-
-            await WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(options.ConnectionString, options.SchemaName, cancellationToken);
+            await this.schemaInitializer.InitializeWorkflows(cancellationToken);
         }
         catch (SqlException exception) when (IsStoreUnavailable(exception))
         {
-            var action = options.AutoDeploySchema ? "deploying or validating" : "validating";
+            var action = this.schemaInitializer.AutoDeploySchema ? "deploying or validating" : "validating";
             throw new WorkPersistenceStoreUnavailableException(
                 $"Workable.SqlServer could not reach SQL Server while {action} workflow schema '{options.SchemaName}'.",
                 exception);
         }
         catch (Exception exception) when (exception is SqlException or InvalidOperationException)
         {
-            var action = options.AutoDeploySchema ? "deploy" : "validate";
+            var action = this.schemaInitializer.AutoDeploySchema ? "deploy" : "validate";
             throw new WorkableSqlServerSchemaDeploymentException(
                 $"Workable.SqlServer could not {action} workflow schema '{options.SchemaName}'.",
                 exception);

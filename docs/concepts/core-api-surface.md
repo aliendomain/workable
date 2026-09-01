@@ -16,7 +16,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `IWorkEventStream` creates event subscriptions.
 - `IWorkIterationStatusStream` replays ordered application-defined progress for one exact worker iteration, then continues live until that iteration finishes.
 - `IWorkChangeStream` creates compact state-change subscriptions for UI refresh, view invalidation, and other latest-state consumers.
-- `IWorkSystemDiagnostics` exposes runtime diagnostics for queue rejection, read-model projection, retention cleanup, concurrency backlog, durability loops, and idempotency duplicate rejection.
+- `IWorkSystemDiagnostics` exposes runtime diagnostics for execution-diagnostics persistence initialization, queue rejection, read-model projection, retention cleanup, concurrency backlog, durability loops, and idempotency duplicate rejection.
 - `Start` and `Stop` control system lifecycle.
 - `Stop` returns the shutdown grace period plus workers that were force-completed as interrupted because the grace period elapsed, including compact worker summaries and definition names.
 - `Stop` clears in-memory worker and iteration records after shutdown interruption completes.

@@ -137,6 +137,8 @@ The repository protocol has four groups of operations:
 
 Workable invokes artifact writes from its bounded background writer rather than from the work-execution critical path. Query and capture-rule administration can run concurrently with that writer, and one repository instance can initialize multiple logical Workable systems, so implementations must be thread-safe and scope every operation by the supplied system identity.
 
+An ordinary exception from `Initialize(...)` or the initial `ListCaptureRules(...)` call marks persistence unhealthy for that system, emits the server-side `ExecutionDiagnosticsInitializationFailed` error, and allows the system and application host to continue starting without persisted evidence. Cancellation still propagates. Providers should therefore throw actionable exceptions for initialization failures and must not assume that such a failure terminates the host; Workable does not call that repository again for the affected system until the process restarts.
+
 Providers should preserve these correctness rules:
 
 - completed artifacts become unreadable at `ExpiresAt`, even before the next physical cleanup pass;

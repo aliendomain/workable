@@ -43,6 +43,8 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkProfileCaptureRuleStore profileCaptureRules = new();
     private readonly WorkExecutionDiagnosticsCoordinator? executionDiagnostics;
     private readonly bool executionDiagnosticsRequiredByDefault;
+    private readonly WorkSystemCapabilities configuredCapabilities;
+    private readonly WorkSystemCapabilities executionDiagnosticsUnavailableCapabilities;
     private readonly WorkSystemQueueDiagnosticsTracker queueDiagnostics = new();
     private readonly WorkSystemIdempotencyDiagnosticsTracker idempotencyDiagnostics = new();
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
@@ -91,7 +93,11 @@ internal sealed class InMemoryWorkSystem :
             contributor.ConfigureCapabilities(capabilities);
         }
 
-        this.Capabilities = capabilities.Build();
+        this.configuredCapabilities = capabilities.Build();
+        this.executionDiagnosticsUnavailableCapabilities =
+            this.configuredCapabilities.ExecutionDiagnosticsPersistenceAvailable
+                ? this.configuredCapabilities with { ExecutionDiagnosticsPersistenceAvailable = false }
+                : this.configuredCapabilities;
         this.ProfilingConfiguration = registration.Profiling;
         this.executionDiagnosticsRequiredByDefault = registration.ExecutionDiagnostics.IsEnabled;
         this.executionDiagnostics = executionDiagnosticsRepository is null
@@ -104,17 +110,17 @@ internal sealed class InMemoryWorkSystem :
                 rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.ExecutionDiagnostics"),
                 rootServices.GetService<IHostEnvironment>()?.IsProduction() != false,
                 new WorkExecutionDiagnosticInstrumentationAvailability(
-                    this.Capabilities.SqlProfilingAvailable,
-                    this.Capabilities.HttpClientProfilingAvailable));
+                    this.configuredCapabilities.SqlProfilingAvailable,
+                    this.configuredCapabilities.HttpClientProfilingAvailable));
         var authorizationLogger = rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Authorization");
         this.catalog = new WorkSystemCatalog(
             work,
-            this.Capabilities.PersistentCoordinationAvailable,
+            this.configuredCapabilities.PersistentCoordinationAvailable,
             implicitDefaultWorkerOptions,
             this.authorization,
             authorizationLogger,
             this.changes,
-            this.Capabilities.ExecutionDiagnosticsPersistenceAvailable);
+            this.configuredCapabilities.ExecutionDiagnosticsPersistenceAvailable);
         this.workflows = new WorkflowCatalog(registration.Workflows);
         this.workflowPersistence = new WorkflowPersistenceCoordinator(
             persistenceStore,
@@ -148,7 +154,11 @@ internal sealed class InMemoryWorkSystem :
                     : new ChildWorkQueueService(
                         executionQueue ?? throw new InvalidOperationException("The work queue has not been initialized."),
                         worker));
-        this.diagnostics = new WorkSystemDiagnostics(this.queueDiagnostics, this.readModel, this.workers);
+        this.diagnostics = new WorkSystemDiagnostics(
+            this.queueDiagnostics,
+            this.readModel,
+            this.workers,
+            () => this.ExecutionDiagnosticsPersistenceDiagnostics);
         this.readModel.UseDetailReaders(this.workers.GetAuthoritative, this.workers.GetIterationAuthoritative);
         this.query = this.readModel.Query;
         this.queue = executionQueue = new WorkQueueService(this.catalog, this.workers, this.queueDiagnostics);
@@ -156,7 +166,7 @@ internal sealed class InMemoryWorkSystem :
         this.sessions = new WorkSystemSessionFactory(
             this.Id,
             this.Name,
-            this.Capabilities,
+            () => this.Capabilities,
             () => this.State,
             this.diagnostics,
             this.catalog,
@@ -201,11 +211,18 @@ internal sealed class InMemoryWorkSystem :
 
     public TimeSpan ShutdownGracePeriod { get; }
 
-    public WorkSystemCapabilities Capabilities { get; }
+    public WorkSystemCapabilities Capabilities
+        => this.ExecutionDiagnosticsPersistenceAvailable
+            ? this.configuredCapabilities
+            : this.executionDiagnosticsUnavailableCapabilities;
 
     public WorkSystemProfilingConfiguration ProfilingConfiguration { get; }
 
-    public bool ExecutionDiagnosticsPersistenceAvailable => this.executionDiagnostics is not null;
+    public bool ExecutionDiagnosticsPersistenceAvailable => this.executionDiagnostics?.IsAvailable == true;
+
+    private WorkSystemExecutionDiagnosticsPersistenceDiagnostics ExecutionDiagnosticsPersistenceDiagnostics
+        => this.executionDiagnostics?.PersistenceDiagnostics
+            ?? WorkSystemExecutionDiagnosticsPersistenceDiagnostics.NotConfigured;
 
     internal WorkflowCatalog Workflows => this.workflows;
 

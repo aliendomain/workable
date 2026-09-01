@@ -6,6 +6,9 @@ internal sealed class SessionWorkSystemDiagnostics(
 {
     public WorkRequestContext RequestContext { get; } = requestContext;
 
+    public WorkSystemExecutionDiagnosticsPersistenceDiagnostics ExecutionDiagnosticsPersistence
+        => inner.ExecutionDiagnosticsPersistence;
+
     public WorkSystemQueueDiagnostics Queue => inner.Queue;
 
     public WorkSystemReadModelDiagnostics ReadModel => inner.ReadModel;

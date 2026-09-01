@@ -241,7 +241,7 @@ GET /workable/diagnostics
 GET /workable/systems/email/diagnostics
 ```
 
-The response includes queue, read-model, retention, concurrency, durability, and idempotency diagnostics. Use it to monitor alertable queue rejections, query freshness, projector pressure, retention lag, deferred-start backlog, durable coordination lag, duplicate rejection, and internal diagnostics failures.
+The response includes execution-diagnostics persistence initialization health plus queue, read-model, retention, concurrency, durability, and idempotency diagnostics. Persistence health reports `NotConfigured`, `PendingInitialization`, `Healthy`, or `Unhealthy` together with availability and the failure time, but keeps the provider exception in server logs. Use this route to monitor alertable queue rejections, query freshness, projector pressure, retention lag, deferred-start backlog, durable coordination lag, duplicate rejection, and internal diagnostics failures.
 
 Diagnostics require the system-level `Diagnostics` permission or `SystemAdministrator`.
 

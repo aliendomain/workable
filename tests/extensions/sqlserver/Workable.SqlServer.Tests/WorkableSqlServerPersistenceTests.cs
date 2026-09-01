@@ -1895,6 +1895,44 @@ FROM workable.WorkflowRuns;
         Assert.IsType<SqlException>(exception.InnerException);
     }
 
+    [Fact]
+    public async Task UnavailableDiagnosticsDatabaseDoesNotFailMultiSystemHostStartup()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var connectionString = new SqlConnectionStringBuilder(this.ConnectionString)
+        {
+            InitialCatalog = $"workable_missing_host_{Guid.NewGuid():N}",
+            ConnectTimeout = 1,
+        }.ConnectionString;
+        var services = new ServiceCollection()
+            .AddWorkableSqlServerPersistence(connectionString)
+            .AddWorkableSystem(builder => builder
+                .StartWithHost()
+                .RequireAuthorization(false))
+            .AddWorkableSystem("second", builder => builder
+                .StartWithHost()
+                .RequireAuthorization(false));
+        await using var provider = services.BuildServiceProvider();
+        var hostedService = Assert.Single(provider.GetServices<IHostedService>());
+        var registry = provider.GetRequiredService<IWorkSystemRegistry>();
+        Assert.True(registry.TryGet("second", out var second));
+
+        await hostedService.StartAsync(CancellationToken.None);
+
+        Assert.Equal(WorkSystemState.Started, registry.Default.State);
+        Assert.Equal(WorkSystemState.Started, second.State);
+        Assert.False((await registry.Default.CreateSession(
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess))).Capabilities.ExecutionDiagnosticsPersistenceAvailable);
+        Assert.False((await second.CreateSession(
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess))).Capabilities.ExecutionDiagnosticsPersistenceAvailable);
+
+        await hostedService.StopAsync(CancellationToken.None);
+    }
+
     [Theory]
     [InlineData("workflow-list")]
     [InlineData("claim-ready")]

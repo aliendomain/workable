@@ -9,6 +9,7 @@ namespace Workable;
 
 internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
 {
+    private static readonly EventId InitializationFailedEvent = new(1, "ExecutionDiagnosticsInitializationFailed");
     private static readonly TimeSpan AbandonedIterationAge = TimeSpan.FromDays(1);
     private const int MaximumCaptureRuleDefinitionNameLength = 450;
     private const int MaximumStructuredPropertyCount = 64;
@@ -28,6 +29,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
     private Task? writerTask;
     private Task? cleanupTask;
     private int initialized;
+    private WorkSystemExecutionDiagnosticsPersistenceDiagnostics persistenceDiagnostics;
     private int pendingEvidenceOperations;
     private int pendingProfiles;
     private long pendingLogBytes;
@@ -49,6 +51,9 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         this.logger = logger ?? NullLogger.Instance;
         this.isProduction = isProduction;
         this.instrumentationAvailability = instrumentationAvailability ?? new(false, false);
+        this.persistenceDiagnostics = repository is null
+            ? WorkSystemExecutionDiagnosticsPersistenceDiagnostics.NotConfigured
+            : WorkSystemExecutionDiagnosticsPersistenceDiagnostics.PendingInitialization;
         this.channel = Channel.CreateBounded<PersistenceOperation>(new BoundedChannelOptions(
             checked(configuration.ChannelCapacity + configuration.ControlOperationCapacity))
         {
@@ -59,7 +64,10 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         });
     }
 
-    public bool IsAvailable => this.repository is not null;
+    public bool IsAvailable => Volatile.Read(ref this.persistenceDiagnostics).PersistenceAvailable;
+
+    public WorkSystemExecutionDiagnosticsPersistenceDiagnostics PersistenceDiagnostics
+        => Volatile.Read(ref this.persistenceDiagnostics);
 
     public WorkExecutionDiagnosticsPolicy? ResolvePolicy(
         WorkConfiguration workConfiguration,
@@ -115,18 +123,44 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
                 "Persistent execution diagnostics require a registered IWorkExecutionDiagnosticsRepository.");
         }
 
-        if (this.repository is null || Volatile.Read(ref this.initialized) != 0)
+        if (!this.IsAvailable || Volatile.Read(ref this.initialized) != 0)
         {
             return;
         }
 
-        await this.repository.Initialize(
-            new WorkExecutionDiagnosticsInitializationContext(this.workSystemId, this.workSystemName),
-            cancellationToken);
-        await this.RefreshCaptureRules(cancellationToken);
+        try
+        {
+            await this.repository!.Initialize(
+                new WorkExecutionDiagnosticsInitializationContext(this.workSystemId, this.workSystemName),
+                cancellationToken);
+            await this.RefreshCaptureRules(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not (
+            OperationCanceledException or
+            OutOfMemoryException or
+            StackOverflowException))
+        {
+            Volatile.Write(
+                ref this.persistenceDiagnostics,
+                new(
+                    WorkExecutionDiagnosticsPersistenceHealthStatus.Unhealthy,
+                    DateTimeOffset.UtcNow));
+            this.logger.LogError(
+                InitializationFailedEvent,
+                exception,
+                "Persistent execution diagnostics are UNHEALTHY for work system '{WorkSystemName}'. " +
+                "Workable will continue running, but execution logs and profiles WILL NOT BE PERSISTED until the application restarts. " +
+                "Investigate the repository initialization failure.",
+                this.workSystemName);
+            return;
+        }
+
         this.writerTask = Task.Run(this.RunWriter);
         this.cleanupTask = Task.Run(this.RunCleanup);
         Volatile.Write(ref this.initialized, 1);
+        Volatile.Write(
+            ref this.persistenceDiagnostics,
+            WorkSystemExecutionDiagnosticsPersistenceDiagnostics.Healthy);
     }
 
     public void ObserveIteration(WorkerRecord worker, WorkerIterationSnapshot iteration)
@@ -336,17 +370,17 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
                 $"Execution diagnostic query take must be between 1 and {WorkExecutionDiagnosticCriteria.MaximumTake}.");
         }
 
-        return this.repository is null
+        return !this.IsAvailable
             ? Task.FromResult(new WorkExecutionDiagnosticQueryResult([]))
-            : this.repository.Query(criteria, cancellationToken);
+            : this.repository!.Query(criteria, cancellationToken);
     }
 
     public Task<WorkExecutionDiagnosticArtifact?> Get(
         WorkExecutionDiagnosticGetRequest request,
         CancellationToken cancellationToken)
-        => this.repository is null
+        => !this.IsAvailable
             ? Task.FromResult<WorkExecutionDiagnosticArtifact?>(null)
-            : this.repository.Get(request, cancellationToken);
+            : this.repository!.Get(request, cancellationToken);
 
     public IReadOnlyList<WorkExecutionDiagnosticCaptureRule> GetCaptureRules()
         => Volatile.Read(ref this.captureRules).GetActive(DateTimeOffset.UtcNow);
@@ -360,7 +394,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         WorkActor createdBy,
         CancellationToken cancellationToken)
     {
-        if (this.repository is null)
+        if (!this.IsAvailable)
         {
             throw new InvalidOperationException("Persistent execution diagnostics are not available for this system.");
         }
@@ -411,7 +445,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
                 createdBy);
             try
             {
-                await this.repository.UpsertCaptureRule(rule, this.configuration.MaximumCaptureRules, cancellationToken);
+                await this.repository!.UpsertCaptureRule(rule, this.configuration.MaximumCaptureRules, cancellationToken);
             }
             catch (Exception exception) when (exception is not (
                 OperationCanceledException or
@@ -436,7 +470,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
 
     public async Task<bool> DeleteCaptureRule(Guid id, CancellationToken cancellationToken)
     {
-        if (this.repository is null)
+        if (!this.IsAvailable)
         {
             return false;
         }
@@ -444,7 +478,7 @@ internal sealed class WorkExecutionDiagnosticsCoordinator : IAsyncDisposable
         await this.ruleMutation.WaitAsync(cancellationToken);
         try
         {
-            var deleted = await this.repository.DeleteCaptureRule(
+            var deleted = await this.repository!.DeleteCaptureRule(
                 new WorkExecutionDiagnosticCaptureRuleDeleteRequest(this.workSystemId, id),
                 cancellationToken);
             if (deleted)

@@ -250,6 +250,7 @@ See [Observability](observability.md) for payload, filtering, and buffering deta
 
 `IWorkSystemDiagnostics` groups the runtime health facets:
 
+- execution-diagnostics persistence initialization
 - queue
 - read model
 - retention

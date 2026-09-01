@@ -113,7 +113,7 @@ internal static class WorkableHttpExecutionDiagnosticsRoutes
                     {
                         WorkMessage.Error(
                             "workable.execution_diagnostics.persistence_required",
-                            "Register an execution diagnostics repository before creating a capture rule.",
+                            "Persistent execution diagnostics are not currently available for this system. Check system diagnostics and server logs before retrying.",
                             "captureRule"),
                     },
                 });

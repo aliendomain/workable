@@ -130,6 +130,9 @@ public sealed class WorkExecutionDiagnosticsCoordinatorBranchShould
             logger: null);
 
         Assert.False(coordinator.IsAvailable);
+        Assert.Equal(
+            WorkExecutionDiagnosticsPersistenceHealthStatus.NotConfigured,
+            coordinator.PersistenceDiagnostics.Status);
         Assert.Empty((await coordinator.Query(
             new WorkExecutionDiagnosticCriteria(WorkSystemId.New()),
             CancellationToken.None)).Items);
@@ -157,6 +160,131 @@ public sealed class WorkExecutionDiagnosticsCoordinatorBranchShould
                 },
             })],
             CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task StoreUnavailableDuringInitializationDisablesDiagnosticsWithoutFailingTheSystem()
+    {
+        var unavailable = new WorkPersistenceStoreUnavailableException(
+            "Diagnostics store unavailable.",
+            new InvalidOperationException("Simulated connection failure."));
+        var repository = new TestExecutionDiagnosticsRepository
+        {
+            InitializeException = unavailable,
+        };
+        var logger = new RecordingLogger();
+        await using var coordinator = new WorkExecutionDiagnosticsCoordinator(
+            WorkSystemId.New(),
+            "diagnostics-unavailable",
+            repository,
+            new WorkSystemExecutionDiagnosticsPersistenceConfiguration { IsEnabled = true },
+            logger);
+
+        Assert.Equal(
+            WorkExecutionDiagnosticsPersistenceHealthStatus.PendingInitialization,
+            coordinator.PersistenceDiagnostics.Status);
+        var initializationStartedAt = DateTimeOffset.UtcNow;
+
+        await coordinator.Initialize([], CancellationToken.None);
+        await coordinator.Initialize([], CancellationToken.None);
+
+        Assert.False(coordinator.IsAvailable);
+        Assert.False(coordinator.PersistenceDiagnostics.IsHealthy);
+        Assert.False(coordinator.PersistenceDiagnostics.PersistenceAvailable);
+        Assert.Equal(
+            WorkExecutionDiagnosticsPersistenceHealthStatus.Unhealthy,
+            coordinator.PersistenceDiagnostics.Status);
+        Assert.InRange(
+            coordinator.PersistenceDiagnostics.InitializationFailedAt!.Value,
+            initializationStartedAt.AddMilliseconds(-1),
+            DateTimeOffset.UtcNow);
+        Assert.Equal(1, repository.InitializeCallCount);
+        Assert.Empty((await coordinator.Query(
+            new WorkExecutionDiagnosticCriteria(WorkSystemId.New()),
+            CancellationToken.None)).Items);
+        Assert.Null(await coordinator.Get(
+            new WorkExecutionDiagnosticGetRequest(WorkSystemId.New(), WorkerId.New(), 1),
+            CancellationToken.None));
+        Assert.False(await coordinator.DeleteCaptureRule(Guid.NewGuid(), CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.CreateCaptureRule(
+            null,
+            LogLevel.Information,
+            null,
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromMinutes(1),
+            new WorkActor("tester"),
+            CancellationToken.None));
+        var error = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Error, error.Level);
+        Assert.Equal("ExecutionDiagnosticsInitializationFailed", error.EventId.Name);
+        Assert.Same(unavailable, error.Exception);
+        Assert.Contains("UNHEALTHY", error.Message, StringComparison.Ordinal);
+        Assert.Contains("WILL NOT BE PERSISTED", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ProviderInitializationFailureDisablesDiagnosticsWithoutFailingStartup()
+    {
+        var failure = new InvalidOperationException("Invalid diagnostics schema.");
+        var repository = new TestExecutionDiagnosticsRepository
+        {
+            InitializeException = failure,
+        };
+        await using var coordinator = new WorkExecutionDiagnosticsCoordinator(
+            WorkSystemId.New(),
+            "diagnostics-invalid",
+            repository,
+            WorkSystemExecutionDiagnosticsPersistenceConfiguration.Default,
+            logger: null);
+
+        await coordinator.Initialize([], CancellationToken.None);
+
+        Assert.False(coordinator.IsAvailable);
+        Assert.Equal(1, repository.InitializeCallCount);
+    }
+
+    [Fact]
+    public async Task CancellationDuringInitializationStillPropagates()
+    {
+        var repository = new TestExecutionDiagnosticsRepository
+        {
+            InitializeException = new OperationCanceledException("Host startup was canceled."),
+        };
+        await using var coordinator = new WorkExecutionDiagnosticsCoordinator(
+            WorkSystemId.New(),
+            "diagnostics-canceled",
+            repository,
+            WorkSystemExecutionDiagnosticsPersistenceConfiguration.Default,
+            logger: null);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            coordinator.Initialize([], CancellationToken.None));
+
+        Assert.True(coordinator.IsAvailable);
+        Assert.Equal(
+            WorkExecutionDiagnosticsPersistenceHealthStatus.PendingInitialization,
+            coordinator.PersistenceDiagnostics.Status);
+        Assert.Equal(1, repository.InitializeCallCount);
+    }
+
+    [Fact]
+    public async Task CaptureRuleLoadFailureDisablesDiagnosticsWithoutFailingStartup()
+    {
+        var repository = new TestExecutionDiagnosticsRepository
+        {
+            ListCaptureRulesException = new InvalidOperationException("Capture rules could not be loaded."),
+        };
+        await using var coordinator = new WorkExecutionDiagnosticsCoordinator(
+            WorkSystemId.New(),
+            "diagnostics-rules-unavailable",
+            repository,
+            WorkSystemExecutionDiagnosticsPersistenceConfiguration.Default,
+            logger: null);
+
+        await coordinator.Initialize([], CancellationToken.None);
+
+        Assert.False(coordinator.IsAvailable);
+        Assert.Equal(1, repository.InitializeCallCount);
     }
 
     [Theory]
@@ -588,7 +716,9 @@ public sealed class WorkExecutionDiagnosticsCoordinatorBranchShould
 
     private sealed class RecordingLogger : ILogger<WorkExecutionDiagnosticsCoordinator>
     {
-        public List<string> Messages { get; } = [];
+        public List<Entry> Entries { get; } = [];
+
+        public IEnumerable<string> Messages => this.Entries.Select(entry => entry.Message);
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -600,6 +730,12 @@ public sealed class WorkExecutionDiagnosticsCoordinatorBranchShould
             TState state,
             Exception? exception,
             Func<TState, Exception?, string> formatter)
-            => this.Messages.Add(formatter(state, exception));
+            => this.Entries.Add(new(logLevel, eventId, exception, formatter(state, exception)));
+
+        public sealed record Entry(
+            LogLevel Level,
+            EventId EventId,
+            Exception? Exception,
+            string Message);
     }
 }
