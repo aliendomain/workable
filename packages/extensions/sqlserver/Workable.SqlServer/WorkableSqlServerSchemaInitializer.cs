@@ -69,22 +69,19 @@ internal sealed class WorkableSqlServerSchemaInitializer
         await this.gate.WaitAsync(cancellationToken);
         try
         {
-            if (this.autoDeploySchema)
+            if (this.autoDeploySchema && !this.deploymentCompleted)
             {
-                if (!this.deploymentCompleted)
+                this.ThrowOrAllowRetry(this.deploymentFailures, component, initializationScope);
+                try
                 {
-                    this.ThrowOrAllowRetry(this.deploymentFailures, component, initializationScope);
-                    try
-                    {
-                        await this.deploy(cancellationToken);
-                        this.deploymentCompleted = true;
-                        this.deploymentFailures.Clear();
-                    }
-                    catch (Exception exception) when (ShouldCache(exception))
-                    {
-                        this.deploymentFailures[component] = new InitializationFailure(exception, initializationScope);
-                        throw;
-                    }
+                    await this.deploy(cancellationToken);
+                    this.deploymentCompleted = true;
+                    this.deploymentFailures.Clear();
+                }
+                catch (Exception exception) when (ShouldCache(exception))
+                {
+                    this.deploymentFailures[component] = new InitializationFailure(exception, initializationScope);
+                    throw;
                 }
             }
 
