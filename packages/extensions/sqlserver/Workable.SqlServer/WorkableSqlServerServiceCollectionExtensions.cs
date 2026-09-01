@@ -74,6 +74,15 @@ public static class WorkableSqlServerServiceCollectionExtensions
         services.TryAddSingleton<WorkableSqlServerExecutionDiagnosticsRepository>();
         services.TryAddSingleton<IWorkExecutionDiagnosticsRepository>(serviceProvider =>
             serviceProvider.GetRequiredService<WorkableSqlServerExecutionDiagnosticsRepository>());
+        services.TryAddSingleton(serviceProvider =>
+        {
+            var persistenceOptions = serviceProvider.GetRequiredService<WorkableSqlServerPersistenceOptions>();
+            var queueOptions = serviceProvider.GetService<WorkableSqlServerQueueDurabilityOptions>();
+            return new WorkableSqlServerSchemaInitializer(
+                persistenceOptions.ConnectionString,
+                persistenceOptions.SchemaName,
+                persistenceOptions.AutoDeploySchema || queueOptions?.AutoDeploySchema == true);
+        });
         return services;
     }
 

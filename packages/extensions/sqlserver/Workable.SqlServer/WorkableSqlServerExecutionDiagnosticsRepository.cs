@@ -7,8 +7,7 @@ using Microsoft.Data.SqlClient;
 
 namespace Workable.SqlServer;
 
-internal sealed class WorkableSqlServerExecutionDiagnosticsRepository(
-    WorkableSqlServerPersistenceOptions options) : IWorkExecutionDiagnosticsRepository
+internal sealed class WorkableSqlServerExecutionDiagnosticsRepository : IWorkExecutionDiagnosticsRepository
 {
     private const string RequiredDmlSetOptions = """
 SET ANSI_NULLS ON;
@@ -26,16 +25,29 @@ SET NUMERIC_ROUNDABORT OFF;
         Converters = { new JsonStringEnumConverter() },
     };
 
-    private readonly string diagnosticsTable =
-        $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkIterationDiagnostics]";
-    private readonly string logsTable =
-        $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkIterationDiagnosticLogs]";
-    private readonly string instrumentationTable =
-        $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkIterationInstrumentation]";
-    private readonly string captureRulesTable =
-        $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkDiagnosticCaptureRules]";
+    private readonly WorkableSqlServerPersistenceOptions options;
+    private readonly WorkableSqlServerSchemaInitializer schemaInitializer;
+    private readonly string diagnosticsTable;
+    private readonly string logsTable;
+    private readonly string instrumentationTable;
+    private readonly string captureRulesTable;
     private readonly ConcurrentDictionary<WorkSystemId, string> systemNames = [];
     private readonly ConcurrentDictionary<Guid, WorkSystemId> activeDiagnostics = [];
+
+    public WorkableSqlServerExecutionDiagnosticsRepository(
+        WorkableSqlServerPersistenceOptions options,
+        WorkableSqlServerSchemaInitializer? schemaInitializer = null)
+    {
+        this.options = options;
+        this.schemaInitializer = schemaInitializer ?? new(
+            options.ConnectionString,
+            options.SchemaName,
+            options.AutoDeploySchema);
+        this.diagnosticsTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkIterationDiagnostics]";
+        this.logsTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkIterationDiagnosticLogs]";
+        this.instrumentationTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkIterationInstrumentation]";
+        this.captureRulesTable = $"{WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName)}.[WorkDiagnosticCaptureRules]";
+    }
 
     public async Task Initialize(
         WorkExecutionDiagnosticsInitializationContext context,
@@ -44,26 +56,18 @@ SET NUMERIC_ROUNDABORT OFF;
         this.systemNames[context.WorkSystemId] = NormalizeSystemName(context.WorkSystemName);
         try
         {
-            if (options.AutoDeploySchema)
-            {
-                await WorkableSqlServerSchema.Apply(options.ConnectionString, options.SchemaName, cancellationToken);
-            }
-
-            await WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(
-                options.ConnectionString,
-                options.SchemaName,
-                cancellationToken);
+            await this.schemaInitializer.InitializeExecutionDiagnostics(context.WorkSystemId, cancellationToken);
         }
         catch (SqlException exception) when (IsStoreUnavailable(exception))
         {
-            var action = options.AutoDeploySchema ? "deploying or validating" : "validating";
+            var action = this.schemaInitializer.AutoDeploySchema ? "deploying or validating" : "validating";
             throw new WorkPersistenceStoreUnavailableException(
                 $"Workable.SqlServer could not reach SQL Server while {action} execution diagnostics schema '{options.SchemaName}'.",
                 exception);
         }
         catch (Exception exception) when (exception is SqlException or InvalidOperationException)
         {
-            var action = options.AutoDeploySchema ? "deploy" : "validate";
+            var action = this.schemaInitializer.AutoDeploySchema ? "deploy" : "validate";
             throw new WorkableSqlServerSchemaDeploymentException(
                 $"Workable.SqlServer could not {action} schema '{options.SchemaName}'.",
                 exception);

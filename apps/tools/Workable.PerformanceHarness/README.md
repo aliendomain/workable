@@ -143,6 +143,8 @@ Current benchmark groups:
 - `BaselineReadModelPublishBenchmarks` measures the cost of flushing one new worker update into already-large read-model snapshots at 100, 5,000, and 25,000 queued workers.
 - `BaselineAuthorizedBulkActionBenchmarks` measures authorized `ExecuteAll(Cancel)` over queued workers at 100, 1,000, and 5,000 workers.
 - `BaselineDurableLifecycleBenchmarks` measures representative SQL-backed queue, complete, queued-start action, and caller-owned transaction commit/notify paths.
+- `BaselineSqlSchemaInitializationBenchmarks` measures application-host startup with an installed SQL schema across 1, 8, and 32 Workable systems, isolating whether schema validation scales per host or per system. `BaselineUnavailableDiagnosticsStartupBenchmarks` measures the corresponding fail-open path against one unavailable diagnostics database and verifies that later systems reuse the failed deployment result.
+- `BaselineExecutionDiagnosticsHealthBenchmarks` measures steady-state reads of not-configured, healthy, and unhealthy persistence status plus dynamic capabilities after initialization failure. `BaselineExecutionDiagnosticsHealthHttpBenchmarks` measures the authorized HTTP diagnostics response that exposes that status.
 - `BaselineDurableSoakBenchmarks` measures larger SQL-backed queue, completion, and follow-up query batches to catch durable memory or latency regressions.
 - `BaselineWorkflowDispatchBenchmarks` measures single-dispatch workflow startup and completion overhead and reports per-workflow cost from batched invocations.
 - `BaselineWorkflowParallelJoinBenchmarks` measures parallel branch fan-out and join bookkeeping across branch counts and reports per-workflow cost from batched invocations.
@@ -252,6 +254,37 @@ The full-capture allocation fell by 26.1% from the preceding pass while latency 
 | 1,000 matching rules | 21.48 ns | 72 B |
 
 The default persisted-profile run crossed tiered-JIT phases during measured iterations. A diagnostic rerun with 30 warmups and 20 measured iterations produced 56.28 μs / 71.98 KB with profiling off and 128.00 μs / 318.64 KB with full profiling queued to the writer. A controlled comparison that temporarily removed the new queued-completion lifetime protection measured 124.44 μs, with overlapping confidence intervals; the protection was retained because it prevents expiration cleanup from racing a queued completion. Finalizing 1,000 settled pending profile operations measured 84.71 μs / 8.12 KB, within the preceding run's variance.
+
+### Diagnostics startup and schema initialization comparison
+
+The host-scoped SQL schema initialization pass on 2026-08-31 used the same `ShortRun` benchmark source before and after the change on an Apple M5 Max with .NET 10.0.8. The database already contained the current schema and runtime deployment was disabled, isolating validation plus normal per-system diagnostics initialization:
+
+| Workable systems in host | Before | After | Change | Before allocation | After allocation |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 33.29 ms | 29.28 ms | within run variance | 298.44 KB | 285.07 KB |
+| 8 | 225.88 ms | 133.39 ms | 41.0% faster | 2,213.59 KB | 983.31 KB |
+| 32 | 870.75 ms | 430.24 ms | 50.6% faster | 8,730.37 KB | 3,392.41 KB |
+
+The remaining growth is expected per-system lifecycle work, including loading that system's persisted capture rules. Schema validation itself is now shared by the host. Against one intentionally missing diagnostics database, the final batched benchmark measured 10.57 ms for one system, 10.18 ms for eight systems, and 12.20 ms for 32 systems. That nearly flat failure curve confirms later systems reuse the first failed deployment result instead of repeating the database connection attempt.
+
+The session-creation A/B covered the dynamic diagnostics capability read added to new sessions. Matching-snapshot session creation remained approximately 483 ns at 64 definitions before and after. Focused mismatched-snapshot reruns measured 480–488 ns on both versions, so the earlier noisy 672 ns sample was not reproducible. No timing regression was identified.
+
+### Diagnostics persistence health reporting sweep
+
+The follow-up health-status pass on 2026-08-31 used `ShortRun` on the same Apple M5 Max and .NET 10.0.8 environment. The first focused run found that each status read created a 48-byte record. The final implementation reuses immutable state snapshots:
+
+| Health read | Initial mean | Initial allocation | Final mean | Final allocation |
+| --- | ---: | ---: | ---: | ---: |
+| Not configured | 3.89 ns | 48 B | 0.83 ns | 0 B |
+| Healthy | 4.74 ns | 48 B | 0.80 ns | 0 B |
+| Unhealthy | 4.67 ns | 48 B | 0.83 ns | 0 B |
+| Unhealthy through session diagnostics | 4.38 ns | 48 B | 0.38 ns | 0 B |
+
+Creating a new session measured 49.31 ns / 456 B with healthy diagnostics and 49.91 ns / 456 B after diagnostics initialization failure. The cached unavailable-capability projection therefore adds no measurable allocation or latency penalty. After extended warmup stabilized tiered compilation, an authorized `GET /workable/diagnostics` request measured 19.21 μs / 24.2 KB end to end.
+
+The installed-schema startup rerun measured 28.49 ms, 120.63 ms, and 454.51 ms for 1, 8, and 32 systems, respectively; the preceding post-change run measured 27.82 ms, 119.98 ms, and 461.51 ms. The unavailable-database rerun measured 10.50 ms, 10.20 ms, and 11.16 ms versus 10.57 ms, 10.18 ms, and 12.20 ms previously. Both startup paths remain within run variance, and the unavailable path remains nearly flat as system count grows.
+
+After narrowing failed-result reuse so durable components and repeated same-system initialization can recover independently, the unavailable-database benchmark measured 10.14 ms, 10.59 ms, and 11.25 ms for 1, 8, and 32 systems. The curve remains nearly flat, confirming that the retry correction does not restore the multi-system connection burst.
 
 ### Iteration status stream comparison
 

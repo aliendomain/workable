@@ -19,4 +19,11 @@ public sealed record WorkableHttpSystemDiagnostics(
     WorkSystemRetentionDiagnostics Retention,
     WorkSystemConcurrencyDiagnostics Concurrency,
     WorkSystemDurabilityDiagnostics Durability,
-    WorkSystemIdempotencyDiagnostics Idempotency);
+    WorkSystemIdempotencyDiagnostics Idempotency)
+{
+    /// <summary>
+    /// Gets persistent execution-diagnostics initialization health.
+    /// </summary>
+    public WorkSystemExecutionDiagnosticsPersistenceDiagnostics ExecutionDiagnosticsPersistence { get; init; }
+        = WorkSystemExecutionDiagnosticsPersistenceDiagnostics.NotConfigured;
+}

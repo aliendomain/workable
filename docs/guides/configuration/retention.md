@@ -84,5 +84,5 @@ var outcome = await system.Workers.Reconfigure(
 ## Related Interactions
 
 - [Retention And Failure](interactions.md#retention-and-failure): failed and interrupted workers are not final and are not automatically purged by final-worker retention.
-- Durable workflows retain child completion receipts on the workflow run, so completed child workers can be purged without breaking later joins or workflow status views.
+- Workflow runs retain child completion receipts before allowing automatic retention to purge completed child workers, so aggressive worker retention does not break later joins or workflow status views.
 - [System Settings](system-settings.md): system-wide limits include admission capacity for non-final workers and a retained final-worker cap.

@@ -11,6 +11,50 @@ namespace Workable.Tests;
 public sealed class WorkExecutionDiagnosticsPersistenceTests
 {
     [Fact]
+    public async Task SystemStartsAndReportsDiagnosticsUnavailableWhenRepositoryCannotConnect()
+    {
+        var repository = new TestExecutionDiagnosticsRepository
+        {
+            InitializeException = new WorkPersistenceStoreUnavailableException(
+                "Diagnostics store unavailable.",
+                new InvalidOperationException("Simulated connection failure.")),
+        };
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkExecutionDiagnosticsRepository>(repository);
+        services.AddWorkableSystem(builder => builder
+            .RequireAuthorization(false)
+            .PersistExecutionDiagnostics(TimeSpan.FromHours(1), LogLevel.Information)
+            .AddWork<SuccessfulExecutor>(WorkDefinition.Create("diagnostics-unavailable-startup")));
+        await using var provider = services.BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        await system.Start();
+        var session = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        var completion = await (await system.Queue.Enqueue("diagnostics-unavailable-startup")).WaitForCompletion();
+
+        Assert.Equal(WorkSystemState.Started, system.State);
+        Assert.True(completion.IsCompletedSuccessfully);
+        Assert.False(session.Capabilities.ExecutionDiagnosticsPersistenceAvailable);
+        Assert.Equal(
+            WorkExecutionDiagnosticsPersistenceHealthStatus.Unhealthy,
+            system.Diagnostics.ExecutionDiagnosticsPersistence.Status);
+        Assert.Equal(
+            WorkExecutionDiagnosticsPersistenceHealthStatus.Unhealthy,
+            session.Diagnostics.ExecutionDiagnosticsPersistence.Status);
+        Assert.Same(
+            session.Diagnostics.ExecutionDiagnosticsPersistence,
+            session.Diagnostics.ExecutionDiagnosticsPersistence);
+        Assert.False(session.Diagnostics.ExecutionDiagnosticsPersistence.IsHealthy);
+        Assert.NotNull(session.Diagnostics.ExecutionDiagnosticsPersistence.InitializationFailedAt);
+        var capabilitySource = Assert.IsAssignableFrom<IWorkSystemCapabilitySource>(system);
+        Assert.Same(capabilitySource.Capabilities, capabilitySource.Capabilities);
+        Assert.False(((IWorkExecutionDiagnosticsSystem)system).ExecutionDiagnosticsPersistenceAvailable);
+        Assert.Equal(1, repository.InitializeCallCount);
+
+        await system.Stop();
+    }
+
+    [Fact]
     public async Task PersistsAllEligibleLogsIndependentlyOfTheRetainedBufferLimit()
     {
         var repository = new RecordingRepository();
@@ -26,6 +70,16 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
             }));
         var system = services.BuildServiceProvider().GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
+
+        Assert.Equal(
+            WorkExecutionDiagnosticsPersistenceHealthStatus.Healthy,
+            system.Diagnostics.ExecutionDiagnosticsPersistence.Status);
+        Assert.Same(
+            system.Diagnostics.ExecutionDiagnosticsPersistence,
+            system.Diagnostics.ExecutionDiagnosticsPersistence);
+        Assert.True(system.Diagnostics.ExecutionDiagnosticsPersistence.IsHealthy);
+        Assert.True(system.Diagnostics.ExecutionDiagnosticsPersistence.PersistenceAvailable);
+        Assert.Null(system.Diagnostics.ExecutionDiagnosticsPersistence.InitializationFailedAt);
 
         var completion = await (await system.Queue.Enqueue("persistent-logs")).WaitForCompletion();
         var persisted = await repository.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -77,6 +131,14 @@ public sealed class WorkExecutionDiagnosticsPersistenceTests
         var deleted = await diagnostics.DeleteExecutionDiagnosticCaptureRule(Guid.NewGuid(), CancellationToken.None);
 
         Assert.False(diagnostics.ExecutionDiagnosticsPersistenceAvailable);
+        Assert.Equal(
+            WorkExecutionDiagnosticsPersistenceHealthStatus.NotConfigured,
+            system.Diagnostics.ExecutionDiagnosticsPersistence.Status);
+        Assert.Same(
+            system.Diagnostics.ExecutionDiagnosticsPersistence,
+            system.Diagnostics.ExecutionDiagnosticsPersistence);
+        Assert.True(system.Diagnostics.ExecutionDiagnosticsPersistence.IsHealthy);
+        Assert.False(system.Diagnostics.ExecutionDiagnosticsPersistence.PersistenceAvailable);
         Assert.Empty(query.Items);
         Assert.Null(artifact);
         Assert.Empty(diagnostics.GetExecutionDiagnosticCaptureRules());

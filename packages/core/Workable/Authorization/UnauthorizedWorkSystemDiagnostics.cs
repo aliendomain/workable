@@ -4,6 +4,9 @@ internal sealed class UnauthorizedWorkSystemDiagnostics(
     WorkSystemId systemId,
     string? systemName) : IWorkSystemDiagnostics
 {
+    public WorkSystemExecutionDiagnosticsPersistenceDiagnostics ExecutionDiagnosticsPersistence
+        => throw this.CreateException();
+
     public WorkSystemQueueDiagnostics Queue => throw this.CreateException();
 
     public WorkSystemReadModelDiagnostics ReadModel => throw this.CreateException();

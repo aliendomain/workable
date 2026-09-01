@@ -33,6 +33,7 @@ internal sealed class WorkflowRuntime
     private readonly ConcurrentDictionary<WorkflowRunId, byte> recoveryPending = new();
     private readonly ConcurrentDictionary<WorkerId, Lazy<Task>> receiptPersistences = new();
     private readonly ConcurrentDictionary<WorkerId, byte> failedReceiptPersistences = new();
+    private readonly ConcurrentDictionary<WorkerId, byte> pendingReceiptRegistrations = new();
     private readonly ConcurrentDictionary<WorkflowRunId, AutoResumeRetryState> autoResumeRetries = new();
     private readonly Lock lifecycleSync = new();
     private CancellationTokenSource executionLifetime = new();
@@ -141,6 +142,7 @@ internal sealed class WorkflowRuntime
             this.recoveryPending.Clear();
             this.receiptPersistences.Clear();
             this.failedReceiptPersistences.Clear();
+            this.pendingReceiptRegistrations.Clear();
             this.autoResumeRetries.Clear();
         }
 
@@ -1339,20 +1341,35 @@ internal sealed class WorkflowRuntime
     {
         ArgumentNullException.ThrowIfNull(worker);
 
-        if (!TryGetWorkflowProvenance(worker, out var provenance) ||
-            !this.runs.TryGetValue(provenance.RunId, out var run) ||
-            !string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) ||
-            !run.StepContainsWorker(provenance.StepName, worker.Id))
-        {
-            return;
-        }
-
         var completionStatus = WorkerStateMachine.CompletionStatusFor(worker.State);
         if (completionStatus == WorkCompletionStatus.Invalid)
         {
             return;
         }
 
+        if (!TryGetWorkflowProvenance(worker, out var provenance) ||
+            !this.runs.TryGetValue(provenance.RunId, out var run) ||
+            !string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) ||
+            !run.TryGetStepWorkerIds(provenance.StepName, out _))
+        {
+            return;
+        }
+
+        if (!run.StepContainsWorker(provenance.StepName, worker.Id))
+        {
+            if (!HasExactWorkflowRunIdentifier(worker, provenance.RunId))
+            {
+                return;
+            }
+
+            // Non-durable children begin execution as soon as queue acceptance completes. A fast child can
+            // therefore finish just before the executor records its worker id against the workflow step.
+            // Retention retries the observation after step registration catches up.
+            this.pendingReceiptRegistrations[worker.Id] = 0;
+            return;
+        }
+
+        this.pendingReceiptRegistrations.TryRemove(worker.Id, out _);
         var receipt = new WorkflowChildReceipt(
             worker.Id,
             provenance.StepName,
@@ -1637,7 +1654,17 @@ internal sealed class WorkflowRuntime
         if (!TryGetWorkflowProvenance(worker, out var provenance) ||
             !this.runs.TryGetValue(provenance.RunId, out var run) ||
             !string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) ||
-            !run.StepContainsWorker(provenance.StepName, worker.Id))
+            !run.TryGetStepWorkerIds(provenance.StepName, out _))
+        {
+            return false;
+        }
+
+        if (this.pendingReceiptRegistrations.ContainsKey(worker.Id))
+        {
+            return !IsFinal(run.GetStatus());
+        }
+
+        if (!run.StepContainsWorker(provenance.StepName, worker.Id))
         {
             return false;
         }
@@ -1662,7 +1689,8 @@ internal sealed class WorkflowRuntime
     {
         ArgumentNullException.ThrowIfNull(worker);
 
-        return this.failedReceiptPersistences.ContainsKey(worker.Id) &&
+        return (this.pendingReceiptRegistrations.ContainsKey(worker.Id) ||
+                this.failedReceiptPersistences.ContainsKey(worker.Id)) &&
             TryGetWorkflowProvenance(worker, out var provenance) &&
             this.runs.TryGetValue(provenance.RunId, out var run) &&
             string.Equals(provenance.DefinitionName, run.DefinitionName, StringComparison.OrdinalIgnoreCase) &&
@@ -1674,6 +1702,7 @@ internal sealed class WorkflowRuntime
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(worker);
+        this.pendingReceiptRegistrations.TryRemove(worker.Id, out _);
 
         if (!TryGetWorkflowProvenance(worker, out var provenance) ||
             !this.runs.TryGetValue(provenance.RunId, out var run) ||
@@ -1818,6 +1847,15 @@ internal sealed class WorkflowRuntime
         }
 
         return true;
+    }
+
+    private static bool HasExactWorkflowRunIdentifier(WorkerSnapshot worker, WorkflowRunId runId)
+    {
+        var runIdentifiers = worker.Identifiers
+            .Where(static identifier => WorkflowProvenanceRules.IsRunIdentifier(identifier.Type))
+            .ToArray();
+        return runIdentifiers.Length == 1 &&
+            string.Equals(runIdentifiers[0].Value, runId.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
     private async ValueTask<WorkflowOperationAuthorization> ResolveOperationAuthorization(

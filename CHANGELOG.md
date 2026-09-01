@@ -1,4 +1,6 @@
 # Changelog
+- [1.1.083126.1](releases/1.1.083126.1.md) - Fail-open diagnostics health, host-scoped SQL schema initialization, bounded Entra token state, and admin UI and realtime reliability fixes
+- [1.1.082326.1](releases/1.1.082326.1.md) - Host-owned authentication, scoped discovery, SignalR hardening, secure admin sessions, and persistent diagnostics capture controls
 - [1.1.081126.1](releases/1.1.081126.1.md) - Delegated child execution, trusted workflow provenance, durable failed-worker recovery, authorization and bulk-action hardening, and SQL durability fixes
 - [1.1.080926.1](releases/1.1.080926.1.md) - Expiring execution diagnostics for agent analysis and system-scoped authorization snapshots
 - [1.1.080726.1](releases/1.1.080726.1.md) - Async authorization groups, prompt durable-queue notification, race-safe actor activity watches, replayable iteration-status streams, and profiling/security hardening

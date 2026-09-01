@@ -21,7 +21,7 @@ services.AddWorkableSqlServerPersistence(
     persistenceScope: "my-application");
 ```
 
-This is host-level service registration: one SQL connection/schema pair supplies the repository for all Workable systems in the service collection. The persistence scope and logical Workable system name form each system's stable, isolated query boundary across application restarts. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md) for work/system policy, expiry, background writing, and query surfaces.
+This is host-level service registration: one SQL connection/schema pair supplies the repository for all Workable systems in the service collection. One host-scoped schema initializer coordinates those systems so one completed deployment result is reused and each used schema component is validated once per application host. A component failure is shared across the other systems encountering that same startup failure, while a repeated initialization attempt for the same system retries it. Canceled initialization is not cached and can be retried immediately. The persistence scope and logical Workable system name form each system's stable, isolated query boundary across application restarts. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md) for work/system policy, expiry, background writing, and query surfaces.
 
 Durable queue registration also registers this diagnostics repository:
 
@@ -31,9 +31,11 @@ services.AddWorkableSqlServerDurableQueue(
     schemaName: "workable");
 ```
 
-When both methods are used, they must identify the same SQL Server connection and schema. The explicit `AddWorkableSqlServerPersistence(...)` options supply the diagnostics persistence scope regardless of registration order; conflicting stores or conflicting explicit persistence configurations fail during service registration.
+When both methods are used, they must identify the same SQL Server connection and schema. The explicit `AddWorkableSqlServerPersistence(...)` options supply the diagnostics persistence scope regardless of registration order; conflicting stores or conflicting explicit persistence configurations fail during service registration. If the two registrations specify different automatic-deployment values, schema deployment is enabled when either registration enables it.
 
-By default, the SQL Server integration auto-deploys the required schema when the Workable system starts. Execution diagnostics uses the shared `SchemaVersion` table with its own component version, separate from queue durability and workflow persistence. Startup fails if SQL Server rejects the deployment because of permissions, connectivity, or another SQL error.
+By default, the SQL Server integration auto-deploys the required schema when the first Workable system needs it. Execution diagnostics uses the shared `SchemaVersion` table with its own component version, separate from queue durability and workflow persistence. Successful deployment and validation results are reused by later systems in the same host. A failed result is reused for other systems initializing that component, preventing an unavailable database from receiving a burst of identical startup connections; retrying initialization for the system that already observed the failure makes a fresh attempt. A diagnostics deployment failure does not suppress the first queue-durability or workflow-persistence deployment attempt.
+
+Any execution-diagnostics provider initialization failure produces an `Error`-level log and disables persisted diagnostics for the affected Workable system until the process restarts; the system and application host continue starting. This includes an unavailable SQL Server or database, configuration or permission errors, and a missing or incomplete Workable diagnostics schema. Cancellation still interrupts startup. Durable queue and workflow initialization keep their own failure behavior when they share this initializer; durable queueing retains its existing store-unavailable fallback and retry behavior.
 
 Disable runtime schema deployment when schema changes are managed outside the app:
 

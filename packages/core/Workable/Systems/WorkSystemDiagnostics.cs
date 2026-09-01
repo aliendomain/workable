@@ -3,8 +3,12 @@ namespace Workable;
 internal sealed class WorkSystemDiagnostics(
     WorkSystemQueueDiagnosticsTracker queueDiagnostics,
     WorkSystemReadModel readModel,
-    WorkerOperations workers) : IWorkSystemDiagnostics
+    WorkerOperations workers,
+    Func<WorkSystemExecutionDiagnosticsPersistenceDiagnostics> getExecutionDiagnosticsPersistence) : IWorkSystemDiagnostics
 {
+    public WorkSystemExecutionDiagnosticsPersistenceDiagnostics ExecutionDiagnosticsPersistence
+        => getExecutionDiagnosticsPersistence();
+
     public WorkSystemQueueDiagnostics Queue => queueDiagnostics.Diagnostics;
 
     public WorkSystemReadModelDiagnostics ReadModel => readModel.Diagnostics;

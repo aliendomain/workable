@@ -10,11 +10,14 @@ Workable diagnostics describe the health of the work system itself. They are mea
 - Are concurrency-deferred workers waiting too long?
 - Are durable workers failing to materialize or clean up?
 - Are duplicate idempotency rejections happening?
+- Did persistent execution diagnostics fail to initialize?
 - Did an internal projector, scheduler, or durability loop fail?
 
 Diagnostics are available from `IWorkSystem.Diagnostics`, the HTTP diagnostics endpoint, and realtime diagnostics component views.
 
 ```csharp
+WorkSystemExecutionDiagnosticsPersistenceDiagnostics executionDiagnosticsPersistence =
+    workSystem.Diagnostics.ExecutionDiagnosticsPersistence;
 WorkSystemQueueDiagnostics queue = workSystem.Diagnostics.Queue;
 WorkSystemReadModelDiagnostics readModel = workSystem.Diagnostics.ReadModel;
 WorkSystemRetentionDiagnostics retention = workSystem.Diagnostics.Retention;
@@ -22,6 +25,8 @@ WorkSystemConcurrencyDiagnostics concurrency = workSystem.Diagnostics.Concurrenc
 WorkSystemDurabilityDiagnostics durability = workSystem.Diagnostics.Durability;
 WorkSystemIdempotencyDiagnostics idempotency = workSystem.Diagnostics.Idempotency;
 ```
+
+`ExecutionDiagnosticsPersistence.Status` is `NotConfigured`, `PendingInitialization`, `Healthy`, or `Unhealthy`. An initialization failure sets it to `Unhealthy`, records `InitializationFailedAt`, and makes `PersistenceAvailable` false while the work system continues running. The diagnostics surface intentionally omits the provider exception because connection details can be sensitive; inspect the server-side `ExecutionDiagnosticsInitializationFailed` error log for the cause.
 
 ```http
 GET /workable/diagnostics

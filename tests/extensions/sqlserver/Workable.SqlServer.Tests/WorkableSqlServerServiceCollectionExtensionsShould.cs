@@ -108,6 +108,22 @@ public sealed class WorkableSqlServerServiceCollectionExtensionsShould
 
         Assert.Equal("application-a", options.PersistenceScope);
         Assert.False(options.AutoDeploySchema);
+        Assert.True(provider.GetRequiredService<WorkableSqlServerSchemaInitializer>().AutoDeploySchema);
+    }
+
+    [Fact]
+    public void ExplicitPersistenceControlsSchemaDeploymentWhenNoQueueIsRegistered()
+    {
+        var services = new ServiceCollection()
+            .AddWorkableSqlServerPersistence(new WorkableSqlServerPersistenceOptions
+            {
+                ConnectionString = "Server=shared;Database=Workable",
+                AutoDeploySchema = false,
+            });
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.False(provider.GetRequiredService<WorkableSqlServerSchemaInitializer>().AutoDeploySchema);
     }
 
     [Theory]
@@ -143,5 +159,42 @@ public sealed class WorkableSqlServerServiceCollectionExtensionsShould
         Assert.Throws<InvalidOperationException>(() => services.AddWorkableSqlServerPersistence(
             "Server=shared;Database=Workable",
             persistenceScope: "scope-b"));
+    }
+
+    [Fact]
+    public async Task ShareOneSchemaInitializerAcrossQueueWorkflowAndDiagnosticsRepositories()
+    {
+        var deployments = 0;
+        var validations = new Dictionary<WorkableSqlServerSchemaComponent, int>();
+        var schemaInitializer = new WorkableSqlServerSchemaInitializer(
+            autoDeploySchema: true,
+            _ =>
+            {
+                deployments++;
+                return Task.CompletedTask;
+            },
+            (component, _) =>
+            {
+                validations[component] = validations.GetValueOrDefault(component) + 1;
+                return Task.CompletedTask;
+            });
+        var services = new ServiceCollection();
+        services.AddSingleton(schemaInitializer);
+        services.AddWorkableSqlServerDurableQueue("Server=shared;Database=Workable", "telemetry");
+        await using var provider = services.BuildServiceProvider();
+        var store = provider.GetRequiredService<WorkableSqlServerQueueDurabilityStore>();
+        var diagnostics = provider.GetRequiredService<WorkableSqlServerExecutionDiagnosticsRepository>();
+
+        await diagnostics.Initialize(new WorkExecutionDiagnosticsInitializationContext(WorkSystemId.New(), "first"));
+        await diagnostics.Initialize(new WorkExecutionDiagnosticsInitializationContext(WorkSystemId.New(), "second"));
+        await store.Initialize(new WorkQueueDurabilityInitializationContext(WorkSystemId.New(), "first", []));
+        await store.Initialize(new WorkQueueDurabilityInitializationContext(WorkSystemId.New(), "second", []));
+        await store.InitializeWorkflows(new WorkflowPersistenceInitializationContext("first", []));
+
+        Assert.Same(schemaInitializer, provider.GetRequiredService<WorkableSqlServerSchemaInitializer>());
+        Assert.Equal(1, deployments);
+        Assert.Equal(1, validations[WorkableSqlServerSchemaComponent.ExecutionDiagnostics]);
+        Assert.Equal(1, validations[WorkableSqlServerSchemaComponent.QueueDurability]);
+        Assert.Equal(1, validations[WorkableSqlServerSchemaComponent.WorkflowPersistence]);
     }
 }

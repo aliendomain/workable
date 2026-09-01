@@ -1241,6 +1241,60 @@ public sealed class WorkflowRuntimeInternalsShould
     }
 
     [Fact]
+    public async Task RetainFastFinalChildUntilWorkflowStepRegistrationCatchesUp()
+    {
+        var childId = WorkerId.New();
+        var workflow = CreateWorkflow(
+            WorkflowDefinition.Create("workflow.runtime.fast-child-registration"),
+            Dispatch("dispatch", "sample.dispatch"));
+        var runtime = CreateRuntime(
+            catalog: new WorkflowCatalog([workflow]),
+            persistenceStore: null,
+            systemName: null,
+            createSession: _ => throw new NotSupportedException(),
+            createWorkerHandle: _ => throw new NotSupportedException());
+        var run = WorkflowRunState.Create(
+            workflow,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess));
+        run.MarkStepRunning("dispatch");
+        GetRuns(runtime).TryAdd(run.Id, run);
+        var forgedChild = CreateSnapshot(
+            WorkerId.New(),
+            WorkerState.Completed,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", WorkflowRunId.New().ToString()),
+            },
+            workflowProvenance: new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
+        var child = CreateSnapshot(
+            childId,
+            WorkerState.Completed,
+            new HashSet<WorkIdentifier>
+            {
+                new("workflow-run", run.Id.Value.ToString("D")),
+            },
+            new WorkflowProvenance(run.Id, run.DefinitionName, "dispatch"));
+
+        await runtime.ObserveFinalWorkflowChild(forgedChild, CancellationToken.None);
+        await runtime.ObserveFinalWorkflowChild(child, CancellationToken.None);
+
+        Assert.False(runtime.ShouldKeepWorkflowChildWorker(forgedChild));
+        Assert.True(runtime.ShouldKeepWorkflowChildWorker(child));
+        Assert.False(runtime.ShouldRetryWorkflowChildFinalization(child));
+        Assert.Empty(runtime.Get(run.Id)!.ChildReceipts);
+
+        run.MarkStepCompleted("dispatch", [childId]);
+
+        Assert.True(runtime.ShouldRetryWorkflowChildFinalization(child));
+        await runtime.ObserveFinalWorkflowChild(child, CancellationToken.None);
+
+        Assert.False(runtime.ShouldRetryWorkflowChildFinalization(child));
+        Assert.False(runtime.ShouldKeepWorkflowChildWorker(child));
+        Assert.Contains(runtime.Get(run.Id)!.ChildReceipts, receipt => receipt.WorkerId == childId);
+        runtime.ClearRuns();
+    }
+
+    [Fact]
     public async Task AwaitInFlightDurableReceiptPersistenceForDuplicateObservation()
     {
         var childId = WorkerId.New();

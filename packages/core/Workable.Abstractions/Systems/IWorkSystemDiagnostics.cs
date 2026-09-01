@@ -6,6 +6,12 @@ namespace Workable;
 public interface IWorkSystemDiagnostics
 {
     /// <summary>
+    /// Gets diagnostics about persistent execution-diagnostics initialization.
+    /// </summary>
+    WorkSystemExecutionDiagnosticsPersistenceDiagnostics ExecutionDiagnosticsPersistence
+        => WorkSystemExecutionDiagnosticsPersistenceDiagnostics.NotConfigured;
+
+    /// <summary>
     /// Gets diagnostics about rejected queue requests.
     /// </summary>
     WorkSystemQueueDiagnostics Queue { get; }

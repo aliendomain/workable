@@ -6,12 +6,19 @@ namespace Workable.Tests;
 internal sealed class TestExecutionDiagnosticsRepository : IWorkExecutionDiagnosticsRepository
 {
     private readonly ConcurrentDictionary<Guid, WorkExecutionDiagnosticCaptureRule> rules = [];
+    private int initializeCallCount;
 
     public WorkExecutionDiagnosticQueryResult QueryResult { get; set; } = new([]);
 
     public WorkExecutionDiagnosticArtifact? Artifact { get; set; }
 
     public Exception? QueryException { get; set; }
+
+    public Exception? InitializeException { get; set; }
+
+    public int InitializeCallCount => Volatile.Read(ref this.initializeCallCount);
+
+    public Exception? ListCaptureRulesException { get; set; }
 
     public Exception? UpsertCaptureRuleException { get; set; }
 
@@ -20,7 +27,12 @@ internal sealed class TestExecutionDiagnosticsRepository : IWorkExecutionDiagnos
     public WorkExecutionDiagnosticGetRequest? LastGetRequest { get; private set; }
 
     public Task Initialize(WorkExecutionDiagnosticsInitializationContext context, CancellationToken cancellationToken = default)
-        => Task.CompletedTask;
+    {
+        Interlocked.Increment(ref this.initializeCallCount);
+        return this.InitializeException is null
+            ? Task.CompletedTask
+            : Task.FromException(this.InitializeException);
+    }
 
     public Task BeginIteration(WorkExecutionDiagnosticIterationStart iteration, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
@@ -54,7 +66,9 @@ internal sealed class TestExecutionDiagnosticsRepository : IWorkExecutionDiagnos
     public Task<IReadOnlyList<WorkExecutionDiagnosticCaptureRule>> ListCaptureRules(
         WorkExecutionDiagnosticsInitializationContext context,
         CancellationToken cancellationToken = default)
-        => Task.FromResult<IReadOnlyList<WorkExecutionDiagnosticCaptureRule>>([.. this.rules.Values]);
+        => this.ListCaptureRulesException is null
+            ? Task.FromResult<IReadOnlyList<WorkExecutionDiagnosticCaptureRule>>([.. this.rules.Values])
+            : Task.FromException<IReadOnlyList<WorkExecutionDiagnosticCaptureRule>>(this.ListCaptureRulesException);
 
     public Task UpsertCaptureRule(WorkExecutionDiagnosticCaptureRule rule, int maximumActiveRules, CancellationToken cancellationToken = default)
     {
