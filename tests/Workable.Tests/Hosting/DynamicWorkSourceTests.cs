@@ -272,9 +272,15 @@ public sealed class DynamicWorkSourceTests
 
         await system.Start();
         await tracker.StartupWorkCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await TestEventually.Until(async () =>
+            (await system.Query.Workers(new WorkerCriteria(
+                DefinitionName: "startup.by-id",
+                Take: 10))).TotalCount == 1);
 
-        var workers = (await system.Query.Workers(new WorkerCriteria())).Workers;
-        Assert.Contains(workers, worker => worker.DefinitionName == "startup.by-id");
+        var workers = await system.Query.Workers(new WorkerCriteria(
+            DefinitionName: "startup.by-id",
+            Take: 10));
+        Assert.Equal(1, workers.TotalCount);
     }
 
     [Fact]
