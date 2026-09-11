@@ -242,14 +242,14 @@ public class BaselineSqlScheduleQueryBenchmarks
     public Task<IReadOnlyList<WorkScheduleSummary>> ListRecentSchedules()
         => this.fixture.Store.List(new(
             SqlScheduleBenchmarkStore.SystemName,
-            Take: 100));
+            Take: WorkScheduleCriteria.MaximumTake));
 
     [Benchmark]
     public Task<IReadOnlyList<WorkScheduleSummary>> ListActiveSchedules()
         => this.fixture.Store.List(new(
             SqlScheduleBenchmarkStore.SystemName,
             Status: WorkScheduleStatus.Active,
-            Take: 100));
+            Take: WorkScheduleCriteria.MaximumTake));
 
     [GlobalCleanup]
     public void GlobalCleanup()
@@ -613,6 +613,9 @@ internal sealed class SqlScheduleBenchmarkStore
         await using var command = connection.CreateCommand();
         command.CommandText = $"""
 DELETE FROM [{SchemaName}].[WorkSchedules]
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName;
+DELETE FROM [{SchemaName}].[WorkScheduleHosts]
 WHERE PersistenceScope = @PersistenceScope
   AND WorkSystemName = @WorkSystemName;
 DELETE FROM [{SchemaName}].[WorkScheduleOccurrenceUsage]

@@ -68,6 +68,31 @@ type QueueScheduleDialogState = {
   queueRequestSchema: QueueRequestSchemaDescriptor;
 };
 
+const schedulePageSize = 1000;
+
+export async function loadScheduleIndex(connection: WorkableConnection): Promise<WorkScheduleSummary[]> {
+  const recent = await workableFetch<WorkScheduleQueryResult>(
+    connection,
+    `schedules?take=${schedulePageSize}`
+  );
+  if (recent.schedules.length < schedulePageSize) {
+    return recent.schedules;
+  }
+
+  const active = await workableFetch<WorkScheduleQueryResult>(
+    connection,
+    `schedules?status=Active&take=${schedulePageSize}`
+  );
+  const schedulesById = new Map(
+    recent.schedules.map((schedule) => [schedule.id.value, schedule] as const)
+  );
+  for (const schedule of active.schedules) {
+    schedulesById.set(schedule.id.value, schedule);
+  }
+
+  return Array.from(schedulesById.values());
+}
+
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
@@ -143,17 +168,17 @@ export function SchedulesView({
         setError(undefined);
       }
     });
-    workableFetch<WorkScheduleQueryResult>(connection, "schedules?take=1000")
-      .then((result) => {
+    loadScheduleIndex(connection)
+      .then((loadedSchedules) => {
         if (canceled) {
           return;
         }
 
-        setSchedules(result.schedules);
+        setSchedules(loadedSchedules);
         setSelectedScheduleId((current) =>
-          current && result.schedules.some((schedule) => schedule.id.value === current)
+          current && loadedSchedules.some((schedule) => schedule.id.value === current)
             ? current
-            : result.schedules[0]?.id.value ?? null
+            : loadedSchedules[0]?.id.value ?? null
         );
         setLoading(false);
         onReady();

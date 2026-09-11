@@ -3,7 +3,7 @@ namespace Workable;
 /// <summary>
 /// Persists runtime schedules and coordinates due-occurrence claims across hosts.
 /// </summary>
-public interface IWorkScheduleStore
+public interface IWorkScheduleStore : IWorkScheduleHostPresenceStore
 {
     Task Initialize(WorkScheduleStoreInitializationContext context, CancellationToken cancellationToken = default);
 
@@ -52,6 +52,42 @@ public interface IWorkScheduleStore
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Records scheduler-host availability so missed executions are evaluated across all hosts in a work system.
+/// </summary>
+public interface IWorkScheduleHostPresenceStore
+{
+    Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+        WorkScheduleClaimRequest request,
+        WorkScheduleHostObservation observation,
+        CancellationToken cancellationToken = default);
+
+    Task EndHost(
+        WorkScheduleHostEnd hostEnd,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+        WorkScheduleHostAvailabilityRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record WorkScheduleHostObservation(
+    string? WorkSystemName,
+    Guid HostRunId,
+    DateTimeOffset StartedAt,
+    DateTimeOffset ObservedAt,
+    DateTimeOffset AvailableThrough,
+    DateTimeOffset DeleteEndedBefore);
+
+public sealed record WorkScheduleHostEnd(
+    string? WorkSystemName,
+    Guid HostRunId,
+    DateTimeOffset EndedAt);
+
+public sealed record WorkScheduleHostAvailabilityRequest(
+    string? WorkSystemName,
+    IReadOnlySet<DateTimeOffset> ScheduledTimes);
+
 public sealed record WorkScheduleStoreInitializationContext(string? WorkSystemName);
 
 public sealed record WorkSchedulePersistenceRecord(
@@ -93,6 +129,7 @@ public sealed record WorkScheduleStoreCreateRequest(
 public enum WorkScheduleStoreCreationStatus
 {
     Accepted,
+    InvalidDefinitionName,
     PayloadTooLarge,
     SystemLimitReached,
     DefinitionLimitReached,

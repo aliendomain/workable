@@ -652,7 +652,7 @@ The response contains an `occurrences` array of timezone-aware instants. Invalid
 
 The nested `work` object uses the queue request's input, identity, options, and description fields. `completion: "WaitForCompletion"` is rejected because an HTTP request cannot wait for a future scheduled worker; schedule creation always returns after the schedule is accepted.
 
-An accepted schedule returns `200 OK`. Invalid timing, queue input, or options—including an interval shorter than one minute or an oversized serialized schedule—return `400`; missing or non-discoverable definitions return `404`; failed queue authorization returns `403`; exhausted active or retained schedule capacity returns `409`; and a system without enabled scheduling returns `503`.
+An accepted schedule returns `200 OK`. Invalid timing, queue input, or options—including an interval shorter than one minute, an oversized serialized schedule, or a definition name beyond the configured store's durable bound—return `400`; missing or non-discoverable definitions return `404`; failed queue authorization returns `403`; exhausted active or retained schedule capacity returns `409`; and a system without enabled scheduling returns `503`.
 
 Manage existing schedules through:
 

@@ -914,6 +914,18 @@ WHERE PersistenceScope = N'{persistenceScope}'
         };
         var longActorStatus = await store.Create(CreateStoreRequest(longActorRecord, payloadSizeBytes: 10_000));
         var persistedLongActor = await store.Get(new("long-actor", longActorRecord.Schedule.Id));
+        var maximumDefinitionRecord = Record("maximum-definition");
+        maximumDefinitionRecord = maximumDefinitionRecord with
+        {
+            Schedule = maximumDefinitionRecord.Schedule with { DefinitionName = new string('d', 450) },
+        };
+        var maximumDefinitionStatus = await store.Create(CreateStoreRequest(maximumDefinitionRecord));
+        var longDefinitionRecord = Record("long-definition");
+        longDefinitionRecord = longDefinitionRecord with
+        {
+            Schedule = longDefinitionRecord.Schedule with { DefinitionName = new string('d', 451) },
+        };
+        var longDefinitionStatus = await store.Create(CreateStoreRequest(longDefinitionRecord));
 
         Assert.Equal(WorkScheduleStoreCreationStatus.PayloadTooLarge, payloadTooLarge);
         Assert.Equal(WorkScheduleStoreCreationStatus.RetainedSystemLimitReached, retainedSystemCount);
@@ -922,6 +934,56 @@ WHERE PersistenceScope = N'{persistenceScope}'
         Assert.Equal(WorkScheduleStoreCreationStatus.RetainedActorBytesLimitReached, retainedActorBytes);
         Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, longActorStatus);
         Assert.Equal(longActor.Id, persistedLongActor!.Schedule.CreatedBy.Id);
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, maximumDefinitionStatus);
+        Assert.Equal(WorkScheduleStoreCreationStatus.InvalidDefinitionName, longDefinitionStatus);
+        Assert.Null(await store.Get(new("long-definition", longDefinitionRecord.Schedule.Id)));
+    }
+
+    [Fact]
+    public async Task TrackSchedulerAvailabilityPerHostAndSystem()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = $"schedule-host-presence-{Guid.NewGuid():N}",
+        });
+        await store.Initialize(new("operations"));
+        var hostRunId = Guid.NewGuid();
+        var startedAt = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(1);
+        var observedAt = DateTimeOffset.UtcNow;
+        var availableAt = observedAt + TimeSpan.FromSeconds(2);
+        var unavailableAt = observedAt + TimeSpan.FromSeconds(4);
+        Assert.Empty(await store.ClaimDueAndObserveHost(
+            new("operations", observedAt, TimeSpan.FromMinutes(1)),
+            new(
+                "operations",
+                hostRunId,
+                startedAt,
+                observedAt,
+                observedAt + TimeSpan.FromSeconds(3),
+                observedAt - TimeSpan.FromDays(7))));
+
+        var available = await store.FindAvailableTimes(new(
+            "operations",
+            new HashSet<DateTimeOffset> { availableAt, unavailableAt }));
+        var otherSystem = await store.FindAvailableTimes(new(
+            "other",
+            new HashSet<DateTimeOffset> { availableAt }));
+        await store.EndHost(new("operations", hostRunId, observedAt + TimeSpan.FromSeconds(1)));
+        var afterEnd = await store.FindAvailableTimes(new(
+            "operations",
+            new HashSet<DateTimeOffset> { availableAt }));
+
+        Assert.Contains(availableAt, available);
+        Assert.DoesNotContain(unavailableAt, available);
+        Assert.Empty(otherSystem);
+        Assert.Empty(afterEnd);
     }
 
     [Fact]
@@ -7858,6 +7920,28 @@ WHERE entries.SubjectValue = N'{Escape(subjectValue)}'
 
             return await inner.ClaimDue(request, cancellationToken);
         }
+
+        public async Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+            WorkScheduleClaimRequest request,
+            WorkScheduleHostObservation observation,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref this.claimCalls);
+            if (Interlocked.CompareExchange(ref this.participated, 1, 0) == 0)
+            {
+                await coordinator.Arrive(cancellationToken);
+            }
+
+            return await inner.ClaimDueAndObserveHost(request, observation, cancellationToken);
+        }
+
+        public Task EndHost(WorkScheduleHostEnd hostEnd, CancellationToken cancellationToken = default)
+            => inner.EndHost(hostEnd, cancellationToken);
+
+        public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+            WorkScheduleHostAvailabilityRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.FindAvailableTimes(request, cancellationToken);
 
         public Task CompleteClaim(WorkScheduleClaimCompletion completion, CancellationToken cancellationToken = default)
             => inner.CompleteClaim(completion, cancellationToken);

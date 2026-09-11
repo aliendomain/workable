@@ -8,6 +8,9 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
 {
     private static readonly TimeSpan ClaimLeaseDuration = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan FallbackPollingInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan HostPresenceLeaseDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan HostPresenceObservationInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan HostPresenceRetention = TimeSpan.FromDays(7);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromMinutes(1);
     private const int MaximumCleanupBatchesPerInterval = 10;
     internal const int MaximumPersistedActorFieldLength = 512;
@@ -23,7 +26,9 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
     private CancellationTokenSource? lifetime;
     private Task? backgroundTask;
     private DateTimeOffset startedAt;
+    private Guid hostRunId;
     private DateTimeOffset nextCleanupAt;
+    private DateTimeOffset nextHostObservationAt;
     private bool signalPending;
     private bool initialized;
 
@@ -81,7 +86,9 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
             this.lifetime?.Dispose();
             this.lifetime = new CancellationTokenSource();
             this.startedAt = DateTimeOffset.UtcNow;
+            this.hostRunId = Guid.NewGuid();
             this.nextCleanupAt = this.startedAt;
+            this.nextHostObservationAt = this.startedAt;
             using (ExecutionContext.SuppressFlow())
             {
                 this.backgroundTask = Task.Run(() => this.Run(this.lifetime.Token), CancellationToken.None);
@@ -104,6 +111,28 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
         if (task is not null)
         {
             await task.WaitAsync(cancellationToken);
+        }
+
+        if (this.store is not null && this.hostRunId != Guid.Empty)
+        {
+            try
+            {
+                await this.store.EndHost(
+                    new WorkScheduleHostEnd(this.systemName, this.hostRunId, DateTimeOffset.UtcNow),
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (
+                exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                this.logger.LogWarning(
+                    exception,
+                    "Scheduler host presence could not be ended for system {WorkSystemName}.",
+                    FormatSystemName(this.systemName));
+            }
         }
     }
 
@@ -514,15 +543,37 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
         {
             try
             {
-                var claims = await this.store!.ClaimDue(
-                    new WorkScheduleClaimRequest(
-                        this.systemName,
-                        DateTimeOffset.UtcNow,
-                        ClaimLeaseDuration,
-                        this.configuration.MaximumDispatchesPerBatch,
-                        this.configuration.MaximumClaimedPayloadBytesPerBatch),
-                    cancellationToken);
-                await Task.WhenAll(claims.Select(claim => this.Dispatch(claim, cancellationToken)));
+                var observedAt = DateTimeOffset.UtcNow;
+                var claimRequest = new WorkScheduleClaimRequest(
+                    this.systemName,
+                    observedAt,
+                    ClaimLeaseDuration,
+                    this.configuration.MaximumDispatchesPerBatch,
+                    this.configuration.MaximumClaimedPayloadBytesPerBatch);
+                IReadOnlyList<WorkScheduleClaim> claims;
+                if (observedAt >= this.nextHostObservationAt)
+                {
+                    claims = await this.store!.ClaimDueAndObserveHost(
+                        claimRequest,
+                        new WorkScheduleHostObservation(
+                            this.systemName,
+                            this.hostRunId,
+                            this.startedAt,
+                            observedAt,
+                            observedAt + HostPresenceLeaseDuration,
+                            observedAt - HostPresenceRetention),
+                        cancellationToken);
+                    this.nextHostObservationAt = observedAt + HostPresenceObservationInterval;
+                }
+                else
+                {
+                    claims = await this.store!.ClaimDue(claimRequest, cancellationToken);
+                }
+                var availableTimes = await this.FindAvailableTimes(claims, cancellationToken);
+                await Task.WhenAll(claims.Select(claim => this.Dispatch(
+                    claim,
+                    availableTimes.Contains(claim.ScheduledAt),
+                    cancellationToken)));
 
                 await this.CleanupIfDue(cancellationToken);
                 if (claims.Count == 0)
@@ -538,7 +589,8 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
             {
                 return;
             }
-            catch (Exception exception)
+            catch (Exception exception) when (
+                exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 this.logger.LogError(exception, "Runtime work scheduling failed for system {WorkSystemName}.", FormatSystemName(this.systemName));
                 try
@@ -553,7 +605,10 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
         }
     }
 
-    private async Task Dispatch(WorkScheduleClaim claim, CancellationToken cancellationToken)
+    private async Task Dispatch(
+        WorkScheduleClaim claim,
+        bool systemWasAvailableWhenDue,
+        CancellationToken cancellationToken)
     {
         var record = claim.Record;
         var dispatchStartedAt = DateTimeOffset.UtcNow;
@@ -572,7 +627,8 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
         var attemptedAt = DateTimeOffset.UtcNow;
         var skipMissed = !record.Schedule.Timing.RunMissedExecution &&
             record.Schedule.CreatedAt < this.startedAt &&
-            claim.ScheduledAt < this.startedAt;
+            claim.ScheduledAt < this.startedAt &&
+            !systemWasAvailableWhenDue;
         WorkScheduleOccurrence occurrence;
         if (skipMissed)
         {
@@ -637,6 +693,23 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
                 this.configuration.MaximumRetainedOccurrences,
                 this.configuration.MaximumRetainedOccurrencePayloadBytes),
             cancellationToken);
+    }
+
+    private async Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+        IReadOnlyList<WorkScheduleClaim> claims,
+        CancellationToken cancellationToken)
+    {
+        var scheduledTimes = claims
+            .Where(claim => !claim.Record.Schedule.Timing.RunMissedExecution &&
+                claim.Record.Schedule.CreatedAt < this.startedAt &&
+                claim.ScheduledAt < this.startedAt)
+            .Select(static claim => claim.ScheduledAt)
+            .ToHashSet();
+        return scheduledTimes.Count == 0
+            ? scheduledTimes
+            : await this.store!.FindAvailableTimes(
+                new WorkScheduleHostAvailabilityRequest(this.systemName, scheduledTimes),
+                cancellationToken);
     }
 
     internal static WorkerOptions NormalizeWorkerOptionsForScheduledDispatch(
@@ -837,6 +910,13 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
         string definitionName)
         => status switch
         {
+            WorkScheduleStoreCreationStatus.InvalidDefinitionName => new(
+                WorkScheduleCreationStatus.Invalid,
+                null,
+                [WorkMessage.Error(
+                    "workable.schedule.definition_name_too_long",
+                    "The work definition name exceeds the schedule store's supported length.",
+                    "definition")]),
             WorkScheduleStoreCreationStatus.PayloadTooLarge => new(
                 WorkScheduleCreationStatus.Invalid,
                 null,

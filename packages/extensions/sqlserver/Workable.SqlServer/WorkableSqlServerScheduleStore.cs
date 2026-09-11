@@ -10,6 +10,7 @@ namespace Workable.SqlServer;
 
 internal sealed class WorkableSqlServerScheduleStore : IWorkScheduleStore
 {
+    private const int MaximumDefinitionNameLength = 450;
     private const string RequiredDmlSetOptions = """
 SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
@@ -33,6 +34,7 @@ SET NUMERIC_ROUNDABORT OFF;
     private readonly WorkableSqlServerPersistenceOptions options;
     private readonly WorkableSqlServerSchemaInitializer schemaInitializer;
     private readonly string schedulesTable;
+    private readonly string hostsTable;
     private readonly string occurrenceUsageTable;
     private readonly string occurrencesTable;
 
@@ -47,6 +49,7 @@ SET NUMERIC_ROUNDABORT OFF;
             options.AutoDeploySchema);
         var schema = WorkableSqlServerSchema.QuoteIdentifier(options.SchemaName);
         this.schedulesTable = $"{schema}.[WorkSchedules]";
+        this.hostsTable = $"{schema}.[WorkScheduleHosts]";
         this.occurrenceUsageTable = $"{schema}.[WorkScheduleOccurrenceUsage]";
         this.occurrencesTable = $"{schema}.[WorkScheduleOccurrences]";
     }
@@ -66,6 +69,12 @@ SET NUMERIC_ROUNDABORT OFF;
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (string.IsNullOrWhiteSpace(request.Record.Schedule.DefinitionName) ||
+            request.Record.Schedule.DefinitionName.Length > MaximumDefinitionNameLength)
+        {
+            return WorkScheduleStoreCreationStatus.InvalidDefinitionName;
+        }
+
         await using var connection = await this.Open(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = RequiredDmlSetOptions + $"""
@@ -198,6 +207,65 @@ SELECT @CreationStatus;
         };
     }
 
+    public async Task EndHost(
+        WorkScheduleHostEnd hostEnd,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(hostEnd);
+        await using var connection = await this.Open(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = RequiredDmlSetOptions + $"""
+UPDATE {this.hostsTable}
+SET ObservedAt = CASE WHEN ObservedAt < @EndedAt THEN @EndedAt ELSE ObservedAt END,
+    AvailableThrough = CASE WHEN AvailableThrough > @EndedAt THEN @EndedAt ELSE AvailableThrough END
+WHERE HostRunId = @HostRunId
+  AND PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName;
+""";
+        AddScope(command, hostEnd.WorkSystemName);
+        Add(command, "@HostRunId", hostEnd.HostRunId);
+        Add(command, "@EndedAt", hostEnd.EndedAt);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+        WorkScheduleHostAvailabilityRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.ScheduledTimes.Count == 0)
+        {
+            return new HashSet<DateTimeOffset>();
+        }
+
+        await using var connection = await this.Open(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = RequiredDmlSetOptions + $"""
+SELECT DISTINCT requested.ScheduledAt
+FROM OPENJSON(@ScheduledTimesJson)
+WITH (ScheduledAt datetimeoffset '$') requested
+WHERE EXISTS
+(
+    SELECT 1
+    FROM {this.hostsTable} hosts
+    WHERE hosts.PersistenceScope = @PersistenceScope
+      AND hosts.WorkSystemName = @WorkSystemName
+      AND hosts.StartedAt <= requested.ScheduledAt
+      AND hosts.AvailableThrough >= requested.ScheduledAt
+);
+""";
+        AddScope(command, request.WorkSystemName);
+        Add(command, "@ScheduledTimesJson", Serialize(request.ScheduledTimes));
+        var available = new HashSet<DateTimeOffset>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            available.Add(reader.GetFieldValue<DateTimeOffset>(0));
+        }
+
+        return available;
+    }
+
     public async Task<WorkSchedulePersistenceRecord?> Get(
         WorkScheduleStoreReadRequest request,
         CancellationToken cancellationToken = default)
@@ -288,13 +356,52 @@ WHERE PersistenceScope = @PersistenceScope
     public async Task<IReadOnlyList<WorkScheduleClaim>> ClaimDue(
         WorkScheduleClaimRequest request,
         CancellationToken cancellationToken = default)
+        => await this.ClaimDue(request, observation: null, cancellationToken);
+
+    public async Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+        WorkScheduleClaimRequest request,
+        WorkScheduleHostObservation observation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+        return await this.ClaimDue(request, observation, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<WorkScheduleClaim>> ClaimDue(
+        WorkScheduleClaimRequest request,
+        WorkScheduleHostObservation? observation,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var leaseId = Guid.NewGuid();
         var leaseExpiresAt = request.DueAt + request.LeaseDuration;
         await using var connection = await this.Open(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = RequiredDmlSetOptions + $"""
+        var observationCommand = observation is null
+            ? string.Empty
+            : $"""
+UPDATE {this.hostsTable}
+SET ObservedAt = @ObservedAt,
+    AvailableThrough = @AvailableThrough
+WHERE HostRunId = @HostRunId
+  AND PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName;
+
+IF @@ROWCOUNT = 0
+BEGIN
+    DELETE TOP (100) FROM {this.hostsTable}
+    WHERE PersistenceScope = @PersistenceScope
+      AND WorkSystemName = @WorkSystemName
+      AND AvailableThrough < @DeleteEndedBefore;
+
+    INSERT INTO {this.hostsTable}
+        (HostRunId, PersistenceScope, WorkSystemName, StartedAt, ObservedAt, AvailableThrough)
+    VALUES
+        (@HostRunId, @PersistenceScope, @WorkSystemName, @StartedAt, @ObservedAt, @AvailableThrough);
+END;
+
+""";
+        command.CommandText = RequiredDmlSetOptions + observationCommand + $"""
 ;WITH CandidateSchedules AS
 (
     SELECT TOP (@MaximumCount)
@@ -331,6 +438,14 @@ OUTPUT {OutputScheduleColumnList};
         Add(command, "@DueAt", request.DueAt);
         Add(command, "@LeaseId", leaseId);
         Add(command, "@LeaseExpiresAt", leaseExpiresAt);
+        if (observation is not null)
+        {
+            Add(command, "@HostRunId", observation.HostRunId);
+            Add(command, "@StartedAt", observation.StartedAt);
+            Add(command, "@ObservedAt", observation.ObservedAt);
+            Add(command, "@AvailableThrough", observation.AvailableThrough);
+            Add(command, "@DeleteEndedBefore", observation.DeleteEndedBefore);
+        }
         var claims = new List<WorkScheduleClaim>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -740,7 +855,8 @@ SELECT @DeletedScheduleCount;
         Add(command, "@AttemptedAt", occurrence.AttemptedAt);
         Add(command, "@OccurrenceStatus", occurrence.Status.ToString());
         Add(command, "@QueueStatus", occurrence.QueueStatus?.ToString());
-        Add(command, "@WorkerId", occurrence.WorkerId?.Value);
+        var workerId = occurrence.WorkerId is { } value ? value.Value : (Guid?)null;
+        Add(command, "@WorkerId", workerId);
         Add(command, "@MessagesJson", serializedMessages ?? Serialize(occurrence.Messages));
         Add(command, "@ExpiresAt", occurrence.ExpiresAt);
     }

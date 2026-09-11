@@ -671,6 +671,47 @@ public sealed class WorkSchedulingShould
     }
 
     [Fact]
+    public async Task DoNotTreatAHealthyClusterAsDownWhenANewHostClaimsOverdueWork()
+    {
+        var store = new InMemoryScheduleStore();
+        var executions = 0;
+        static void Configure(IWorkSystemBuilder builder, Action execute)
+            => builder
+                .RequireAuthorization(false)
+                .EnableScheduling()
+                .AddWork(
+                    WorkDefinition.Create("scheduled.rolling-host"),
+                    (_, _, _) =>
+                    {
+                        execute();
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    });
+
+        await using var existingProvider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(new NonClaimingScheduleStore(store))
+            .AddWorkableSystem(builder => Configure(builder, () => Interlocked.Increment(ref executions)))
+            .BuildServiceProvider();
+        await using var newProvider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddWorkableSystem(builder => Configure(builder, () => Interlocked.Increment(ref executions)))
+            .BuildServiceProvider();
+        var existingSystem = existingProvider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var newSystem = newProvider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await existingSystem.Start();
+        var dueAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(250);
+        var created = await existingSystem.Schedules.Create(new(
+            "scheduled.rolling-host",
+            WorkScheduleTiming.Once(dueAt, runMissedExecution: false)));
+        await Task.Delay(TimeSpan.FromMilliseconds(350));
+
+        await newSystem.Start();
+
+        var occurrence = await WaitForOccurrence(store, created.Schedule!.Id);
+        Assert.Equal(WorkScheduleOccurrenceStatus.Accepted, occurrence.Status);
+        Assert.Equal(1, Volatile.Read(ref executions));
+    }
+
+    [Fact]
     public async Task TreatWorkThatBecomesDueDuringStartupAsMissed()
     {
         var scheduleStore = new InMemoryScheduleStore();
@@ -1375,6 +1416,34 @@ public sealed class WorkSchedulingShould
     }
 
     [Fact]
+    public async Task ReportDefinitionNamesRejectedByTheScheduleStoreAsInvalid()
+    {
+        var store = new InMemoryScheduleStore
+        {
+            CreationStatusOverride = WorkScheduleStoreCreationStatus.InvalidDefinitionName,
+        };
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .EnableScheduling()
+                .AddWork(
+                    WorkDefinition.Create("scheduled.unsupported-name"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var outcome = await system.Schedules.Create(new(
+            "scheduled.unsupported-name",
+            WorkScheduleTiming.Once(DateTimeOffset.UtcNow + TimeSpan.FromHours(1))));
+
+        Assert.Equal(WorkScheduleCreationStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message =>
+            message.Code == "workable.schedule.definition_name_too_long" && message.Target == "definition");
+    }
+
+    [Fact]
     public async Task EnforceMinimumIntervalsAndActiveScheduleLimits()
     {
         var store = new InMemoryScheduleStore();
@@ -1938,16 +2007,94 @@ public sealed class WorkSchedulingShould
         private readonly Dictionary<WorkScheduleId, Lease> leases = [];
         private readonly Dictionary<WorkScheduleId, List<WorkScheduleOccurrence>> occurrences = [];
         private readonly Dictionary<WorkScheduleId, long> cancellationPayloadReserves = [];
+        private readonly Dictionary<Guid, WorkScheduleHostObservation> hostObservations = [];
 
         public bool AllowDispatchStart { get; set; } = true;
 
+        public WorkScheduleStoreCreationStatus? CreationStatusOverride { get; set; }
+
         public Task Initialize(WorkScheduleStoreInitializationContext context, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
+
+        public Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+            WorkScheduleClaimRequest request,
+            WorkScheduleHostObservation observation,
+            CancellationToken cancellationToken = default)
+        {
+            this.ObserveHost(observation);
+            return this.ClaimDue(request, cancellationToken);
+        }
+
+        public void ObserveHost(WorkScheduleHostObservation observation)
+        {
+            lock (this.sync)
+            {
+                foreach (var hostRunId in this.hostObservations
+                    .Where(pair => string.Equals(
+                        pair.Value.WorkSystemName,
+                        observation.WorkSystemName,
+                        StringComparison.OrdinalIgnoreCase) &&
+                        pair.Value.AvailableThrough < observation.DeleteEndedBefore)
+                    .Select(static pair => pair.Key)
+                    .Take(100)
+                    .ToArray())
+                {
+                    this.hostObservations.Remove(hostRunId);
+                }
+
+                this.hostObservations[observation.HostRunId] = observation;
+            }
+        }
+
+        public Task EndHost(
+            WorkScheduleHostEnd hostEnd,
+            CancellationToken cancellationToken = default)
+        {
+            lock (this.sync)
+            {
+                if (this.hostObservations.TryGetValue(hostEnd.HostRunId, out var observation) &&
+                    string.Equals(observation.WorkSystemName, hostEnd.WorkSystemName, StringComparison.OrdinalIgnoreCase))
+                {
+                    this.hostObservations[hostEnd.HostRunId] = observation with
+                    {
+                        ObservedAt = observation.ObservedAt < hostEnd.EndedAt
+                            ? hostEnd.EndedAt
+                            : observation.ObservedAt,
+                        AvailableThrough = observation.AvailableThrough > hostEnd.EndedAt
+                            ? hostEnd.EndedAt
+                            : observation.AvailableThrough,
+                    };
+                }
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+            WorkScheduleHostAvailabilityRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            lock (this.sync)
+            {
+                IReadOnlySet<DateTimeOffset> available = request.ScheduledTimes
+                    .Where(scheduledAt => this.hostObservations.Values.Any(observation =>
+                        string.Equals(observation.WorkSystemName, request.WorkSystemName, StringComparison.OrdinalIgnoreCase) &&
+                        observation.StartedAt <= scheduledAt &&
+                        observation.AvailableThrough >= scheduledAt))
+                    .ToHashSet();
+                return Task.FromResult(available);
+            }
+        }
 
         public Task<WorkScheduleStoreCreationStatus> Create(
             WorkScheduleStoreCreateRequest request,
             CancellationToken cancellationToken = default)
         {
+            if (this.CreationStatusOverride is { } creationStatus)
+            {
+                return Task.FromResult(creationStatus);
+            }
+
             lock (this.sync)
             {
                 var schedule = request.Record.Schedule;
@@ -2308,6 +2455,60 @@ public sealed class WorkSchedulingShould
         private sealed record Lease(Guid Id, DateTimeOffset ExpiresAt, bool DispatchStarted);
     }
 
+    private sealed class NonClaimingScheduleStore(InMemoryScheduleStore inner) : IWorkScheduleStore
+    {
+        public Task Initialize(WorkScheduleStoreInitializationContext context, CancellationToken cancellationToken = default)
+            => inner.Initialize(context, cancellationToken);
+
+        public Task<WorkScheduleStoreCreationStatus> Create(WorkScheduleStoreCreateRequest request, CancellationToken cancellationToken = default)
+            => inner.Create(request, cancellationToken);
+
+        public Task<WorkSchedulePersistenceRecord?> Get(WorkScheduleStoreReadRequest request, CancellationToken cancellationToken = default)
+            => inner.Get(request, cancellationToken);
+
+        public Task<IReadOnlyList<WorkScheduleSummary>> List(WorkScheduleStoreListRequest request, CancellationToken cancellationToken = default)
+            => inner.List(request, cancellationToken);
+
+        public Task<WorkSchedulePersistenceRecord?> Cancel(WorkScheduleStoreCancelRequest request, CancellationToken cancellationToken = default)
+            => inner.Cancel(request, cancellationToken);
+
+        public Task<IReadOnlyList<WorkScheduleClaim>> ClaimDue(WorkScheduleClaimRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<WorkScheduleClaim>>([]);
+
+        public Task<bool> BeginDispatch(WorkScheduleDispatchStart dispatch, CancellationToken cancellationToken = default)
+            => inner.BeginDispatch(dispatch, cancellationToken);
+
+        public Task CompleteClaim(WorkScheduleClaimCompletion completion, CancellationToken cancellationToken = default)
+            => inner.CompleteClaim(completion, cancellationToken);
+
+        public Task ReleaseClaim(WorkScheduleClaimRelease release, CancellationToken cancellationToken = default)
+            => inner.ReleaseClaim(release, cancellationToken);
+
+        public Task<IReadOnlyList<WorkScheduleOccurrence>> ListOccurrences(WorkScheduleOccurrenceReadRequest request, CancellationToken cancellationToken = default)
+            => inner.ListOccurrences(request, cancellationToken);
+
+        public Task<int> DeleteExpiredOccurrences(WorkScheduleOccurrenceExpirationRequest request, CancellationToken cancellationToken = default)
+            => inner.DeleteExpiredOccurrences(request, cancellationToken);
+
+        public Task<int> DeleteExpiredSchedules(WorkScheduleExpirationRequest request, CancellationToken cancellationToken = default)
+            => inner.DeleteExpiredSchedules(request, cancellationToken);
+
+        public Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+            WorkScheduleClaimRequest request,
+            WorkScheduleHostObservation observation,
+            CancellationToken cancellationToken = default)
+        {
+            inner.ObserveHost(observation);
+            return Task.FromResult<IReadOnlyList<WorkScheduleClaim>>([]);
+        }
+
+        public Task EndHost(WorkScheduleHostEnd hostEnd, CancellationToken cancellationToken = default)
+            => inner.EndHost(hostEnd, cancellationToken);
+
+        public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(WorkScheduleHostAvailabilityRequest request, CancellationToken cancellationToken = default)
+            => inner.FindAvailableTimes(request, cancellationToken);
+    }
+
     private sealed class BlockingClaimScheduleStore(InMemoryScheduleStore inner) : IWorkScheduleStore
     {
         private int blocked;
@@ -2352,6 +2553,23 @@ public sealed class WorkSchedulingShould
 
             return claims;
         }
+
+        public Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+            WorkScheduleClaimRequest request,
+            WorkScheduleHostObservation observation,
+            CancellationToken cancellationToken = default)
+        {
+            inner.ObserveHost(observation);
+            return this.ClaimDue(request, cancellationToken);
+        }
+
+        public Task EndHost(WorkScheduleHostEnd hostEnd, CancellationToken cancellationToken = default)
+            => inner.EndHost(hostEnd, cancellationToken);
+
+        public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+            WorkScheduleHostAvailabilityRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.FindAvailableTimes(request, cancellationToken);
 
         public Task CompleteClaim(WorkScheduleClaimCompletion completion, CancellationToken cancellationToken = default)
             => inner.CompleteClaim(completion, cancellationToken);
@@ -2413,6 +2631,20 @@ public sealed class WorkSchedulingShould
             WorkScheduleClaimRequest request,
             CancellationToken cancellationToken = default)
             => inner.ClaimDue(request, cancellationToken);
+
+        public Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+            WorkScheduleClaimRequest request,
+            WorkScheduleHostObservation observation,
+            CancellationToken cancellationToken = default)
+            => inner.ClaimDueAndObserveHost(request, observation, cancellationToken);
+
+        public Task EndHost(WorkScheduleHostEnd hostEnd, CancellationToken cancellationToken = default)
+            => inner.EndHost(hostEnd, cancellationToken);
+
+        public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+            WorkScheduleHostAvailabilityRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.FindAvailableTimes(request, cancellationToken);
 
         public async Task<bool> BeginDispatch(
             WorkScheduleDispatchStart dispatch,
@@ -2493,6 +2725,20 @@ public sealed class WorkSchedulingShould
             WorkScheduleClaimRequest request,
             CancellationToken cancellationToken = default)
             => inner.ClaimDue(request, cancellationToken);
+
+        public Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+            WorkScheduleClaimRequest request,
+            WorkScheduleHostObservation observation,
+            CancellationToken cancellationToken = default)
+            => inner.ClaimDueAndObserveHost(request, observation, cancellationToken);
+
+        public Task EndHost(WorkScheduleHostEnd hostEnd, CancellationToken cancellationToken = default)
+            => inner.EndHost(hostEnd, cancellationToken);
+
+        public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+            WorkScheduleHostAvailabilityRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.FindAvailableTimes(request, cancellationToken);
 
         public async Task<bool> BeginDispatch(
             WorkScheduleDispatchStart dispatch,
@@ -2643,6 +2889,23 @@ public sealed class WorkSchedulingShould
             ThrowIfConsumed(ref this.claimFailures, "claim");
             return this.Inner.ClaimDue(request, cancellationToken);
         }
+
+        public Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+            WorkScheduleClaimRequest request,
+            WorkScheduleHostObservation observation,
+            CancellationToken cancellationToken = default)
+        {
+            this.Inner.ObserveHost(observation);
+            return this.ClaimDue(request, cancellationToken);
+        }
+
+        public Task EndHost(WorkScheduleHostEnd hostEnd, CancellationToken cancellationToken = default)
+            => this.Inner.EndHost(hostEnd, cancellationToken);
+
+        public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+            WorkScheduleHostAvailabilityRequest request,
+            CancellationToken cancellationToken = default)
+            => this.Inner.FindAvailableTimes(request, cancellationToken);
 
         public Task CompleteClaim(WorkScheduleClaimCompletion completion, CancellationToken cancellationToken = default)
         {

@@ -312,7 +312,7 @@ internal sealed class WorkAuthorizationEvaluator(
         => (options.ProfilingEnabled &&
             options.ProfilingCaptureMode == WorkProfileCaptureMode.Full) ||
             (options.Configuration?.ExecutionDiagnostics.IsEnabled == true &&
-            options.Configuration.ExecutionDiagnostics.ProfileCaptureMode == WorkProfileCaptureMode.Full);
+            options.Configuration?.ExecutionDiagnostics.ProfileCaptureMode == WorkProfileCaptureMode.Full);
 
     internal static bool UsesFullProfileCapture(RegisteredWork registeredWork, WorkerOptions? options)
     {

@@ -41,6 +41,7 @@ SET NUMERIC_ROUNDABORT OFF;
         var instrumentationTable = $"{schema}.[WorkIterationInstrumentation]";
         var captureRulesTable = $"{schema}.[WorkDiagnosticCaptureRules]";
         var schedulesTable = $"{schema}.[WorkSchedules]";
+        var scheduleHostsTable = $"{schema}.[WorkScheduleHosts]";
         var scheduleOccurrenceUsageTable = $"{schema}.[WorkScheduleOccurrenceUsage]";
         var scheduleOccurrencesTable = $"{schema}.[WorkScheduleOccurrences]";
         var versionTable = $"{schema}.[SchemaVersion]";
@@ -52,6 +53,7 @@ SET NUMERIC_ROUNDABORT OFF;
         var dynamicDiagnosticsTable = EscapeLiteral(diagnosticsTable);
         var dynamicCaptureRulesTable = EscapeLiteral(captureRulesTable);
         var dynamicSchedulesTable = EscapeLiteral(schedulesTable);
+        var dynamicScheduleHostsTable = EscapeLiteral(scheduleHostsTable);
         var dynamicScheduleOccurrenceUsageTable = EscapeLiteral(scheduleOccurrenceUsageTable);
         var dynamicScheduleOccurrencesTable = EscapeLiteral(scheduleOccurrencesTable);
 
@@ -242,9 +244,11 @@ END
             ..CreateSchedulingBatches(
                 escapedSchemaName,
                 schedulesTable,
+                scheduleHostsTable,
                 scheduleOccurrenceUsageTable,
                 scheduleOccurrencesTable,
                 dynamicSchedulesTable,
+                dynamicScheduleHostsTable,
                 dynamicScheduleOccurrenceUsageTable,
                 dynamicScheduleOccurrencesTable),
             $"""
@@ -509,13 +513,41 @@ END
     private static IReadOnlyList<string> CreateSchedulingBatches(
         string escapedSchemaName,
         string schedulesTable,
+        string hostsTable,
         string occurrenceUsageTable,
         string occurrencesTable,
         string dynamicSchedulesTable,
+        string dynamicHostsTable,
         string dynamicOccurrenceUsageTable,
         string dynamicOccurrencesTable)
         =>
         [
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkScheduleHosts', N'U') IS NULL
+BEGIN
+    CREATE TABLE {hostsTable}
+    (
+        HostRunId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkScheduleHosts PRIMARY KEY,
+        PersistenceScope nvarchar(450) NOT NULL,
+        WorkSystemName nvarchar(256) NOT NULL,
+        StartedAt datetimeoffset NOT NULL,
+        ObservedAt datetimeoffset NOT NULL,
+        AvailableThrough datetimeoffset NOT NULL
+    );
+END
+""",
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkScheduleHosts'
+      AND indexes.name = N'IX_WorkableWorkScheduleHosts_Availability')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkScheduleHosts_Availability ON {dynamicHostsTable} (PersistenceScope, WorkSystemName, StartedAt, AvailableThrough);');
+END
+""",
             $"""
 IF OBJECT_ID(N'{escapedSchemaName}.WorkSchedules', N'U') IS NULL
 BEGIN
@@ -1053,9 +1085,11 @@ WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Comp
                 CreateSchedulingBatches(
                     escapedSchemaName,
                     $"{schema}.[WorkSchedules]",
+                    $"{schema}.[WorkScheduleHosts]",
                     $"{schema}.[WorkScheduleOccurrenceUsage]",
                     $"{schema}.[WorkScheduleOccurrences]",
                     EscapeLiteral($"{schema}.[WorkSchedules]"),
+                    EscapeLiteral($"{schema}.[WorkScheduleHosts]"),
                     EscapeLiteral($"{schema}.[WorkScheduleOccurrenceUsage]"),
                     EscapeLiteral($"{schema}.[WorkScheduleOccurrences]"))),
         };
@@ -1133,6 +1167,7 @@ WHERE schemas.name = @SchemaName
       N'WorkIterationInstrumentation',
       N'WorkDiagnosticCaptureRules'
       ,N'WorkSchedules'
+      ,N'WorkScheduleHosts'
       ,N'WorkScheduleOccurrenceUsage'
       ,N'WorkScheduleOccurrences'
   );
@@ -1554,6 +1589,10 @@ WHERE Component = @Name;
                 "DispatchStarted", "ExecutionGrantJson", "CreatedByJson", "CreatedByKey", "PayloadSizeBytes",
                 "CancellationPayloadReserveBytes",
             ],
+            ["WorkScheduleHosts"] =
+            [
+                "HostRunId", "PersistenceScope", "WorkSystemName", "StartedAt", "ObservedAt", "AvailableThrough",
+            ],
             ["WorkScheduleOccurrences"] =
             [
                 "OccurrenceId", "OccurrenceUsageId", "ScheduleId", "ScheduledAt", "AttemptedAt", "Status", "QueueStatus",
@@ -1592,6 +1631,10 @@ WHERE schemas.name = @SchemaName AND tables.name = @Name;
                 "IX_WorkableWorkSchedules_Due",
                 "IX_WorkableWorkSchedules_ActiveDefinition",
                 "IX_WorkableWorkSchedules_RetainedCreator",
+            ],
+            ["WorkScheduleHosts"] =
+            [
+                "IX_WorkableWorkScheduleHosts_Availability",
             ],
             ["WorkScheduleOccurrences"] =
             [

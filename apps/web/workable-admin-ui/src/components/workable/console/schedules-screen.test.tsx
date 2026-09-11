@@ -5,6 +5,7 @@ import {
   formatScheduleDateTime,
   formatScheduleTiming,
   getUpcomingSchedules,
+  loadScheduleIndex,
 } from "@/components/workable/console/schedules-screen";
 import { clearDefinitionCatalogLevelCache } from "@/components/workable/console/catalog-browser-data";
 import { renderDom } from "@/test/dom";
@@ -56,6 +57,38 @@ test("schedule helpers format timing and select active upcoming work in due orde
   assert.equal(formatScheduleDateTime(null), "-");
   assert.equal(formatScheduleDateTime("not-a-date"), "not-a-date");
   assert.notEqual(formatScheduleDateTime("2099-01-01T10:00:00Z"), "-");
+});
+
+test("schedule index retains active schedules hidden behind the recent-history cap", async () => {
+  const hiddenActive = schedule({
+    definitionName: "LongRunningSchedule",
+    id: { value: "hidden-active" },
+    nextRunAt: "2099-01-01T10:00:00Z",
+  });
+  const recent = Array.from({ length: 1000 }, (_, index) => schedule({
+    definitionName: `Completed${index}`,
+    id: { value: `completed-${index}` },
+    status: "Completed",
+  }));
+  const fetchMock = installFetch((call) => {
+    if (call.input.endsWith("/schedules?take=1000")) {
+      return Response.json({ schedules: recent });
+    }
+    if (call.input.endsWith("/schedules?status=Active&take=1000")) {
+      return Response.json({ schedules: [hiddenActive] });
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+
+  try {
+    const loaded = await loadScheduleIndex(connection);
+
+    assert.equal(loaded.length, 1001);
+    assert.equal(loaded.some((item) => item.id.value === hiddenActive.id.value), true);
+    assert.equal(fetchMock.calls.length, 2);
+  } finally {
+    fetchMock.restore();
+  }
 });
 
 test("schedules screen shows upcoming work and history and cancels an active schedule", async () => {
