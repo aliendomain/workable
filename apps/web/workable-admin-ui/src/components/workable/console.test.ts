@@ -226,6 +226,7 @@ test("stored host and system helpers normalize legacy realtime metadata, access,
     capabilities: {
       httpClientProfilingAvailable: true,
       persistentCoordinationAvailable: true,
+      schedulingAvailable: true,
       sqlProfilingAvailable: false,
     },
     state: undefined,
@@ -235,6 +236,7 @@ test("stored host and system helpers normalize legacy realtime metadata, access,
   assert.equal(normalizedSystem.state, null);
   assert.equal(normalizedSystem.capabilities.httpClientProfilingAvailable, true);
   assert.equal(normalizedSystem.capabilities.persistentCoordinationAvailable, true);
+  assert.equal(normalizedSystem.capabilities.schedulingAvailable, true);
   assert.equal(createDefaultSystem("host-3").hostId, "host-3");
   assert.equal(createFullAccessSummary().canOperateAllWork, true);
   assert.equal(normalizeOptional("  Ops "), "Ops");
@@ -252,11 +254,13 @@ test("stored host and system helpers normalize legacy realtime metadata, access,
   assert.equal(getFirstAvailableSystemId(storage.hosts), "system-1");
   assert.equal(getViewReadinessKey("system-1", "workers"), "system-1:workers");
   assert.equal(isServerView("workers"), true);
+  assert.equal(isServerView("schedules"), true);
   assert.equal(isServerView("worker"), false);
   assert.equal(navTitle("worker"), "Worker Console");
   assert.equal(navTitle("workflowRun"), "Workflow Run");
   assert.equal(headerRefreshTitle("definition"), "Refresh definition");
   assert.equal(headerRefreshTitle("workflowRun"), "Refresh workflow run");
+  assert.equal(headerRefreshTitle("schedules"), "Refresh schedules");
   assert.deepEqual(cloneOverviewScope({ category: " Ops ", includeSubcategories: true }), {
     category: "Ops",
     definitionName: undefined,

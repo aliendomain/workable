@@ -195,34 +195,10 @@ internal sealed class WorkerOperations :
         var runtimePlan = effectiveOptions is null
             ? registeredWork.DefaultRuntimePlan
             : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, effectiveOptions);
-        if (runtimePlan.ConfigurationErrors.Count > 0)
+        var runtimeValidation = this.ValidateRuntimePlan(runtimePlan, input);
+        if (runtimeValidation is not null)
         {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(runtimePlan.ConfigurationErrors));
-        }
-
-        var persistenceStoreErrors = WorkConfigurationValidator.ValidatePersistenceStore(
-            runtimePlan.Configuration,
-            this.persistenceStoreAvailable);
-        if (persistenceStoreErrors.Count > 0)
-        {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(persistenceStoreErrors));
-        }
-
-        if (this.executionDiagnostics is null &&
-            runtimePlan.Configuration.ExecutionDiagnostics.IsEnabled == true)
-        {
-            var executionDiagnosticsErrors = WorkConfigurationValidator.ValidateExecutionDiagnosticsRepository(
-                runtimePlan.Configuration,
-                repositoryAvailable: false);
-            return this.RejectQueue(WorkQueueOutcome.Invalid(executionDiagnosticsErrors));
-        }
-
-        var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
-            coordination: runtimePlan.Configuration.Coordination,
-            input: input);
-        if (concurrencyInputErrors.Count > 0)
-        {
-            return this.RejectQueue(WorkQueueOutcome.Invalid(concurrencyInputErrors));
+            return this.RejectQueue(runtimeValidation);
         }
 
         var acceptance = await this.persistence.AcceptQueuedWorker(
@@ -264,6 +240,51 @@ internal sealed class WorkerOperations :
 
         await WaitForStartPolicy(record, runtimePlan.StartPolicy, cancellationToken);
         return handle;
+    }
+
+    internal WorkQueueOutcome? ValidateScheduledWorker(
+        RegisteredWork registeredWork,
+        WorkInput? input,
+        WorkerOptions? options)
+    {
+        var runtimePlan = options is null
+            ? registeredWork.DefaultRuntimePlan
+            : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, options);
+        return this.ValidateRuntimePlan(runtimePlan, input);
+    }
+
+    private WorkQueueOutcome? ValidateRuntimePlan(
+        RegisteredWorkRuntimePlan runtimePlan,
+        WorkInput? input)
+    {
+        if (runtimePlan.ConfigurationErrors.Count > 0)
+        {
+            return WorkQueueOutcome.Invalid(runtimePlan.ConfigurationErrors);
+        }
+
+        var persistenceStoreErrors = WorkConfigurationValidator.ValidatePersistenceStore(
+            runtimePlan.Configuration,
+            this.persistenceStoreAvailable);
+        if (persistenceStoreErrors.Count > 0)
+        {
+            return WorkQueueOutcome.Invalid(persistenceStoreErrors);
+        }
+
+        if (this.executionDiagnostics is null &&
+            runtimePlan.Configuration.ExecutionDiagnostics.IsEnabled == true)
+        {
+            return WorkQueueOutcome.Invalid(
+                WorkConfigurationValidator.ValidateExecutionDiagnosticsRepository(
+                    runtimePlan.Configuration,
+                    repositoryAvailable: false));
+        }
+
+        var concurrencyInputErrors = WorkConfigurationValidator.ValidateConcurrencyInput(
+            coordination: runtimePlan.Configuration.Coordination,
+            input: input);
+        return concurrencyInputErrors.Count > 0
+            ? WorkQueueOutcome.Invalid(concurrencyInputErrors)
+            : null;
     }
 
     private static WorkerOptions ForceFullProfileCapture(WorkerOptions? options)

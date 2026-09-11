@@ -9,6 +9,7 @@ export type View =
   | "definition"
   | "workers"
   | "iterations"
+  | "schedules"
   | "worker"
   | "iteration"
   | "workflowRun";

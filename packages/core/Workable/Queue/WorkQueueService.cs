@@ -105,6 +105,129 @@ internal sealed class WorkQueueService(
         return workers.CreateWorker(registeredWork, preparedInput, options, requestContext, cancellationToken);
     }
 
+    internal Task<IWorkerHandle> EnqueueScheduled(
+        string name,
+        WorkInput? input,
+        WorkScheduleTiming timing,
+        WorkerOptions? storedOptions,
+        WorkRequestContext requestContext,
+        WorkScheduleExecutionGrant executionGrant,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(timing);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (!this.TryPrepareInput(input, out var preparedInput, out var invalidInputHandle))
+        {
+            return Task.FromResult<IWorkerHandle>(invalidInputHandle);
+        }
+
+        if (WorkflowProvenanceRules.ContainsRunIdentifier(preparedInput))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(ReservedWorkflowRunIdentifier()));
+        }
+
+        if (!catalog.TryGetWork(name, out var registeredWork))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(WorkQueueOutcome.NotFound(name)));
+        }
+
+        if (!string.Equals(
+                registeredWork.Definition.ScheduleSecurityVersion,
+                executionGrant.DefinitionSecurityVersion,
+                StringComparison.Ordinal))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(ScheduleSecurityVersionChanged(name)));
+        }
+
+        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Channel))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(
+                ChannelNotAllowed(registeredWork.Definition, requestContext.Channel)));
+        }
+
+        var options = WorkScheduler.NormalizeWorkerOptionsForScheduledDispatch(
+            registeredWork,
+            timing,
+            storedOptions);
+
+        // Creating the schedule already authorized this input and these options. Keep the stored caller context for
+        // audit, but deliberately avoid a caller-scoped authorization wrapper when the durable grant is exercised.
+        if (!executionGrant.AllowsFullProfileCapture &&
+            WorkAuthorizationEvaluator.UsesFullProfileCapture(registeredWork, options))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(WorkQueueOutcome.Unauthorized(name)));
+        }
+
+        return workers.CreateWorker(
+            registeredWork,
+            preparedInput,
+            options,
+            requestContext,
+            cancellationToken);
+    }
+
+    internal Task<IWorkerHandle> EnqueueResolved(
+        RegisteredWork registeredWork,
+        WorkInput? input,
+        WorkerOptions? options,
+        WorkRequestContext requestContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(registeredWork);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (!this.TryPrepareInput(input, out var preparedInput, out var invalidInputHandle))
+        {
+            return Task.FromResult<IWorkerHandle>(invalidInputHandle);
+        }
+
+        if (WorkflowProvenanceRules.ContainsRunIdentifier(preparedInput))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(ReservedWorkflowRunIdentifier()));
+        }
+
+        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Channel))
+        {
+            return Task.FromResult<IWorkerHandle>(this.Reject(
+                ChannelNotAllowed(registeredWork.Definition, requestContext.Channel)));
+        }
+
+        return workers.CreateWorker(
+            registeredWork,
+            preparedInput,
+            options,
+            requestContext,
+            cancellationToken);
+    }
+
+    internal WorkQueueOutcome? ValidateScheduled(
+        RegisteredWork registeredWork,
+        WorkInput? input,
+        WorkerOptions? options,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(registeredWork);
+        var preparedInput = WorkflowProvenanceRules.SnapshotInput(input);
+        if (WorkflowProvenanceRules.ContainsMalformedIdentifier(preparedInput))
+        {
+            return InvalidIdentifier();
+        }
+
+        if (WorkflowProvenanceRules.ContainsRunIdentifier(preparedInput))
+        {
+            return ReservedWorkflowRunIdentifier();
+        }
+
+        if (!registeredWork.Definition.Configuration.Invocation.Allows(requestContext.Channel))
+        {
+            return ChannelNotAllowed(registeredWork.Definition, requestContext.Channel);
+        }
+
+        return workers.ValidateScheduledWorker(registeredWork, preparedInput, options);
+    }
+
     internal Task<IWorkerHandle> EnqueueDelegated(
         string name,
         WorkInput? input,
@@ -223,6 +346,13 @@ internal sealed class WorkQueueService(
                 "workable.workflow.identifier.reserved",
                 "The 'workflow-run' identifier is system-reserved and can be assigned only by Workable workflow dispatch.",
                 "input.identifiers")]);
+
+    private static WorkQueueOutcome ScheduleSecurityVersionChanged(string name)
+        => WorkQueueOutcome.Invalid(
+            [WorkMessage.Error(
+                "workable.schedule.definition_security_version_changed",
+                $"Work '{name}' no longer matches the security contract accepted when this schedule was created.",
+                "definition.scheduleSecurityVersion")]);
 
     private static WorkQueueOutcome InvalidIdentifier()
         => WorkQueueOutcome.Invalid(

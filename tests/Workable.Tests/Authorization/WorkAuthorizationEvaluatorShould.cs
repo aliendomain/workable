@@ -160,7 +160,19 @@ public sealed class WorkAuthorizationEvaluatorShould
                 ProfilingEnabled = true,
                 ProfilingCaptureMode = WorkProfileCaptureMode.Full,
             });
-        var catalog = CreateCatalog(work, inheritedFull, activeFull);
+        var definitionScopedFull = CreatePermissionedWork(
+            "definition-scoped-full.work",
+            "operators",
+            WorkOperationPermissions.Queue,
+            configuration: WorkConfiguration.Default with
+            {
+                ExecutionDiagnostics = WorkExecutionDiagnosticsPersistenceConfiguration.Default with
+                {
+                    IsEnabled = true,
+                    ProfileCaptureMode = WorkProfileCaptureMode.Full,
+                },
+            });
+        var catalog = CreateCatalog(work, inheritedFull, activeFull, definitionScopedFull);
         var groups = canViewDiagnostics
             ? Groups("operators", "diagnostics")
             : Groups("operators");
@@ -232,6 +244,11 @@ public sealed class WorkAuthorizationEvaluatorShould
             input: null,
             options: null,
             requestContext);
+        var definitionScopedFullWithRuntimeOverrides = evaluator.AuthorizeQueue(
+            definitionScopedFull,
+            input: null,
+            new WorkerOptions(WorkConfiguration.Default),
+            requestContext);
         var selectDisabledFullCapture = evaluator.AuthorizeWorkerReconfiguration(
             work,
             CreateWorkerSnapshot(work.Definition, WorkerOptions.Default),
@@ -252,6 +269,7 @@ public sealed class WorkAuthorizationEvaluatorShould
         Assert.Equal(canViewDiagnostics, enableExistingFullCapture.IsAllowed);
         Assert.Equal(canViewDiagnostics, inheritedFullQueue.IsAllowed);
         Assert.Equal(canViewDiagnostics, activeFullQueue.IsAllowed);
+        Assert.Equal(canViewDiagnostics, definitionScopedFullWithRuntimeOverrides.IsAllowed);
         Assert.True(retainExistingFullCapture.IsAllowed);
         Assert.True(boundedQueue.IsAllowed);
         Assert.True(selectDisabledFullCapture.IsAllowed);
@@ -414,7 +432,8 @@ public sealed class WorkAuthorizationEvaluatorShould
         string name,
         string group,
         WorkOperationPermissions permissions,
-        WorkerOptions? defaultOptions = null)
+        WorkerOptions? defaultOptions = null,
+        WorkConfiguration? configuration = null)
     {
         var authorization = new WorkAuthorizationBuilder();
         authorization.AllowOperationsToGroups([group], permissions);
@@ -423,7 +442,8 @@ public sealed class WorkAuthorizationEvaluatorShould
             WorkDefinition.Create(
                 name,
                 defaultOptions: defaultOptions,
-                authorization: registration.DefinitionAuthorization),
+                authorization: registration.DefinitionAuthorization,
+                configuration: configuration),
             _ => new NoopExecutor(),
             [],
             [],

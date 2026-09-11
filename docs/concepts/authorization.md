@@ -120,7 +120,7 @@ builder.AddWork<SyncInvoicesWork>(
 
 `AllowReadToKnownAuthenticatedUsers()` can be combined with `AllowReadToGroups(...)`; either audience may then satisfy the read requirement. It does not allow queueing, worker actions, or reconfiguration.
 
-`AllowOperateToGroups(...)` remains the convenience grant for the full work-operation surface: queueing, worker actions, worker reconfiguration, and definition reconfiguration.
+`AllowOperateToGroups(...)` remains the convenience grant for the full work-operation surface: queueing, worker actions, schedule cancellation, worker reconfiguration, and definition reconfiguration.
 
 When a definition needs finer control, split those concerns explicitly:
 
@@ -289,6 +289,8 @@ builder.AddWorkflow(
 
 Workflow execution enforces the operation grant, not only the coarse Operate audience metadata. Starting a new run requires `Queue`; resume requires `Start`; pause requires `Pause`; and cancel requires `Cancel`. `AllowOperate...` grants the full set, while the finer-grained builder methods can separate those audiences. Queue and worker-action requirement callbacks apply to workflows as well, using the proposed or retained workflow input respectively.
 
+Runtime schedule creation likewise uses the definition's existing `Queue` permission and queue requirements. Queue requirement callbacks evaluate the effective scheduler options, including the forced background start policy and recurring-schedule recurrence suppression. Authorization, validation, and persistence use the same resolved definition instance. A successful creation check is a durable delegation to the scheduler: occurrences do not resolve the creator's current groups or repeat queue authorization, so disabling the creator or changing their memberships does not revoke an existing schedule. The stored actor and origin remain attached to queued workers for audit, without retaining an authorization snapshot. Security-sensitive capability is bounded by the original grant: for example, a later definition change cannot enable full profile capture for a schedule whose creator lacked diagnostics permission. The grant also retains the definition's developer-controlled `ScheduleSecurityVersion`; incrementing it rejects older schedules when a deployment changes the authority or business scope exercised by that work. Canceling a schedule uses the definition's current `Cancel` permission and schedule-action requirements; the creator does not receive a special ownership grant. Schedule reads and retained occurrence history require the definition's current, independent `Read` permission. After a definition is removed, orphaned schedule data requires an explicit system-level `ReadAllWork` grant rather than access inferred from the remaining catalog. Creator and canceler identity fields are rejected when they exceed the durable 512-character bound rather than being truncated. See [Runtime Scheduling](../guides/scheduling.md).
+
 Read remains independent from workflow execution. Both Read and operation grants imply discovery, but a caller does not need Read merely to perform an allowed workflow operation. Hidden workflow names and run ids use the same not-found outcome as nonexistent targets; discoverable targets can still return unauthorized for a missing operation grant.
 
 Operation permission does not imply permission to read retained state. Start and action results return the run id, command/action status, and safe operation messages to an operate-only caller, but omit the workflow-run snapshot. Worker actions, queue completions, and definition reconfiguration follow the same rule: authoritative `Worker` or `Definition` snapshots require Read, and queue completion `Output`/`RawOutput` also require Read, while definition reconfiguration still returns the current `Revision`. Raw unhandled-exception text and metadata require Read or diagnostics access. Operator projections compute `AvailableActions` by intersecting lifecycle-valid actions with the caller's exact `Start`, `Pause`, and `Cancel` grants; a Read-only view therefore does not advertise controls the caller cannot execute.
@@ -365,14 +367,16 @@ Without constrained operate grants, the usual alternative is to create duplicate
 - schemas, docs, and tooling projections drift across near-identical definitions
 - metrics, history, and operational views become fragmented across several names for the same logical operation
 
-Constrained operate grants let you keep one definition for one logical operation, then discriminate queueing, worker actions, or reconfiguration by input such as `AreaKey`, `ServerKey`, or another business identifier.
+Constrained operate grants let you keep one definition for one logical operation, then discriminate queueing, worker actions, schedule cancellation, or reconfiguration by input such as `AreaKey`, `ServerKey`, or another business identifier.
 
 - `WhenOperatingRequire(...)`
-  - applies to queueing, worker actions, worker reconfiguration, and definition reconfiguration
+  - applies to queueing, worker actions, schedule cancellation, worker reconfiguration, and definition reconfiguration
 - `WhenQueueingRequire(...)`
   - applies only to queueing
 - `WhenWorkerActionsRequire(...)`
   - applies only to worker actions
+- `WhenScheduleActionsRequire(...)`
+  - applies only to runtime schedule actions such as cancellation
 - `WhenReconfiguringRequire(...)`
   - applies to both worker and definition reconfiguration
 - `WhenWorkerReconfiguringRequire(...)`
@@ -387,8 +391,10 @@ Important details:
 - multiple grant blocks for the same audience are also additive; if any matching grant allows the current operation, the operation is authorized
 - typed queue requirements deserialize from the incoming queued input
 - typed worker-action and worker-reconfiguration requirements deserialize from the worker's persisted original input
+- typed schedule-action requirements deserialize from the schedule's retained input
 - definition reconfiguration has no work input of its own, so definition-reconfiguration-specific requirements inspect the reconfiguration change shape instead
 - deserialize failures fail closed and return an invalid outcome
+- a `Cancel` grant that has worker-action-specific requirements does not silently become an unconstrained schedule-cancellation grant; add `WhenScheduleActionsRequire(...)` or a schedule-applicable `WhenOperatingRequire(...)` rule to authorize schedule cancellation explicitly
 - this extra layer does not change read visibility
 
 For example, a host can keep one survey editor definition and layer broad and narrow operate grants together:

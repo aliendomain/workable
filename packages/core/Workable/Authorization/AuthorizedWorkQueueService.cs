@@ -5,7 +5,8 @@ internal sealed class AuthorizedWorkQueueService(
     IWorkQueueService inner,
     WorkAuthorizationEvaluator authorization,
     WorkRequestContext requestContext,
-    bool canViewDiagnostics) : IWorkQueueService
+    bool canViewDiagnostics,
+    Func<RegisteredWork, WorkInput?, WorkerOptions?, CancellationToken, Task<IWorkerHandle>>? enqueueResolved = null) : IWorkQueueService
 {
     public void NotifyDurableWorkAvailable()
         => inner.NotifyDurableWorkAvailable();
@@ -29,7 +30,9 @@ internal sealed class AuthorizedWorkQueueService(
         var decision = authorization.AuthorizeQueue(registeredWork, input, options, requestContext);
         if (decision.IsAllowed)
         {
-            var handle = await inner.Enqueue(name, input, options, cancellationToken);
+            var handle = enqueueResolved is null
+                ? await inner.Enqueue(name, input, options, cancellationToken)
+                : await enqueueResolved(registeredWork, input, options, cancellationToken);
             var canRead = authorization.CanRead(registeredWork.Definition);
             return canRead && canViewDiagnostics
                 ? handle
@@ -61,7 +64,9 @@ internal sealed class AuthorizedWorkQueueService(
         var decision = authorization.AuthorizeQueue(registeredWork, workInput, options, requestContext);
         if (decision.IsAllowed)
         {
-            var handle = await inner.Enqueue(name, workInput, options, cancellationToken);
+            var handle = enqueueResolved is null
+                ? await inner.Enqueue(name, workInput, options, cancellationToken)
+                : await enqueueResolved(registeredWork, workInput, options, cancellationToken);
             var canRead = authorization.CanRead(registeredWork.Definition);
             return canRead && canViewDiagnostics
                 ? handle

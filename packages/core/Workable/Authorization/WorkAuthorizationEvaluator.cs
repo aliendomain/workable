@@ -71,6 +71,12 @@ internal sealed class WorkAuthorizationEvaluator(
     public bool HasSystemOperateAllWorkAccess()
         => this.hasSystemOperateAllWorkAccess;
 
+    public bool HasSystemReadAllWorkAccess()
+        => this.hasSystemReadAllWorkAccess;
+
+    public bool CanViewDiagnostics()
+        => systemAuthorization?.CanViewDiagnostics() == true;
+
     public IReadOnlySet<WorkDefinitionId> ReadableDefinitionIds()
         => this.ReadableDefinitions()
             .Select(definition => definition.Id)
@@ -117,7 +123,7 @@ internal sealed class WorkAuthorizationEvaluator(
         ArgumentNullException.ThrowIfNull(registeredWork);
         ArgumentNullException.ThrowIfNull(requestContext);
 
-        if (UsesFullProfileCapture(registeredWork.Definition.DefaultOptions.Merge(options)) &&
+        if (UsesFullProfileCapture(registeredWork, options) &&
             systemAuthorization?.CanViewDiagnostics() != true)
         {
             return WorkOperateAuthorizationDecision.Deny();
@@ -200,6 +206,31 @@ internal sealed class WorkAuthorizationEvaluator(
             : WorkOperateAuthorizationDecision.Deny();
     }
 
+    public WorkOperateAuthorizationDecision AuthorizeScheduleCancel(
+        RegisteredWork registeredWork,
+        WorkScheduleId scheduleId,
+        WorkInput? input,
+        WorkRequestContext requestContext)
+    {
+        ArgumentNullException.ThrowIfNull(registeredWork);
+        ArgumentNullException.ThrowIfNull(requestContext);
+
+        if (this.hasSystemOperateAllWorkAccess)
+        {
+            return WorkOperateAuthorizationDecision.Allow();
+        }
+
+        return registeredWork.Definition.Authorization.CanOperate(groups, isKnownAuthenticatedUser)
+            ? registeredWork.OperateAuthorization.EvaluateScheduleCancel(
+                groups,
+                isKnownAuthenticatedUser,
+                registeredWork.Definition,
+                scheduleId.ToString(),
+                input,
+                requestContext)
+            : WorkOperateAuthorizationDecision.Deny();
+    }
+
     public WorkOperateAuthorizationDecision AuthorizeDefinitionReconfiguration(
         RegisteredWork registeredWork,
         WorkDefinitionReconfiguration changes,
@@ -277,9 +308,23 @@ internal sealed class WorkAuthorizationEvaluator(
             changes.DefaultOptions,
             changes.Configuration);
 
-    private static bool UsesFullProfileCapture(WorkerOptions options)
-        => options.ProfilingEnabled &&
-            options.ProfilingCaptureMode == WorkProfileCaptureMode.Full;
+    internal static bool UsesFullProfileCapture(WorkerOptions options)
+        => (options.ProfilingEnabled &&
+            options.ProfilingCaptureMode == WorkProfileCaptureMode.Full) ||
+            (options.Configuration?.ExecutionDiagnostics.IsEnabled == true &&
+            options.Configuration.ExecutionDiagnostics.ProfileCaptureMode == WorkProfileCaptureMode.Full);
+
+    internal static bool UsesFullProfileCapture(RegisteredWork registeredWork, WorkerOptions? options)
+    {
+        ArgumentNullException.ThrowIfNull(registeredWork);
+        var runtimePlan = options is null
+            ? registeredWork.DefaultRuntimePlan
+            : RegisteredWorkRuntimePlan.Create(registeredWork.Definition, options);
+        return (runtimePlan.Options.ProfilingEnabled &&
+                runtimePlan.Options.ProfilingCaptureMode == WorkProfileCaptureMode.Full) ||
+            (runtimePlan.Configuration.ExecutionDiagnostics.IsEnabled == true &&
+                runtimePlan.Configuration.ExecutionDiagnostics.ProfileCaptureMode == WorkProfileCaptureMode.Full);
+    }
 
     private static bool EnablesFullProfileCapture(
         WorkerOptions current,

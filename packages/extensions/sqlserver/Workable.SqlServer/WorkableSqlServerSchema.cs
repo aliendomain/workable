@@ -8,9 +8,11 @@ public static class WorkableSqlServerSchema
     private const int SchemaVersion = 4;
     private const int WorkflowSchemaVersion = 4;
     private const int ExecutionDiagnosticsSchemaVersion = 7;
+    private const int SchedulingSchemaVersion = 1;
     private const string QueueDurabilityComponent = "QueueDurability";
     private const string WorkflowPersistenceComponent = "WorkflowPersistence";
     private const string ExecutionDiagnosticsComponent = "ExecutionDiagnostics";
+    private const string SchedulingComponent = "Scheduling";
     private const string RequiredSetOptions = """
 SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
@@ -38,6 +40,9 @@ SET NUMERIC_ROUNDABORT OFF;
         var diagnosticLogsTable = $"{schema}.[WorkIterationDiagnosticLogs]";
         var instrumentationTable = $"{schema}.[WorkIterationInstrumentation]";
         var captureRulesTable = $"{schema}.[WorkDiagnosticCaptureRules]";
+        var schedulesTable = $"{schema}.[WorkSchedules]";
+        var scheduleOccurrenceUsageTable = $"{schema}.[WorkScheduleOccurrenceUsage]";
+        var scheduleOccurrencesTable = $"{schema}.[WorkScheduleOccurrences]";
         var versionTable = $"{schema}.[SchemaVersion]";
         var escapedSchemaName = EscapeLiteral(schemaName);
         var dynamicSchema = EscapeLiteral(schema);
@@ -46,6 +51,9 @@ SET NUMERIC_ROUNDABORT OFF;
         var dynamicWorkflowRunsTable = EscapeLiteral(workflowRunsTable);
         var dynamicDiagnosticsTable = EscapeLiteral(diagnosticsTable);
         var dynamicCaptureRulesTable = EscapeLiteral(captureRulesTable);
+        var dynamicSchedulesTable = EscapeLiteral(schedulesTable);
+        var dynamicScheduleOccurrenceUsageTable = EscapeLiteral(scheduleOccurrenceUsageTable);
+        var dynamicScheduleOccurrencesTable = EscapeLiteral(scheduleOccurrencesTable);
 
         return
         [
@@ -231,6 +239,14 @@ BEGIN
     );
 END
 """,
+            ..CreateSchedulingBatches(
+                escapedSchemaName,
+                schedulesTable,
+                scheduleOccurrenceUsageTable,
+                scheduleOccurrencesTable,
+                dynamicSchedulesTable,
+                dynamicScheduleOccurrenceUsageTable,
+                dynamicScheduleOccurrencesTable),
             $"""
 IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
    AND COL_LENGTH(N'{escapedSchemaName}.WorkflowRuns', N'DefinitionFingerprint') IS NULL
@@ -486,8 +502,173 @@ END
             CreateVersionUpsertBatch(versionTable, "QueueDurability", SchemaVersion),
             CreateVersionUpsertBatch(versionTable, "WorkflowPersistence", WorkflowSchemaVersion),
             CreateVersionUpsertBatch(versionTable, "ExecutionDiagnostics", ExecutionDiagnosticsSchemaVersion),
+            CreateVersionUpsertBatch(versionTable, SchedulingComponent, SchedulingSchemaVersion),
         ];
     }
+
+    private static IReadOnlyList<string> CreateSchedulingBatches(
+        string escapedSchemaName,
+        string schedulesTable,
+        string occurrenceUsageTable,
+        string occurrencesTable,
+        string dynamicSchedulesTable,
+        string dynamicOccurrenceUsageTable,
+        string dynamicOccurrencesTable)
+        =>
+        [
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkSchedules', N'U') IS NULL
+BEGIN
+    CREATE TABLE {schedulesTable}
+    (
+        ScheduleId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkSchedules PRIMARY KEY,
+        PersistenceScope nvarchar(450) NOT NULL,
+        WorkSystemName nvarchar(256) NOT NULL,
+        DefinitionName nvarchar(450) NOT NULL,
+        TimingJson nvarchar(max) NOT NULL,
+        InputJson nvarchar(max) NULL,
+        WorkerOptionsJson nvarchar(max) NULL,
+        RequestContextJson nvarchar(max) NOT NULL,
+        Status nvarchar(32) NOT NULL,
+        CreatedAt datetimeoffset NOT NULL,
+        NextRunAt datetimeoffset NULL,
+        LastRunAt datetimeoffset NULL,
+        CanceledAt datetimeoffset NULL,
+        CanceledByJson nvarchar(max) NULL,
+        LeaseId uniqueidentifier NULL,
+        LeaseExpiresAt datetimeoffset NULL,
+        DispatchStarted bit NOT NULL CONSTRAINT DF_WorkableWorkSchedules_DispatchStarted DEFAULT (0),
+        ExecutionGrantJson nvarchar(max) NOT NULL,
+        CreatedByJson nvarchar(max) NOT NULL,
+        CreatedByKey varbinary(32) NOT NULL,
+        PayloadSizeBytes bigint NOT NULL,
+        CancellationPayloadReserveBytes bigint NOT NULL
+    );
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkScheduleOccurrenceUsage', N'U') IS NULL
+BEGIN
+    CREATE TABLE {occurrenceUsageTable}
+    (
+        OccurrenceUsageId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkScheduleOccurrenceUsage PRIMARY KEY,
+        PersistenceScope nvarchar(450) NOT NULL,
+        WorkSystemName nvarchar(256) NOT NULL,
+        OccurrenceCount bigint NOT NULL,
+        PayloadSizeBytes bigint NOT NULL,
+        CONSTRAINT CK_WorkableWorkScheduleOccurrenceUsage_OccurrenceCount CHECK (OccurrenceCount >= 0),
+        CONSTRAINT CK_WorkableWorkScheduleOccurrenceUsage_PayloadSizeBytes CHECK (PayloadSizeBytes >= 0)
+    );
+END
+""",
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkScheduleOccurrenceUsage'
+      AND indexes.name = N'UX_WorkableWorkScheduleOccurrenceUsage_ScopeSystem')
+BEGIN
+    EXEC(N'CREATE UNIQUE INDEX UX_WorkableWorkScheduleOccurrenceUsage_ScopeSystem ON {dynamicOccurrenceUsageTable} (PersistenceScope, WorkSystemName);');
+END
+""",
+            $"""
+IF OBJECT_ID(N'{escapedSchemaName}.WorkScheduleOccurrences', N'U') IS NULL
+BEGIN
+    CREATE TABLE {occurrencesTable}
+    (
+        OccurrenceId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkScheduleOccurrences PRIMARY KEY,
+        OccurrenceUsageId uniqueidentifier NOT NULL,
+        ScheduleId uniqueidentifier NOT NULL,
+        ScheduledAt datetimeoffset NOT NULL,
+        AttemptedAt datetimeoffset NOT NULL,
+        Status nvarchar(32) NOT NULL,
+        QueueStatus nvarchar(32) NULL,
+        WorkerId uniqueidentifier NULL,
+        MessagesJson nvarchar(max) NOT NULL,
+        ExpiresAt datetimeoffset NOT NULL,
+        PayloadSizeBytes bigint NOT NULL,
+        CONSTRAINT FK_WorkableWorkScheduleOccurrences_Usage FOREIGN KEY (OccurrenceUsageId)
+            REFERENCES {occurrenceUsageTable}(OccurrenceUsageId),
+        CONSTRAINT FK_WorkableWorkScheduleOccurrences_Schedules FOREIGN KEY (ScheduleId)
+            REFERENCES {schedulesTable}(ScheduleId) ON DELETE CASCADE
+    );
+END
+""",
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkScheduleOccurrences'
+      AND indexes.name = N'IX_WorkableWorkScheduleOccurrences_Retention')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkScheduleOccurrences_Retention ON {dynamicOccurrencesTable} (OccurrenceUsageId, AttemptedAt, OccurrenceId) INCLUDE (PayloadSizeBytes);');
+END
+""",
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_ActiveDefinition')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_ActiveDefinition ON {dynamicSchedulesTable} (PersistenceScope, WorkSystemName, Status, DefinitionName, ScheduleId);');
+END
+""",
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_RetainedCreator')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_RetainedCreator ON {dynamicSchedulesTable} (PersistenceScope, WorkSystemName, CreatedByKey, ScheduleId) INCLUDE (PayloadSizeBytes);');
+END
+""",
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_Due')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_Due ON {dynamicSchedulesTable} (PersistenceScope, WorkSystemName, Status, NextRunAt, ScheduleId) INCLUDE (LeaseExpiresAt);');
+END
+""",
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkScheduleOccurrences'
+      AND indexes.name = N'IX_WorkableWorkScheduleOccurrences_Schedule')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkScheduleOccurrences_Schedule ON {dynamicOccurrencesTable} (ScheduleId, AttemptedAt DESC, OccurrenceId) INCLUDE (ExpiresAt);');
+END
+""",
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkScheduleOccurrences'
+      AND indexes.name = N'IX_WorkableWorkScheduleOccurrences_Expiration')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkScheduleOccurrences_Expiration ON {dynamicOccurrencesTable} (OccurrenceUsageId, ExpiresAt, OccurrenceId) INCLUDE (PayloadSizeBytes);');
+END
+""",
+        ];
 
     private static IReadOnlyList<string> CreateQueueDurabilityVersion4Batches(
         string escapedSchemaName,
@@ -834,7 +1015,8 @@ WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Comp
     private static bool IsCurrent(IReadOnlyDictionary<string, int> installedVersions)
         => InstalledVersion(installedVersions, QueueDurabilityComponent) >= SchemaVersion &&
             InstalledVersion(installedVersions, WorkflowPersistenceComponent) >= WorkflowSchemaVersion &&
-            InstalledVersion(installedVersions, ExecutionDiagnosticsComponent) >= ExecutionDiagnosticsSchemaVersion;
+            InstalledVersion(installedVersions, ExecutionDiagnosticsComponent) >= ExecutionDiagnosticsSchemaVersion &&
+            InstalledVersion(installedVersions, SchedulingComponent) >= SchedulingSchemaVersion;
 
     private static int InstalledVersion(IReadOnlyDictionary<string, int> installedVersions, string component)
         => installedVersions.TryGetValue(component, out var version) ? version : 0;
@@ -864,21 +1046,36 @@ WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Comp
                     escapedSchemaName,
                     $"{schema}.[WorkIterationDiagnostics]",
                     $"{schema}.[WorkDiagnosticCaptureRules]")),
+            new SchemaMigration(
+                SchedulingComponent,
+                FromVersion: 0,
+                ToVersion: 1,
+                CreateSchedulingBatches(
+                    escapedSchemaName,
+                    $"{schema}.[WorkSchedules]",
+                    $"{schema}.[WorkScheduleOccurrenceUsage]",
+                    $"{schema}.[WorkScheduleOccurrences]",
+                    EscapeLiteral($"{schema}.[WorkSchedules]"),
+                    EscapeLiteral($"{schema}.[WorkScheduleOccurrenceUsage]"),
+                    EscapeLiteral($"{schema}.[WorkScheduleOccurrences]"))),
         };
         var currentVersions = new[]
         {
             new KeyValuePair<string, int>(QueueDurabilityComponent, SchemaVersion),
             new KeyValuePair<string, int>(WorkflowPersistenceComponent, WorkflowSchemaVersion),
             new KeyValuePair<string, int>(ExecutionDiagnosticsComponent, ExecutionDiagnosticsSchemaVersion),
+            new KeyValuePair<string, int>(SchedulingComponent, SchedulingSchemaVersion),
         };
         var plan = new List<SchemaMigration>();
         foreach (var (component, currentVersion) in currentVersions)
         {
-            if (!installedVersions.TryGetValue(component, out var installedVersion))
+            if (!installedVersions.TryGetValue(component, out var installedVersion) && component != SchedulingComponent)
             {
                 throw new InvalidOperationException(
                     $"Workable SQL Server schema '{schemaName}' is versioned but has no '{component}' version row.");
             }
+
+            installedVersion = InstalledVersion(installedVersions, component);
 
             while (installedVersion < currentVersion)
             {
@@ -935,6 +1132,9 @@ WHERE schemas.name = @SchemaName
       N'WorkIterationDiagnosticLogs',
       N'WorkIterationInstrumentation',
       N'WorkDiagnosticCaptureRules'
+      ,N'WorkSchedules'
+      ,N'WorkScheduleOccurrenceUsage'
+      ,N'WorkScheduleOccurrences'
   );
 """;
         command.Parameters.AddWithValue("@SchemaName", schemaName);
@@ -1330,6 +1530,114 @@ WHERE Component = @Name;
         {
             throw new InvalidOperationException(
                 $"Workable SQL Server execution diagnostics schema '{schemaName}' is not installed or is incomplete. Missing: {string.Join(", ", missing)}.");
+        }
+    }
+
+    public static async Task ValidateSchedulingInstalled(
+        string connectionString,
+        string schemaName = "workable",
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schemaName);
+
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var requiredColumns = new Dictionary<string, string[]>
+        {
+            ["SchemaVersion"] = ["Component", "Version", "UpdatedAt"],
+            ["WorkSchedules"] =
+            [
+                "ScheduleId", "PersistenceScope", "WorkSystemName", "DefinitionName", "TimingJson",
+                "InputJson", "WorkerOptionsJson", "RequestContextJson", "Status", "CreatedAt",
+                "NextRunAt", "LastRunAt", "CanceledAt", "CanceledByJson", "LeaseId", "LeaseExpiresAt",
+                "DispatchStarted", "ExecutionGrantJson", "CreatedByJson", "CreatedByKey", "PayloadSizeBytes",
+                "CancellationPayloadReserveBytes",
+            ],
+            ["WorkScheduleOccurrences"] =
+            [
+                "OccurrenceId", "OccurrenceUsageId", "ScheduleId", "ScheduledAt", "AttemptedAt", "Status", "QueueStatus",
+                "WorkerId", "MessagesJson", "ExpiresAt",
+                "PayloadSizeBytes",
+            ],
+            ["WorkScheduleOccurrenceUsage"] =
+            [
+                "OccurrenceUsageId", "PersistenceScope", "WorkSystemName", "OccurrenceCount", "PayloadSizeBytes",
+            ],
+        };
+        var missing = new List<string>();
+        foreach (var (table, columns) in requiredColumns)
+        {
+            if (await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.tables tables
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = @SchemaName AND tables.name = @Name;
+""", schemaName, cancellationToken, table) == 0)
+            {
+                missing.Add($"{schemaName}.{table}");
+            }
+
+            var existingColumns = await ReadExistingColumns(connection, schemaName, table, cancellationToken);
+            foreach (var column in columns.Where(column => !existingColumns.Contains(column)))
+            {
+                missing.Add($"{schemaName}.{table}.{column}");
+            }
+        }
+
+        var requiredIndexes = new Dictionary<string, string[]>
+        {
+            ["WorkSchedules"] =
+            [
+                "IX_WorkableWorkSchedules_Due",
+                "IX_WorkableWorkSchedules_ActiveDefinition",
+                "IX_WorkableWorkSchedules_RetainedCreator",
+            ],
+            ["WorkScheduleOccurrences"] =
+            [
+                "IX_WorkableWorkScheduleOccurrences_Retention",
+                "IX_WorkableWorkScheduleOccurrences_Schedule",
+                "IX_WorkableWorkScheduleOccurrences_Expiration",
+            ],
+            ["WorkScheduleOccurrenceUsage"] =
+            [
+                "UX_WorkableWorkScheduleOccurrenceUsage_ScopeSystem",
+            ],
+        };
+        foreach (var (table, indexes) in requiredIndexes)
+        {
+            foreach (var index in indexes)
+            {
+                if (await Scalar<int>(connection, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = @SchemaName AND tables.name = @Name AND indexes.name = @IndexName;
+""", schemaName, cancellationToken, table, index) == 0)
+                {
+                    missing.Add(index);
+                }
+            }
+        }
+
+        if (!missing.Any(item => item.StartsWith($"{schemaName}.SchemaVersion", StringComparison.Ordinal)))
+        {
+            var installedVersion = await Scalar<int>(connection, $"""
+SELECT COALESCE(MAX(Version), 0)
+FROM {QuoteIdentifier(schemaName)}.[SchemaVersion]
+WHERE Component = @Name;
+""", schemaName, cancellationToken, SchedulingComponent);
+            if (installedVersion < SchedulingSchemaVersion)
+            {
+                missing.Add($"Scheduling schema version {SchedulingSchemaVersion} (installed: {installedVersion})");
+            }
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Workable SQL Server scheduling schema '{schemaName}' is not installed or is incomplete. Missing: {string.Join(", ", missing)}.");
         }
     }
 

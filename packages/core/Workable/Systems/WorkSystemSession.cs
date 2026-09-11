@@ -14,7 +14,8 @@ internal sealed class WorkSystemSession(
     IWorkQueryService query,
     IWorkEventStream events,
     IWorkIterationStatusStream iterationStatuses,
-    IWorkChangeStream changes) :
+    IWorkChangeStream changes,
+    IWorkScheduler schedules) :
     IWorkSystemSession,
     IWorkSystemCapabilitySource,
     IWorkWorkerReconfigurationAuthorizationSource
@@ -63,6 +64,8 @@ internal sealed class WorkSystemSession(
     public IWorkIterationStatusStream IterationStatuses { get; } = iterationStatuses;
 
     public IWorkChangeStream Changes { get; } = changes;
+
+    public IWorkScheduler Schedules { get; } = schedules;
 
     bool IWorkWorkerReconfigurationAuthorizationSource.CanReconfigureWorker(
         WorkerSnapshot worker,

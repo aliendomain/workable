@@ -93,6 +93,7 @@ import {
   IterationsView,
   WorkersView,
 } from "@/components/workable/console/query-screens";
+import { SchedulesView } from "@/components/workable/console/schedules-screen";
 import {
   OverviewView,
   type RealtimeEventMessage,
@@ -283,6 +284,7 @@ const initialRefreshTokens: Record<View, number> = {
   definition: 0,
   workers: 0,
   iterations: 0,
+  schedules: 0,
   worker: 0,
   iteration: 0,
   workflowRun: 0,
@@ -377,7 +379,7 @@ export function WorkableConsole() {
   const [iterationKeyValueFilter, setIterationKeyValueFilter] = useState("");
   const [iterationStatusFilter, setIterationStatusFilter] = useState<WorkCompletionStatus[]>([]);
   const [iterationsFilterOpen, setIterationsFilterOpen] = useState(false);
-  const usesPanelOwnedScroll = visibleView === "workers" || visibleView === "iterations";
+  const usesPanelOwnedScroll = visibleView === "workers" || visibleView === "iterations" || visibleView === "schedules";
   const [catalogScopeBySystemId, setCatalogScopeBySystemId] = useState<
     Record<string, OverviewScope | undefined>
   >({});
@@ -445,6 +447,7 @@ export function WorkableConsole() {
             apiUrl: activeHost.apiUrl,
             executionDiagnosticsPersistenceAvailable:
               activeSystem?.capabilities.executionDiagnosticsPersistenceAvailable ?? false,
+            schedulingAvailable: activeSystem?.capabilities.schedulingAvailable ?? false,
             realtimeHubPath: activeHost.realtimeEnabled
               ? activeHost.realtimeHubPath ?? null
               : null,
@@ -1693,6 +1696,7 @@ export function WorkableConsole() {
     if (
       previous.view === "workers" ||
       previous.view === "iterations" ||
+      previous.view === "schedules" ||
       previous.view === "worker" ||
       previous.view === "workflowRun"
     ) {
@@ -1716,6 +1720,7 @@ export function WorkableConsole() {
     if (
       next.view === "workers" ||
       next.view === "iterations" ||
+      next.view === "schedules" ||
       next.view === "worker" ||
       next.view === "workflowRun"
     ) {
@@ -1745,6 +1750,7 @@ export function WorkableConsole() {
           entry.view === "definition" ||
           entry.view === "workers" ||
           entry.view === "iterations" ||
+          entry.view === "schedules" ||
           entry.view === "workflowRun"
         );
 
@@ -1762,7 +1768,11 @@ export function WorkableConsole() {
         };
       }
 
-      if (workerParent?.view === "workers" || workerParent?.view === "iterations") {
+      if (
+        workerParent?.view === "workers" ||
+        workerParent?.view === "iterations" ||
+        workerParent?.view === "schedules"
+      ) {
         return {
           label: navTitle(workerParent.view),
           onSelect: navigateBack,
@@ -1849,6 +1859,7 @@ export function WorkableConsole() {
   const markDefinitionReady = useCallback(() => markViewReady("definition"), [markViewReady]);
   const markWorkersReady = useCallback(() => markViewReady("workers"), [markViewReady]);
   const markIterationsReady = useCallback(() => markViewReady("iterations"), [markViewReady]);
+  const markSchedulesReady = useCallback(() => markViewReady("schedules"), [markViewReady]);
 
   useEffect(() => {
     if (visibleView === "worker" || visibleView === "iteration" || visibleView === "workflowRun") {
@@ -2459,6 +2470,21 @@ export function WorkableConsole() {
                               onReady={markIterationsReady}
                               refreshToken={refreshTokens.iterations}
                               statusFilter={iterationStatusFilter}
+                            />
+                          </ConsoleViewMount>
+                        )}
+                        {mountedViews.has("schedules") && (
+                          <ConsoleViewMount
+                            active={visibleView === "schedules"}
+                            fill
+                            scrollMode="panel"
+                          >
+                            <SchedulesView
+                              connection={hydratedConnection}
+                              isLoadingTarget={visibleView === "schedules" || pendingView === "schedules"}
+                              onOpenWorker={openWorker}
+                              onReady={markSchedulesReady}
+                              refreshToken={refreshTokens.schedules}
                             />
                           </ConsoleViewMount>
                         )}

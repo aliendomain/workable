@@ -47,7 +47,7 @@ services.AddWorkableSystem(builder => builder.AddWork(
         workspace.WriteFile("src/App/Program.cs", """
 using Microsoft.Extensions.DependencyInjection;
 
-var ignoredString = ".QueueDurably().CoordinatePersistently().PersistExecutionDiagnostics(TimeSpan.FromHours(1)).AddWorkableSqlServerDurableQueue(\"fake\", schemaName: \"ignored\").AddWorkableSqlServerPersistence(\"fake\")";
+var ignoredString = ".QueueDurably().CoordinatePersistently().PersistExecutionDiagnostics(TimeSpan.FromHours(1)).EnableScheduling().AddWorkableSqlServerDurableQueue(\"fake\", schemaName: \"ignored\").AddWorkableSqlServerPersistence(\"fake\")";
 // services.AddWorkableSqlServerDurableQueue("comment", schemaName: "commented");
 // services.AddWorkableSqlServerPersistence("comment", schemaName: "commented");
 /*
@@ -117,6 +117,28 @@ builder.AddWork(
         Assert.True(result.RequiresSchema);
         var feature = Assert.Single(result.Features);
         Assert.Equal(WorkableSqlServerSchemaFeature.ExecutionDiagnosticsPersistence, feature.Feature);
+        Assert.Empty(result.Targets);
+    }
+
+    [Fact]
+    public async Task DiscoverRuntimeSchedulingConfigurationWithoutARegistrationTarget()
+    {
+        using var workspace = SqlServerCliTestWorkspace.Create();
+        var projectPath = workspace.WriteProject("src/App/App.csproj");
+        workspace.WriteFile("src/App/WorkRegistration.cs", """
+using Workable;
+
+builder.EnableScheduling(TimeSpan.FromDays(1));
+""");
+
+        var result = await WorkableSqlServerSchemaDiscovery.Discover(new WorkableSqlServerSchemaDiscoveryRequest(
+            SolutionPaths: [],
+            ProjectPaths: [projectPath],
+            IncludeTests: false));
+
+        Assert.True(result.RequiresSchema);
+        var feature = Assert.Single(result.Features);
+        Assert.Equal(WorkableSqlServerSchemaFeature.RuntimeScheduling, feature.Feature);
         Assert.Empty(result.Targets);
     }
 

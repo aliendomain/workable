@@ -18,6 +18,7 @@ import {
   createConfigurationFieldSections,
   createCopiedWorkerQueueRequest,
   createDefaultQueueRequest,
+  createDefaultScheduleDateTime,
   createDefaultWorkerHiddenPanels,
   createDefinitionConfigurationDescriptor,
   createEffectiveConfigurationOptions,
@@ -52,7 +53,10 @@ import {
   formatDurationLabel,
   formatElapsedSince,
   formatFutureRelativeTime,
+  formatCronPreviewOccurrence,
   formatMessageSeverity,
+  formatScheduleInterval,
+  getDefaultScheduleTimeZone,
   formatMillisecondsCompact,
   formatWorkerTimelineBadgeLabel,
   getAvailableWorkerActions,
@@ -109,6 +113,7 @@ import {
   summarizeWorkerLogEntries,
   updateSelectedLogLevels,
   updateSelectedTimelineFilters,
+  validateScheduleSettings,
   workerActionToneClassName,
   workerStatusTextTone,
 } from "@/components/workable/console/detail-screens";
@@ -136,6 +141,64 @@ const connection: WorkableConnection = {
   apiUrl: "https://console.example.com/workable",
   systemName: "Ops",
 };
+
+test("schedule helpers create a local default and .NET-compatible intervals", () => {
+  assert.equal(
+    createDefaultScheduleDateTime(new Date(2026, 8, 10, 12, 0, 45)),
+    "2026-09-10T12:05"
+  );
+  assert.equal(formatScheduleInterval(15, "minutes"), "00:15:00");
+  assert.equal(formatScheduleInterval(2, "hours"), "02:00:00");
+  assert.equal(formatScheduleInterval(3, "days"), "3.00:00:00");
+  assert.equal(validateScheduleSettings("", "once", "1", 0), "Choose a valid first run date and time.");
+  assert.equal(validateScheduleSettings("not-a-date", "once", "1", 0), "Choose a valid first run date and time.");
+  assert.equal(
+    validateScheduleSettings("2026-09-10T12:00:00Z", "once", "1", Date.parse("2026-09-10T12:00:00Z")),
+    "Choose a first run date and time in the future."
+  );
+  assert.equal(validateScheduleSettings("2099-01-01T00:00:00Z", "once", "bad", 0), null);
+  assert.equal(
+    validateScheduleSettings("2099-01-01T00:00:00Z", "repeat", "1.5", 0),
+    "Repeat every must be a whole number greater than zero."
+  );
+  assert.equal(
+    validateScheduleSettings("2099-01-01T00:00:00Z", "repeat", "0", 0),
+    "Repeat every must be a whole number greater than zero."
+  );
+  assert.equal(validateScheduleSettings("2099-01-01T00:00:00Z", "repeat", "2", 0), null);
+  assert.equal(
+    validateScheduleSettings("2099-01-01T00:00:00Z", "repeat", "2", 0, "cron"),
+    "Enter a cron expression."
+  );
+  assert.equal(
+    validateScheduleSettings("2099-01-01T00:00:00Z", "repeat", "2", 0, "cron", "0 9 * *", "UTC"),
+    "Cron expressions must contain five fields."
+  );
+  assert.equal(
+    validateScheduleSettings("2099-01-01T00:00:00Z", "repeat", "2", 0, "cron", "0 9 * * *", ""),
+    "Enter a time zone for the cron schedule."
+  );
+  assert.equal(
+    validateScheduleSettings(
+      "2099-01-01T00:00:00Z",
+      "repeat",
+      "not-an-interval",
+      0,
+      "cron",
+      "0 9 * * 1-5",
+      "America/Los_Angeles"
+    ),
+    null
+  );
+  assert.ok(getDefaultScheduleTimeZone().length > 0);
+  assert.equal(getDefaultScheduleTimeZone(() => ""), "UTC");
+  assert.equal(getDefaultScheduleTimeZone(() => { throw new Error("unavailable"); }), "UTC");
+  assert.ok(formatCronPreviewOccurrence("2026-09-10T16:00:00Z", "UTC").length > 0);
+  assert.equal(
+    formatCronPreviewOccurrence("2026-09-10T16:00:00Z", "Not/A_Time_Zone"),
+    "2026-09-10T16:00:00Z"
+  );
+});
 
 function descriptor(): QueueRequestSchemaDescriptor {
   return {

@@ -11,6 +11,7 @@ internal sealed class WorkSystemSessionFactory(
     WorkSystemCatalog catalog,
     WorkflowCatalog workflows,
     WorkQueueService queue,
+    WorkScheduler schedules,
     WorkerOperations workers,
     WorkSystemReadModelQueryService query,
     WorkEventStream events,
@@ -92,7 +93,13 @@ internal sealed class WorkSystemSessionFactory(
                 sessionQueue,
                 projection.Authorization,
                 requestContext,
-                projection.CanViewDiagnostics),
+                projection.CanViewDiagnostics,
+                (registeredWork, input, options, cancellationToken) => queue.EnqueueResolved(
+                    registeredWork,
+                    input,
+                    options,
+                    requestContext,
+                    cancellationToken)),
             new AuthorizedWorkerOperations(
                 catalog,
                 sessionWorkers,
@@ -117,7 +124,12 @@ internal sealed class WorkSystemSessionFactory(
             new AuthorizedWorkChangeStream(
                 sessionChanges,
                 projection.Authorization,
-                projection.CanViewDiagnostics));
+                projection.CanViewDiagnostics),
+            new AuthorizedWorkScheduler(
+                catalog,
+                schedules,
+                projection.Authorization,
+                requestContext));
     }
 
     private ProjectionResolution ResolveProjection(
@@ -261,7 +273,8 @@ internal sealed class WorkSystemSessionFactory(
             sessionQuery,
             sessionEvents,
             sessionIterationStatuses,
-            sessionChanges);
+            sessionChanges,
+            new SessionWorkScheduler(schedules, requestContext));
     }
 
     private bool CanReconfigureWorker(

@@ -66,6 +66,12 @@ internal sealed class BenchmarkSqlServerEnvironment : IAsyncDisposable
         await using var command = connection.CreateCommand();
         command.CommandText =
             $"""
+IF OBJECT_ID(N'{EscapeLiteral(schemaName)}.WorkflowRuns', N'U') IS NOT NULL
+   AND COL_LENGTH(N'{EscapeLiteral(schemaName)}.WorkflowRuns', N'UpdatedAt') IS NOT NULL
+BEGIN
+    ALTER TABLE {QuoteIdentifier(schemaName)}.[WorkflowRuns] DROP COLUMN UpdatedAt;
+END;
+
 DELETE FROM {QuoteIdentifier(schemaName)}.[WorkflowRuns];
 DELETE FROM {QuoteIdentifier(schemaName)}.[WorkQueueEntries];
 DELETE FROM {QuoteIdentifier(schemaName)}.[WorkEntries];

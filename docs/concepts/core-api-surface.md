@@ -11,6 +11,7 @@ The core API defines the public shape of Workable for discovering work, queueing
 - `Id`, `Name`, and `State` expose system identity and lifecycle state.
 - `IWorkCatalog` exposes available work definitions.
 - `IWorkQueueService` accepts work by explicit identity.
+- `IWorkScheduler` creates, queries, and cancels durable runtime schedules when scheduling is enabled for the system.
 - `IWorkerOperations` controls worker actions.
 - `IWorkQueryService` exposes the discoverable query facade. Each built-in query has a named method, with optional criteria and cancellation where applicable.
 - `IWorkEventStream` creates event subscriptions.
@@ -44,6 +45,7 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 - Definitions expose a `Revision` and `WorkDefinitionVersion` for optimistic concurrency when changing definition defaults.
 - `IWorkCatalog.Reconfigure` can replace a definition's default worker options and default runtime configuration for future workers.
 - Queue requests may override worker options and effective runtime configuration for one run.
+- Runtime schedules target definitions by name and resolve the latest definition at dispatch because work ids are process-local.
 - Worker options can enable profiling for captured execution profile trees.
 - `IWorkDefinitionSource` can add generated definitions while the system is starting.
 - Catalogs do not accept new definitions after work definition sources complete and the system starts.
@@ -80,6 +82,7 @@ Execution context also exposes the worker's creation `WorkRequestContext` (inclu
 ## Queue Rules
 
 - Queue work by passing the definition name to `IWorkQueueService`.
+- Schedule future work through `IWorkSystem.Schedules` or a caller-scoped `IWorkSystemSession.Schedules`; see [Runtime Scheduling](../guides/scheduling.md).
 - After a caller-owned durable enqueue transaction commits, `IWorkQueueService.NotifyDurableWorkAvailable()` wakes the local reader while fallback polling continues to cover other processes and missed signals.
 - `IWorkCommandDispatcher` provides a standardized queue-and-optionally-wait path for callers that want system resolution, session creation, queueing, and completion mapping in one helper.
 - `IHttpContextWorkCommandDispatcher` is the ASP.NET Core convenience wrapper for that same path when the current `HttpContext` should define the `WorkRequestContext`.

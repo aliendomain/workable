@@ -399,6 +399,24 @@ public interface IWorkSystemBuilder
         WorkProfileCaptureMode profileCaptureMode = WorkProfileCaptureMode.Bounded);
 
     /// <summary>
+    /// Replaces runtime-scheduling configuration for this work system.
+    /// </summary>
+    IWorkSystemBuilder UseScheduling(WorkSystemSchedulingConfiguration scheduling);
+
+    /// <summary>
+    /// Enables persisted runtime scheduling with bounded active schedules and dispatch-history retention.
+    /// </summary>
+    /// <param name="historyRetention">How long terminal schedules and occurrences remain queryable.</param>
+    /// <param name="maximumActiveSchedules">The active-schedule limit for the work system.</param>
+    /// <param name="maximumActiveSchedulesPerDefinition">The active-schedule limit for one definition.</param>
+    /// <param name="maximumActiveSchedulesPerActor">The active-schedule limit for one creator id.</param>
+    IWorkSystemBuilder EnableScheduling(
+        TimeSpan? historyRetention = null,
+        int? maximumActiveSchedules = null,
+        int? maximumActiveSchedulesPerDefinition = null,
+        int? maximumActiveSchedulesPerActor = null);
+
+    /// <summary>
     /// Adds an exception classifier that applies to work registered in this system.
     /// </summary>
     /// <param name="classifier">The classifier Workable evaluates when work in this system throws.</param>

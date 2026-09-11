@@ -2,6 +2,8 @@
 
 Recurrence controls whether a worker runs again after an execution completes. When recurrence is enabled, `Interval` is required and must be greater than zero.
 
+This is worker-level recurrence: one worker keeps its identity across repeated iterations. For a durable schedule created dynamically by a caller, where every occurrence queues a new worker from the latest definition, see [Runtime Scheduling](../scheduling.md).
+
 For configuration source order, precedence, and override rules that apply to every configuration facet, see [Work Configuration](README.md).
 
 Recurring workers keep the same worker identity across iterations. Each iteration invokes the work through a fresh execution scope, so scoped services are created and disposed once per iteration. After an iteration continues, the worker records the iteration, enters `Waiting`, and waits until the recurrence interval elapses. `Push` skips the current wait and starts the next iteration. `Pause` can pause a running iteration or a waiting worker; `Start` resumes a paused worker. `Cancel` permanently stops the worker.
@@ -95,6 +97,7 @@ var outcome = await system.Workers.Reconfigure(
 
 ## Related Interactions
 
+- [Runtime Scheduling](../scheduling.md): compare static worker recurrence with durable caller-created schedules and understand why the two recurring modes cannot be nested.
 - [Start And Recurrence](interactions.md#start-and-recurrence): start policies wait for worker lifecycle points, not recurrence iteration points.
 - [Recurrence And Concurrency](interactions.md#recurrence-and-concurrency): waiting recurring workers hold concurrency capacity.
 - [Recurrence And Transient Retry](interactions.md#recurrence-and-transient-retry): transient retry creates additional iterations and exposes retry backoff through `Retrying`.

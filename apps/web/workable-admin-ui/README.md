@@ -27,6 +27,14 @@ Example response:
 }
 ```
 
+## Scheduling From The Queue Dialog
+
+When the selected work system reports `schedulingAvailable`, the queue dialog includes a **Schedule** action alongside **Queue** and **Watch**. It uses the input and runtime options already configured in the dialog and supports a one-time future run, an elapsed interval of at least one minute in minutes, hours, or days, or a five-field cron expression in an explicit IANA time zone. Cron mode validates against the hosted API and previews the next five runs before creation. The missed-run option controls whether one overdue occurrence is queued after system downtime. The host rejects creation when any configured active, retained-history, per-creator, or serialized-payload admission limit is reached.
+
+The same capability adds **Schedules** after **Iterations** in each enabled system's explorer tree. That screen separates upcoming work from the complete retained schedule list, shows dispatch history and accepted worker links for the selected schedule, and supports cancellation. **New schedule** opens a catalog picker and then opens the existing queue configuration dialog directly in schedule mode.
+
+The hosted Workable API remains authoritative: schedule creation requires the same permission, queue requirements, input validation, and configured admission limits as queueing the definition, and that successful check becomes a durable grant for future occurrences. Creator account or group changes do not revoke an existing schedule, but later definition changes cannot add full-profile diagnostics capability that was absent from the creation grant. Definitions can also bump their developer-controlled schedule security version to reject older schedules after an authority or business-scope change. Users with the definition's current cancel permission can cancel it until dispatch begins. Definitions with statically configured recurrence can be scheduled once, but the UI disables recurring runtime schedules for them. Each occurrence uses the latest registered definition and retains the creator identity for audit.
+
 ## Profile Viewer Filters
 
 The iteration profile viewer classifies nodes by the API's required `instrumentation` field. Use the compact database button to show only `sql.client` nodes or the globe button to show only `http.client` nodes. These two instrumentation filters are mutually exclusive; selecting one replaces the other.

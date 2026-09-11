@@ -4,6 +4,7 @@ export type WorkableConnection = {
   apiUrl: string;
   executionDiagnosticsPersistenceAvailable?: boolean;
   realtimeHubPath?: string | null;
+  schedulingAvailable?: boolean;
   systemName?: string;
 };
 
@@ -31,6 +32,63 @@ export type WorkableRealtimeOrigin = {
   actor?: WorkableRealtimeOriginActor | null;
   description?: string | null;
   url?: string | null;
+};
+
+export type WorkScheduleStatus = "Active" | "Completed" | "Canceled";
+
+export type WorkScheduleOccurrenceStatus = "Accepted" | "Rejected" | "Skipped" | "Failed";
+
+export type WorkScheduleTiming = {
+  firstRunAt: string;
+  interval?: string | null;
+  runMissedExecution: boolean;
+  cronExpression?: string | null;
+  timeZoneId?: string | null;
+};
+
+export type WorkScheduleSnapshot = {
+  id: { value: string };
+  workSystemName?: string | null;
+  definitionName: string;
+  timing: WorkScheduleTiming;
+  input?: WorkData | null;
+  workerOptions?: WorkerOptions | null;
+  status: WorkScheduleStatus;
+  createdAt: string;
+  createdBy: WorkableRealtimeOriginActor;
+  nextRunAt?: string | null;
+  lastRunAt?: string | null;
+  canceledAt?: string | null;
+  canceledBy?: WorkableRealtimeOriginActor | null;
+};
+
+export type WorkScheduleSummary = Omit<WorkScheduleSnapshot, "input" | "workerOptions">;
+
+export type WorkScheduleQueryResult = {
+  schedules: WorkScheduleSummary[];
+};
+
+export type WorkScheduleOccurrence = {
+  occurrenceId: string;
+  scheduleId: { value: string };
+  scheduledAt: string;
+  attemptedAt: string;
+  status: WorkScheduleOccurrenceStatus;
+  queueStatus?: string | null;
+  workerId?: { value: string } | null;
+  messages: WorkMessage[];
+  expiresAt: string;
+};
+
+export type WorkScheduleOccurrenceQueryResult = {
+  occurrences: WorkScheduleOccurrence[];
+};
+
+export type WorkScheduleCancellationOutcome = {
+  status: "Accepted" | "Invalid" | "NotFound" | "Unauthorized" | "Conflict" | "Unavailable";
+  scheduleId: { value: string };
+  schedule?: WorkScheduleSnapshot | null;
+  messages: WorkMessage[];
 };
 
 export type WorkableRealtimeEvent = {
@@ -64,6 +122,7 @@ export type WorkableHttpSystemCapabilities = {
   executionDiagnosticsPersistenceAvailable?: boolean;
   httpClientProfilingAvailable: boolean;
   persistentCoordinationAvailable: boolean;
+  schedulingAvailable?: boolean;
   sqlProfilingAvailable: boolean;
 };
 
@@ -72,6 +131,7 @@ export function createDefaultWorkableHttpSystemCapabilities(): WorkableHttpSyste
     executionDiagnosticsPersistenceAvailable: false,
     httpClientProfilingAvailable: false,
     persistentCoordinationAvailable: false,
+    schedulingAvailable: false,
     sqlProfilingAvailable: false,
   };
 }
@@ -83,6 +143,7 @@ export function normalizeWorkableHttpSystemCapabilities(
     executionDiagnosticsPersistenceAvailable: Boolean(value?.executionDiagnosticsPersistenceAvailable),
     httpClientProfilingAvailable: Boolean(value?.httpClientProfilingAvailable),
     persistentCoordinationAvailable: Boolean(value?.persistentCoordinationAvailable),
+    schedulingAvailable: Boolean(value?.schedulingAvailable),
     sqlProfilingAvailable: Boolean(value?.sqlProfilingAvailable),
   };
 }
@@ -201,6 +262,7 @@ export type WorkDefinition = {
   outputSchema?: WorkSchema | null;
   defaultOptions?: WorkerOptions | null;
   configuration?: WorkConfiguration | null;
+  scheduleSecurityVersion?: string;
   metadata?: Record<string, unknown> | null;
   revision: number;
 };

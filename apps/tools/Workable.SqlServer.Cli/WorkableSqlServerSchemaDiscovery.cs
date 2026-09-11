@@ -139,7 +139,23 @@ internal static partial class WorkableSqlServerSchemaDiscovery
                 projectPath,
                 sourcePath));
         }
+
+        if (ContainsRuntimeSchedulingConfiguration(code))
+        {
+            features.Add(new WorkableSqlServerSchemaFeatureDiscovery(
+                WorkableSqlServerSchemaFeature.RuntimeScheduling,
+                projectPath,
+                sourcePath));
+        }
     }
+
+    private static bool ContainsRuntimeSchedulingConfiguration(string source)
+        => source.Contains(".EnableScheduling(", StringComparison.Ordinal)
+            || ContainsInWindow(
+                source,
+                "UseScheduling(new WorkSystemSchedulingConfiguration",
+                "IsEnabled = true",
+                maximumWindowLength: 600);
 
     private static bool ContainsExecutionDiagnosticsPersistenceConfiguration(string source)
         => source.Contains("AddWorkableSqlServerPersistence", StringComparison.Ordinal)
@@ -555,4 +571,5 @@ internal enum WorkableSqlServerSchemaFeature
     PersistenceBackedConcurrency,
     DurableWorkflow,
     ExecutionDiagnosticsPersistence,
+    RuntimeScheduling,
 }

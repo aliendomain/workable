@@ -83,7 +83,7 @@ public sealed class WorkableHttpQueueAdapter(
             result.Messages);
     }
 
-    private static WorkInput CreateInput(WorkableHttpWorkRequest? request)
+    internal static WorkInput CreateInput(WorkableHttpWorkRequest? request)
     {
         var input = request?.Input is { } json
             ? WorkInput.FromJson(

@@ -136,6 +136,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
           executionDiagnosticsPersistenceAvailable: false,
           httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: true,
+          schedulingAvailable: false,
           sqlProfilingAvailable: false,
         },
         state: "Started",
@@ -148,6 +149,7 @@ test("reconcile stored host updates realtime metadata, preserves matched ids, an
           executionDiagnosticsPersistenceAvailable: false,
           httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: false,
+          schedulingAvailable: false,
           sqlProfilingAvailable: false,
         },
         state: "Stopped",
@@ -704,6 +706,7 @@ test("navigation system helpers cover access badges, names, lifecycle, and state
   assert.equal(navTitle("iteration"), "Iteration");
   assert.equal(navTitle("definition"), "Definition");
   assert.equal(navTitle("workers"), "Workers");
+  assert.equal(navTitle("schedules"), "Schedules");
 });
 
 function discoveredHost(options?: {
@@ -776,7 +779,18 @@ test("server tree and navigation header render expanded and breadcrumb option pa
     id: "host-1",
     name: "Workable",
     realtimeEnabled: false,
-    systems: [system({ access, id: "system-1", name: "Ops", systemName: "Ops" })],
+    systems: [system({
+      access,
+      capabilities: {
+        httpClientProfilingAvailable: false,
+        persistentCoordinationAvailable: true,
+        schedulingAvailable: true,
+        sqlProfilingAvailable: false,
+      },
+      id: "system-1",
+      name: "Ops",
+      systemName: "Ops",
+    })],
   };
 
   const tree = renderMarkup(
@@ -809,6 +823,7 @@ test("server tree and navigation header render expanded and breadcrumb option pa
   assertMarkupIncludes(tree, "Catalog");
   assertMarkupIncludes(tree, "Workers");
   assertMarkupIncludes(tree, "Iterations");
+  assertMarkupIncludes(tree, "Schedules");
   assertMarkupIncludes(tree, "Stop the workable system &#x27;Ops&#x27; at https://workable.test");
   assertMarkupIncludes(tree, "Add server");
 

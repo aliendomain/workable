@@ -162,7 +162,7 @@ public sealed class WorkableSqlServerServiceCollectionExtensionsShould
     }
 
     [Fact]
-    public async Task ShareOneSchemaInitializerAcrossQueueWorkflowAndDiagnosticsRepositories()
+    public async Task ShareOneSchemaInitializerAcrossPersistenceRepositories()
     {
         var deployments = 0;
         var validations = new Dictionary<WorkableSqlServerSchemaComponent, int>();
@@ -184,17 +184,22 @@ public sealed class WorkableSqlServerServiceCollectionExtensionsShould
         await using var provider = services.BuildServiceProvider();
         var store = provider.GetRequiredService<WorkableSqlServerQueueDurabilityStore>();
         var diagnostics = provider.GetRequiredService<WorkableSqlServerExecutionDiagnosticsRepository>();
+        var schedules = provider.GetRequiredService<WorkableSqlServerScheduleStore>();
 
         await diagnostics.Initialize(new WorkExecutionDiagnosticsInitializationContext(WorkSystemId.New(), "first"));
         await diagnostics.Initialize(new WorkExecutionDiagnosticsInitializationContext(WorkSystemId.New(), "second"));
         await store.Initialize(new WorkQueueDurabilityInitializationContext(WorkSystemId.New(), "first", []));
         await store.Initialize(new WorkQueueDurabilityInitializationContext(WorkSystemId.New(), "second", []));
         await store.InitializeWorkflows(new WorkflowPersistenceInitializationContext("first", []));
+        await schedules.Initialize(new WorkScheduleStoreInitializationContext("first"));
+        await schedules.Initialize(new WorkScheduleStoreInitializationContext("second"));
 
         Assert.Same(schemaInitializer, provider.GetRequiredService<WorkableSqlServerSchemaInitializer>());
         Assert.Equal(1, deployments);
         Assert.Equal(1, validations[WorkableSqlServerSchemaComponent.ExecutionDiagnostics]);
         Assert.Equal(1, validations[WorkableSqlServerSchemaComponent.QueueDurability]);
         Assert.Equal(1, validations[WorkableSqlServerSchemaComponent.WorkflowPersistence]);
+        Assert.Equal(1, validations[WorkableSqlServerSchemaComponent.Scheduling]);
+        Assert.Same(schedules, provider.GetRequiredService<IWorkScheduleStore>());
     }
 }

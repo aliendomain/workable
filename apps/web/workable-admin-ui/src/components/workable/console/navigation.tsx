@@ -3,6 +3,7 @@
 import {
   Activity,
   Boxes,
+  CalendarClock,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -110,6 +111,7 @@ const navItems: Array<{ id: ServerView; label: string; icon: typeof Activity }> 
   { id: "definitions", label: "Catalog", icon: Boxes },
   { id: "workers", label: "Workers", icon: Workflow },
   { id: "iterations", label: "Iterations", icon: Clock3 },
+  { id: "schedules", label: "Schedules", icon: CalendarClock },
 ];
 export const catalogExplorerShellClassName =
   "relative z-10 -ml-11 mr-0 mb-2 mt-1 w-[calc(var(--sidebar-width)-2rem)] overflow-hidden rounded-md border border-sidebar-border bg-sidebar group-data-[collapsible=icon]:hidden";
@@ -332,7 +334,9 @@ export function ServerTree({
                       </div>
                       {isSystemExpanded && (
                         <SidebarMenuSub className="ml-2 mr-0 pr-0">
-                          {navItems.map((item) => {
+                          {navItems
+                            .filter((item) => item.id !== "schedules" || system.capabilities.schedulingAvailable === true)
+                            .map((item) => {
                             const isCatalog = item.id === "definitions";
                             const isCatalogOpen = openCatalogSystemIds.includes(system.id);
 
