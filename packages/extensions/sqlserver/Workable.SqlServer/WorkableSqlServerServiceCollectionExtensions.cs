@@ -6,7 +6,7 @@ namespace Workable.SqlServer;
 public static class WorkableSqlServerServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers SQL Server storage for persistent execution diagnostics and future shared persistence features.
+    /// Registers SQL Server storage for runtime schedules and persistent execution diagnostics.
     /// </summary>
     public static IServiceCollection AddWorkableSqlServerPersistence(
         this IServiceCollection services,
@@ -23,7 +23,7 @@ public static class WorkableSqlServerServiceCollectionExtensions
         });
 
     /// <summary>
-    /// Registers SQL Server storage for persistent execution diagnostics and future shared persistence features.
+    /// Registers SQL Server storage for runtime schedules and persistent execution diagnostics.
     /// </summary>
     public static IServiceCollection AddWorkableSqlServerPersistence(
         this IServiceCollection services,
@@ -74,6 +74,9 @@ public static class WorkableSqlServerServiceCollectionExtensions
         services.TryAddSingleton<WorkableSqlServerExecutionDiagnosticsRepository>();
         services.TryAddSingleton<IWorkExecutionDiagnosticsRepository>(serviceProvider =>
             serviceProvider.GetRequiredService<WorkableSqlServerExecutionDiagnosticsRepository>());
+        services.TryAddSingleton<WorkableSqlServerScheduleStore>();
+        services.TryAddSingleton<IWorkScheduleStore>(serviceProvider =>
+            serviceProvider.GetRequiredService<WorkableSqlServerScheduleStore>());
         services.TryAddSingleton(serviceProvider =>
         {
             var persistenceOptions = serviceProvider.GetRequiredService<WorkableSqlServerPersistenceOptions>();

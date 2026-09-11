@@ -51,7 +51,7 @@ public interface IWorkAuthorizationBuilder
     IWorkAuthorizationBuilder AllowOperateToGroups(params string[] groups);
 
     /// <summary>
-    /// Adds a group-based operate grant with additional synchronous queue, worker-action, and reconfiguration requirements.
+    /// Adds a group-based operate grant with additional synchronous queue, worker-action, schedule-action, and reconfiguration requirements.
     /// </summary>
     /// <param name="groups">The groups that can satisfy this operate grant.</param>
     /// <param name="configure">Configures the additional synchronous requirement checks for the grant.</param>
@@ -124,7 +124,7 @@ public interface IWorkAuthorizationBuilder
 
     /// <summary>
     /// Allows operate access for callers that are authenticated and resolve to a known Workable actor,
-    /// then applies additional synchronous queue, worker-action, and reconfiguration requirements.
+    /// then applies additional synchronous queue, worker-action, schedule-action, and reconfiguration requirements.
     /// </summary>
     /// <param name="configure">Configures the additional synchronous requirement checks for the grant.</param>
     /// <returns>The same builder so additional authorization rules can be chained.</returns>

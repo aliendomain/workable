@@ -93,6 +93,29 @@ internal sealed record WorkOperateAuthorizationConfiguration(
                 null,
                 null));
 
+    public WorkOperateAuthorizationDecision EvaluateScheduleCancel(
+        IReadOnlySet<string> groups,
+        bool isKnownAuthenticatedUser,
+        WorkDefinition definition,
+        string scheduleId,
+        WorkInput? input,
+        WorkRequestContext requestContext)
+        => this.Evaluate(
+            groups,
+            isKnownAuthenticatedUser,
+            new WorkOperateAuthorizationEvaluationContext(
+                definition,
+                requestContext,
+                WorkOperateRequirementSurface.ScheduleAction,
+                WorkOperationPermissions.Cancel,
+                input,
+                null,
+                null,
+                WorkOperateAction.Cancel,
+                null,
+                null,
+                scheduleId));
+
     public WorkOperateAuthorizationDecision EvaluateWorkerReconfiguration(
         IReadOnlySet<string> groups,
         bool isKnownAuthenticatedUser,
@@ -239,6 +262,13 @@ internal sealed record WorkOperateAuthorizationGrant(
 
         if (applicableRequirementCount == 0)
         {
+            if (context.Surface == WorkOperateRequirementSurface.ScheduleAction &&
+                this.Requirements.Any(static requirement =>
+                    (requirement.Targets & WorkOperateRequirementTargets.WorkerAction) != 0))
+            {
+                return WorkOperateAuthorizationDecision.Deny();
+            }
+
             return WorkOperateAuthorizationDecision.Allow();
         }
 
@@ -264,8 +294,9 @@ internal enum WorkOperateRequirementTargets
     WorkerAction = 2,
     WorkerReconfiguration = 4,
     DefinitionReconfiguration = 8,
+    ScheduleAction = 16,
     Reconfiguring = WorkerReconfiguration | DefinitionReconfiguration,
-    Operating = Queueing | WorkerAction | Reconfiguring,
+    Operating = Queueing | WorkerAction | ScheduleAction | Reconfiguring,
 }
 
 internal readonly record struct WorkOperateAuthorizationEvaluationContext(
@@ -278,7 +309,8 @@ internal readonly record struct WorkOperateAuthorizationEvaluationContext(
     string? WorkerId,
     WorkOperateAction? Action,
     WorkWorkerReconfigurationChanges? WorkerChanges,
-    WorkDefinitionReconfigurationChanges? DefinitionChanges);
+    WorkDefinitionReconfigurationChanges? DefinitionChanges,
+    string? ScheduleId = null);
 
 internal readonly record struct WorkOperateAuthorizationDecision(
     bool IsAllowed,
@@ -334,6 +366,7 @@ internal static class WorkOperateRequirementTargetsExtensions
             WorkOperateRequirementSurface.WorkerAction => WorkOperateRequirementTargets.WorkerAction,
             WorkOperateRequirementSurface.WorkerReconfiguration => WorkOperateRequirementTargets.WorkerReconfiguration,
             WorkOperateRequirementSurface.DefinitionReconfiguration => WorkOperateRequirementTargets.DefinitionReconfiguration,
+            WorkOperateRequirementSurface.ScheduleAction => WorkOperateRequirementTargets.ScheduleAction,
             _ => throw new InvalidOperationException($"Unsupported operate requirement surface '{surface}'."),
         };
 }
@@ -357,7 +390,10 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
                 context.Action,
                 context.WorkerId,
                 context.WorkerChanges,
-                context.DefinitionChanges))
+                context.DefinitionChanges)
+                {
+                    ScheduleId = context.ScheduleId,
+                })
                 ? WorkOperateAuthorizationDecision.Allow()
                 : WorkOperateAuthorizationDecision.Deny()));
         return this;
@@ -382,7 +418,10 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
                     context.Action,
                     context.WorkerId,
                     context.WorkerChanges,
-                    context.DefinitionChanges)))));
+                    context.DefinitionChanges)
+                    {
+                        ScheduleId = context.ScheduleId,
+                    }))));
         return this;
     }
 
@@ -467,6 +506,58 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
                         context.Definition,
                         context.RequestContext,
                         workerId,
+                        context.RawInput,
+                        action,
+                        typedInput));
+                })));
+        return this;
+    }
+
+    public IWorkOperateRequirementBuilder WhenScheduleActionsRequire(
+        Func<WorkScheduleActionRequirementContext, bool> requirement)
+    {
+        ArgumentNullException.ThrowIfNull(requirement);
+
+        this.requirements.Add(new WorkOperateRequirementRegistration(
+            WorkOperateRequirementTargets.ScheduleAction,
+            context =>
+            {
+                var action = context.Action
+                    ?? throw new InvalidOperationException("Schedule-action requirements require an action.");
+                var scheduleId = context.ScheduleId
+                    ?? throw new InvalidOperationException("Schedule-action requirements require a schedule id.");
+                return requirement(new WorkScheduleActionRequirementContext(
+                    context.Definition,
+                    context.RequestContext,
+                    scheduleId,
+                    context.RawInput,
+                    action))
+                    ? WorkOperateAuthorizationDecision.Allow()
+                    : WorkOperateAuthorizationDecision.Deny();
+            }));
+        return this;
+    }
+
+    public IWorkOperateRequirementBuilder WhenScheduleActionsRequire<TInput>(
+        Func<WorkScheduleActionRequirementContext<TInput>, bool> requirement)
+    {
+        ArgumentNullException.ThrowIfNull(requirement);
+
+        this.requirements.Add(new WorkOperateRequirementRegistration(
+            WorkOperateRequirementTargets.ScheduleAction,
+            context => EvaluateTyped<TInput>(
+                context,
+                typeof(TInput),
+                typedInput =>
+                {
+                    var action = context.Action
+                        ?? throw new InvalidOperationException("Schedule-action requirements require an action.");
+                    var scheduleId = context.ScheduleId
+                        ?? throw new InvalidOperationException("Schedule-action requirements require a schedule id.");
+                    return requirement(new WorkScheduleActionRequirementContext<TInput>(
+                        context.Definition,
+                        context.RequestContext,
+                        scheduleId,
                         context.RawInput,
                         action,
                         typedInput));
@@ -614,6 +705,9 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
                 WorkOperateRequirementSurface.WorkerAction => InvalidWorkerActionMessages(
                     context.WorkerId ?? throw new InvalidOperationException("Worker-action requirements require a worker id."),
                     inputType),
+                WorkOperateRequirementSurface.ScheduleAction => InvalidScheduleActionMessages(
+                    context.ScheduleId ?? throw new InvalidOperationException("Schedule-action requirements require a schedule id."),
+                    inputType),
                 WorkOperateRequirementSurface.WorkerReconfiguration => InvalidWorkerReconfigurationMessages(
                     context.WorkerId ?? throw new InvalidOperationException("Worker-reconfiguration requirements require a worker id."),
                     inputType),
@@ -654,6 +748,17 @@ internal sealed class WorkOperateRequirementBuilder : IWorkOperateRequirementBui
                 "workable.authorization.operate_requirement_input_invalid",
                 $"Worker '{workerId}' could not evaluate its reconfiguration requirement because the retained input could not be deserialized as '{DescribeType(inputType)}'.",
                 "worker.input"),
+        ];
+
+    private static IReadOnlyList<WorkMessage> InvalidScheduleActionMessages(
+        string scheduleId,
+        Type inputType)
+        =>
+        [
+            WorkMessage.Error(
+                "workable.authorization.operate_requirement_input_invalid",
+                $"Schedule '{scheduleId}' could not evaluate its operate requirement because the retained input could not be deserialized as '{DescribeType(inputType)}'.",
+                "schedule.input"),
         ];
 
     private static WorkReconfigurationRequirementSurface ToReconfigurationSurface(WorkOperateRequirementSurface surface)

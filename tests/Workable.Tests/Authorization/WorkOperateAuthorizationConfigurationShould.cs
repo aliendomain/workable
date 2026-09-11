@@ -109,6 +109,7 @@ public sealed class WorkOperateAuthorizationConfigurationShould
         Assert.StartsWith($"Work '{Definition.Name}' authorization", named.Message, StringComparison.Ordinal);
         Assert.Equal(WorkOperateRequirementTargets.Queueing, WorkOperateRequirementSurface.Queueing.ToTargets());
         Assert.Equal(WorkOperateRequirementTargets.WorkerAction, WorkOperateRequirementSurface.WorkerAction.ToTargets());
+        Assert.Equal(WorkOperateRequirementTargets.ScheduleAction, WorkOperateRequirementSurface.ScheduleAction.ToTargets());
         Assert.Equal(WorkOperateRequirementTargets.WorkerReconfiguration, WorkOperateRequirementSurface.WorkerReconfiguration.ToTargets());
         Assert.Equal(WorkOperateRequirementTargets.DefinitionReconfiguration, WorkOperateRequirementSurface.DefinitionReconfiguration.ToTargets());
         Assert.Throws<InvalidOperationException>(() => ((WorkOperateRequirementSurface)int.MaxValue).ToTargets());
@@ -122,10 +123,27 @@ public sealed class WorkOperateAuthorizationConfigurationShould
         AssertBoth(() => Build(builder => builder.WhenOperatingRequire(_ => allow)), QueueContext(), ref allow);
         AssertBoth(() => Build(builder => builder.WhenQueueingRequire(_ => allow)), QueueContext(), ref allow);
         AssertBoth(() => Build(builder => builder.WhenWorkerActionsRequire(_ => allow)), WorkerActionContext(), ref allow);
+        AssertBoth(() => Build(builder => builder.WhenScheduleActionsRequire(_ => allow)), ScheduleActionContext(), ref allow);
         AssertBoth(() => Build(builder => builder.WhenReconfiguringRequire(_ => allow)), WorkerReconfigurationContext(), ref allow);
         AssertBoth(() => Build(builder => builder.WhenReconfiguringRequire(_ => allow)), DefinitionReconfigurationContext(), ref allow);
         AssertBoth(() => Build(builder => builder.WhenWorkerReconfiguringRequire(_ => allow)), WorkerReconfigurationContext(), ref allow);
         AssertBoth(() => Build(builder => builder.WhenDefinitionReconfiguringRequire(_ => allow)), DefinitionReconfigurationContext(), ref allow);
+    }
+
+    [Fact]
+    public void EvaluateTypedScheduleActionRequirementsForAllowedAndDeniedRequests()
+    {
+        var allow = false;
+        var context = ScheduleActionContext(WorkInput.FromValue(new RequirementInput("value")));
+
+        AssertBoth(
+            () => Build(builder => builder.WhenScheduleActionsRequire<RequirementInput>(requirementContext =>
+                requirementContext.ScheduleId == "schedule-1" &&
+                requirementContext.Action == WorkOperateAction.Cancel &&
+                requirementContext.Input?.Value == "value" &&
+                allow)),
+            context,
+            ref allow);
     }
 
     [Fact]
@@ -141,6 +159,22 @@ public sealed class WorkOperateAuthorizationConfigurationShould
         var typedWorkerAction = Build(builder => builder.WhenWorkerActionsRequire<object>(_ => true));
         Assert.Throws<InvalidOperationException>(() => typedWorkerAction.Evaluate(WorkerActionContext() with { Action = null }));
         Assert.Throws<InvalidOperationException>(() => typedWorkerAction.Evaluate(WorkerActionContext() with { WorkerId = null }));
+
+        var scheduleAction = Build(builder => builder.WhenScheduleActionsRequire(_ => true));
+        Assert.Throws<InvalidOperationException>(() => scheduleAction.Evaluate(ScheduleActionContext() with { Action = null }));
+        Assert.Throws<InvalidOperationException>(() => scheduleAction.Evaluate(ScheduleActionContext() with { ScheduleId = null }));
+
+        var typedScheduleAction = Build(builder => builder.WhenScheduleActionsRequire<RequirementInput>(_ => true));
+        Assert.Throws<InvalidOperationException>(() => typedScheduleAction.Evaluate(
+            ScheduleActionContext() with { Action = null }));
+        Assert.Throws<InvalidOperationException>(() => typedScheduleAction.Evaluate(
+            ScheduleActionContext() with { ScheduleId = null }));
+        var invalidScheduleInput = typedScheduleAction.Evaluate(
+            ScheduleActionContext(WorkInput.FromValue("not-an-object")));
+        Assert.True(invalidScheduleInput.IsInvalid);
+        Assert.Contains(invalidScheduleInput.Messages, message =>
+            message.Code == "workable.authorization.operate_requirement_input_invalid" &&
+            message.Target == "schedule.input");
 
         var workerReconfiguration = Build(builder => builder.WhenWorkerReconfiguringRequire(_ => true));
         Assert.Throws<InvalidOperationException>(() => workerReconfiguration.Evaluate(
@@ -175,6 +209,18 @@ public sealed class WorkOperateAuthorizationConfigurationShould
             .GetMethod("DescribeType", BindingFlags.Static | BindingFlags.NonPublic)!
             .Invoke(null, [genericParameter]);
         Assert.Equal(genericParameter.Name, described);
+    }
+
+    [Fact]
+    public void RequireAnExplicitScheduleRuleWhenCancelIsConstrainedToWorkerActions()
+    {
+        var workerConstrained = Build(builder => builder.WhenWorkerActionsRequire(_ => true));
+        var queueConstrained = Build(builder => builder.WhenQueueingRequire(_ => false));
+        var scheduleConstrained = Build(builder => builder.WhenScheduleActionsRequire(_ => true));
+
+        Assert.False(workerConstrained.Evaluate(ScheduleActionContext()).IsAllowed);
+        Assert.True(queueConstrained.Evaluate(ScheduleActionContext()).IsAllowed);
+        Assert.True(scheduleConstrained.Evaluate(ScheduleActionContext()).IsAllowed);
     }
 
     private static void AssertBoth(
@@ -221,6 +267,20 @@ public sealed class WorkOperateAuthorizationConfigurationShould
             null,
             null);
 
+    private static WorkOperateAuthorizationEvaluationContext ScheduleActionContext(WorkInput? input = null)
+        => new(
+            Definition,
+            RequestContext,
+            WorkOperateRequirementSurface.ScheduleAction,
+            WorkOperationPermissions.Cancel,
+            input,
+            null,
+            null,
+            WorkOperateAction.Cancel,
+            null,
+            null,
+            "schedule-1");
+
     private static WorkOperateAuthorizationEvaluationContext WorkerReconfigurationContext()
         => new(
             Definition,
@@ -249,6 +309,8 @@ public sealed class WorkOperateAuthorizationConfigurationShould
 
     private static IReadOnlySet<string> Groups(params string[] groups)
         => groups.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record RequirementInput(string Value);
 
     private sealed class GenericType<T>;
 }

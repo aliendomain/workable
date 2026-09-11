@@ -208,7 +208,7 @@ The response includes host capabilities plus each visible system's id, optional 
 
 The host-level `capabilities` object lets clients discover optional transport features exposed by the host. `realtime` is enabled only after a Workable SignalR endpoint is mapped for advertisement; registering its services without mapping a hub does not advertise a route clients cannot use.
 
-The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination. `sqlProfilingAvailable` and `httpClientProfilingAvailable` report whether the corresponding automatic profiling instrumentation is registered for captured worker profiles.
+The per-system `capabilities` object is reserved for system-specific runtime behavior. `persistentCoordinationAvailable` tells clients whether that system currently has persistent coordination available through a registered persistence store. In practice, that means persistent coordination settings such as `storage: "Persistent"` can be honored for features like durable queueing, persistence-backed idempotency, and persistence-backed coordination. `schedulingAvailable` reports whether runtime scheduling is enabled with a usable store; clients can then offer the HTTP schedule-creation route. `sqlProfilingAvailable` and `httpClientProfilingAvailable` report whether the corresponding automatic profiling instrumentation is registered for captured worker profiles.
 
 The systems list is filtered to systems where the caller has actual access. Read access, operate access, diagnostics access, control access, or administrator roles are all enough to make a system visible.
 For callers that cannot discover every definition, the HTTP projection sets `totalDefinitionCount` to the caller's discoverable count so hidden definition cardinality is not exposed. `canDiscoverAllWork` remains the authoritative indication that the count covers the complete system.
@@ -590,6 +590,80 @@ Content-Type: application/json
   }
 }
 ```
+
+## Schedule Work
+
+Schedule the same input and worker options for one future run, a recurring elapsed-time interval, or calendar recurrence defined by cron. Schedule creation applies the target definition's queue authorization, queue requirements, HTTP invocation rules, queue-input validation, and configured storage admission limits, just like immediate queueing. Acceptance becomes a durable execution grant: later occurrences do not re-resolve the creator's groups or repeat queue authorization, but later definition changes cannot add full-profile capture when the creation grant lacked diagnostics permission. Authorization and creation-time validation use the same resolved definition instance. The schedule retains the authenticated request actor for worker audit and resolves the definition by name again whenever it fires. A definition's developer-controlled `scheduleSecurityVersion` is retained in the grant; incrementing that version causes older schedules to reject dispatch when a deployment changes the work's authority or business scope.
+
+```http
+POST /workable/work/email.welcome.send/schedules
+Content-Type: application/json
+
+{
+  "timing": {
+    "firstRunAt": "2026-09-11T16:00:00Z",
+    "interval": "06:00:00",
+    "runMissedExecution": true
+  },
+  "work": {
+    "input": {
+      "userId": "user-123"
+    },
+    "options": {
+      "profilingEnabled": true
+    },
+    "description": "Scheduled from operations"
+  }
+}
+```
+
+Set `interval` to `null` or omit it for a one-time schedule. Intervals use the .NET `TimeSpan` JSON form, such as `00:15:00` for 15 minutes or `1.00:00:00` for one day. The named-system form is `POST /workable/systems/{systemName}/work/{definitionName}/schedules`.
+
+For calendar recurrence, omit `interval` and set `cronExpression` and `timeZoneId`. `firstRunAt` becomes the earliest eligible instant rather than necessarily being an occurrence. Cron uses Cronos five-field syntax in the order `minute hour day-of-month month day-of-week`; expressions and time-zone ids are each limited to 256 characters, and when both day fields are restricted, both must match. Use a stable IANA time-zone identifier for cross-platform hosts.
+
+```json
+{
+  "timing": {
+    "firstRunAt": "2026-09-11T00:00:00Z",
+    "cronExpression": "0 9 * * 1-5",
+    "timeZoneId": "America/Los_Angeles",
+    "runMissedExecution": true
+  },
+  "work": {
+    "input": {
+      "userId": "user-123"
+    }
+  }
+}
+```
+
+Clients can validate and preview between one and ten upcoming occurrences without creating a schedule through `POST /workable/schedules/cron-preview`, or the named-system form `POST /workable/systems/{systemName}/schedules/cron-preview`:
+
+```json
+{
+  "cronExpression": "0 9 * * 1-5",
+  "timeZoneId": "America/Los_Angeles",
+  "startsAt": "2026-09-11T00:00:00Z",
+  "count": 5
+}
+```
+
+The response contains an `occurrences` array of timezone-aware instants. Invalid expressions, time zones, impossible schedules, or counts outside `1` through `10` return `400` with structured messages.
+
+The nested `work` object uses the queue request's input, identity, options, and description fields. `completion: "WaitForCompletion"` is rejected because an HTTP request cannot wait for a future scheduled worker; schedule creation always returns after the schedule is accepted.
+
+An accepted schedule returns `200 OK`. Invalid timing, queue input, or options—including an interval shorter than one minute, an oversized serialized schedule, or a definition name beyond the configured store's durable bound—return `400`; missing or non-discoverable definitions return `404`; failed queue authorization returns `403`; exhausted active or retained schedule capacity returns `409`; and a system without enabled scheduling returns `503`.
+
+Manage existing schedules through:
+
+```http
+GET  /workable/schedules?definitionName=email.welcome.send&status=Active&take=100
+GET  /workable/schedules/{scheduleId}
+GET  /workable/schedules/{scheduleId}/occurrences?take=100
+POST /workable/schedules/{scheduleId}/cancel
+```
+
+The list response contains a bounded `schedules` summary array with timing, status, creator, `nextRunAt`, and `lastRunAt`; it omits each schedule's retained input and worker options. When another page exists the response also contains a `cursor` with `createdAt` and `scheduleId`; pass those values as the next request's `cursorCreatedAt` and `cursorScheduleId`. Both cursor parameters must be supplied together. The detail route returns the full snapshot. The occurrence response contains retained dispatch attempts and any accepted worker id. List, detail, and history use the target definition's read permission; orphaned schedules whose definition has been removed require explicit system-level `ReadAllWork`. Cancellation uses its cancel permission and returns `400` for an invalid canceler identity, or `409` when the schedule is already completed, canceled, or has crossed the atomic dispatch-start boundary. Schedule-list `take` must be between one and 1,000; occurrence-history `take` must be between one and 100 and the configured response budget defaults to 4 MiB of occurrence messages. Creator and canceler actor fields longer than 512 characters are rejected rather than truncated. Named systems use the same route shapes below `/workable/systems/{systemName}`.
 
 ## Views And Components
 

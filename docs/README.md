@@ -22,6 +22,7 @@ Start with [Getting Started](guides/getting-started.md) if you are evaluating wh
 - [Registration](guides/registration.md): define work in feature assemblies, generate definitions from sources, queue startup work, target named systems, and isolate catalogs.
 - [Workflows](guides/workflows.md): register multi-step orchestrations that dispatch existing work definitions, fan out from typed outputs, run named parallel branches, and join on completion.
 - [Queueing](guides/queueing.md): queue work by name, pass input, set queue options, and await completion.
+- [Runtime Scheduling](guides/scheduling.md): durably queue work in the future, at a caller-created interval, or from a timezone-aware cron expression, with creation-time authorization delegation and missed-run policy.
 - [Configuration](guides/configuration/README.md): configuration sources, override order, and runtime reconfiguration rules.
   - [Start Configuration](guides/configuration/start.md): automatic start behavior and when queue calls return.
   - [Idempotency Configuration](guides/configuration/idempotency.md): duplicate prevention by `WorkSubjectId`.

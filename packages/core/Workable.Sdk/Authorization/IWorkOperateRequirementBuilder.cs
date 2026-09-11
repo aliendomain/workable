@@ -1,12 +1,12 @@
 namespace Workable;
 
 /// <summary>
-/// Configures additional synchronous operate requirements for queueing, worker actions, and reconfiguration.
+/// Configures additional synchronous operate requirements for queueing, worker actions, schedule actions, and reconfiguration.
 /// </summary>
 public interface IWorkOperateRequirementBuilder
 {
     /// <summary>
-    /// Adds a requirement that can authorize queueing, worker actions, and reconfiguration.
+    /// Adds a requirement that can authorize queueing, worker actions, schedule actions, and reconfiguration.
     /// </summary>
     /// <param name="requirement">The synchronous requirement to evaluate.</param>
     /// <returns>The same builder so additional requirements can be chained.</returns>
@@ -14,7 +14,7 @@ public interface IWorkOperateRequirementBuilder
         Func<WorkOperateRequirementContext, bool> requirement);
 
     /// <summary>
-    /// Adds a typed requirement that can authorize queueing, worker actions, and worker reconfiguration.
+    /// Adds a typed requirement that can authorize queueing, worker actions, schedule actions, and reconfiguration.
     /// </summary>
     /// <typeparam name="TInput">The input type to deserialize before evaluation.</typeparam>
     /// <param name="requirement">The synchronous requirement to evaluate.</param>
@@ -55,6 +55,23 @@ public interface IWorkOperateRequirementBuilder
     /// <returns>The same builder so additional requirements can be chained.</returns>
     IWorkOperateRequirementBuilder WhenWorkerActionsRequire<TInput>(
         Func<WorkWorkerActionRequirementContext<TInput>, bool> requirement);
+
+    /// <summary>
+    /// Adds a requirement that applies only to runtime-schedule actions.
+    /// </summary>
+    /// <param name="requirement">The synchronous requirement to evaluate.</param>
+    /// <returns>The same builder so additional requirements can be chained.</returns>
+    IWorkOperateRequirementBuilder WhenScheduleActionsRequire(
+        Func<WorkScheduleActionRequirementContext, bool> requirement);
+
+    /// <summary>
+    /// Adds a typed requirement that applies only to runtime-schedule actions.
+    /// </summary>
+    /// <typeparam name="TInput">The typed retained schedule input to deserialize before evaluation.</typeparam>
+    /// <param name="requirement">The synchronous requirement to evaluate.</param>
+    /// <returns>The same builder so additional requirements can be chained.</returns>
+    IWorkOperateRequirementBuilder WhenScheduleActionsRequire<TInput>(
+        Func<WorkScheduleActionRequirementContext<TInput>, bool> requirement);
 
     /// <summary>
     /// Adds a requirement that applies to both worker and definition reconfiguration.

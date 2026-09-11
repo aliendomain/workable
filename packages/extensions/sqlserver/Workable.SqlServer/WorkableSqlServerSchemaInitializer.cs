@@ -60,6 +60,12 @@ internal sealed class WorkableSqlServerSchemaInitializer
             workSystemId.ToString(),
             cancellationToken);
 
+    public Task InitializeScheduling(string persistenceScope, CancellationToken cancellationToken)
+        => this.Initialize(
+            WorkableSqlServerSchemaComponent.Scheduling,
+            persistenceScope,
+            cancellationToken);
+
     private async Task Initialize(
         WorkableSqlServerSchemaComponent component,
         string initializationScope,
@@ -144,6 +150,8 @@ internal sealed class WorkableSqlServerSchemaInitializer
                 WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(connectionString, schemaName, cancellationToken),
             WorkableSqlServerSchemaComponent.ExecutionDiagnostics =>
                 WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(connectionString, schemaName, cancellationToken),
+            WorkableSqlServerSchemaComponent.Scheduling =>
+                WorkableSqlServerSchema.ValidateSchedulingInstalled(connectionString, schemaName, cancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown Workable SQL Server schema component."),
         };
 
@@ -166,4 +174,5 @@ internal enum WorkableSqlServerSchemaComponent
     QueueDurability,
     WorkflowPersistence,
     ExecutionDiagnostics,
+    Scheduling,
 }

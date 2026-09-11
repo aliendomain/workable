@@ -90,6 +90,26 @@ public sealed class AuthorizedWorkQueueServiceShould
     }
 
     [Fact]
+    public async Task ExecuteTheSameRegisteredWorkInstanceThatWasAuthorized()
+    {
+        var visible = CreateRegisteredWork("visible.work", authorize => authorize.AllowOperateToGroups("visible.operate"));
+        var resolved = new List<RegisteredWork>();
+        var queue = CreateQueueService(
+            groups: ["visible.operate"],
+            works: [visible],
+            out _,
+            out var inner,
+            onResolvedEnqueue: resolved.Add);
+
+        await queue.Enqueue(visible.Definition.Name, WorkInput.FromValue("raw", WorkData.DefaultJsonOptions));
+        await queue.Enqueue(visible.Definition.Name, new QueueInput("typed"));
+
+        Assert.Equal(2, resolved.Count);
+        Assert.All(resolved, work => Assert.Same(visible, work));
+        Assert.Equal(2, inner.Calls.Count);
+    }
+
+    [Fact]
     public void ForwardDurableWorkNotificationsToInnerQueue()
     {
         var queue = CreateQueueService(
@@ -418,10 +438,12 @@ public sealed class AuthorizedWorkQueueServiceShould
         out WorkSystemCatalog catalog,
         out RecordingWorkQueueService inner,
         bool isKnownAuthenticatedUser = false,
-        WorkSystemAuthorizationConfiguration? systemAuthorizationConfiguration = null)
+        WorkSystemAuthorizationConfiguration? systemAuthorizationConfiguration = null,
+        Action<RegisteredWork>? onResolvedEnqueue = null)
     {
         catalog = new WorkSystemCatalog(works, persistenceStoreAvailable: false);
-        inner = new RecordingWorkQueueService();
+        var recordingInner = new RecordingWorkQueueService();
+        inner = recordingInner;
         var requestContext = CreateRequestContext(isKnownAuthenticatedUser);
         var normalizedGroups = Groups(groups);
         return new AuthorizedWorkQueueService(
@@ -435,7 +457,18 @@ public sealed class AuthorizedWorkQueueServiceShould
                     ? null
                     : new WorkSystemAuthorizationEvaluator(systemAuthorizationConfiguration, normalizedGroups)),
             requestContext,
-            canViewDiagnostics: false);
+            canViewDiagnostics: false,
+            onResolvedEnqueue is null
+                ? null
+                : (registeredWork, input, options, cancellationToken) =>
+                {
+                    onResolvedEnqueue(registeredWork);
+                    return recordingInner.Enqueue(
+                        registeredWork.Definition.Name,
+                        input,
+                        options,
+                        cancellationToken);
+                });
     }
 
     private static WorkerSnapshot CreateWorker(string definitionName)

@@ -79,6 +79,1156 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
         await DropDatabaseIfExists(connection, this.databaseName);
     }
 
+    [Fact]
+    public async Task PersistClaimCompleteQueryAndCancelRuntimeSchedules()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var options = new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-tests",
+        };
+        var store = new WorkableSqlServerScheduleStore(options);
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var now = DateTimeOffset.UtcNow;
+        var actor = new WorkActor("sql-scheduler", "SQL Scheduler");
+        var context = WorkRequestContext.Create(
+            WorkInvocationChannel.HttpApi,
+            actor,
+            "Persist this schedule",
+            "https://workable.test/schedules",
+            isAuthenticated: true);
+        var recurringId = WorkScheduleId.New();
+        var recurring = new WorkSchedulePersistenceRecord(
+            new WorkScheduleSnapshot(
+                recurringId,
+                "operations",
+                "sql.scheduled",
+                new WorkScheduleTiming(now - TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(5)),
+                WorkInput.FromValue(new { value = "alpha" }),
+                new WorkerOptions(ProfilingEnabled: true),
+                WorkScheduleStatus.Active,
+                now - TimeSpan.FromMinutes(3),
+                actor,
+                now - TimeSpan.FromMinutes(2),
+                null,
+                null,
+                null),
+            context,
+            WorkScheduleExecutionGrant.Unrestricted);
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(recurring)));
+
+        var persisted = await store.Get(new("operations", recurringId));
+        var listed = await store.List(new("operations", "sql.scheduled", WorkScheduleStatus.Active));
+        var unfiltered = await store.List(new("operations"));
+        var missing = await store.Get(new("operations", WorkScheduleId.New()));
+        var claim = Assert.Single(await store.ClaimDue(new(
+            "operations",
+            now,
+            TimeSpan.FromMinutes(1))));
+        Assert.True(await store.BeginDispatch(new(
+            "operations",
+            recurringId,
+            claim.LeaseId,
+            now,
+            now + TimeSpan.FromMinutes(5))));
+        var workerId = WorkerId.New();
+        var occurrence = new WorkScheduleOccurrence(
+            Guid.NewGuid(),
+            recurringId,
+            claim.ScheduledAt,
+            now,
+            WorkScheduleOccurrenceStatus.Accepted,
+            WorkQueueStatus.Accepted,
+            workerId,
+            [WorkMessage.Information("scheduled", "Accepted")],
+            now + TimeSpan.FromDays(1));
+        await store.CompleteClaim(new(
+            "operations",
+            recurringId,
+            claim.LeaseId,
+            occurrence,
+            WorkScheduleStatus.Active,
+            now + TimeSpan.FromMinutes(3),
+            100_000,
+            67_108_864));
+
+        var completed = await store.Get(new("operations", recurringId));
+        var occurrences = await store.ListOccurrences(new("operations", recurringId));
+
+        Assert.NotNull(persisted);
+        Assert.Equal(context with { Authorization = null }, persisted.RequestContext);
+        Assert.Equal(WorkScheduleExecutionGrant.Unrestricted, persisted.ExecutionGrant);
+        Assert.Equal(100, persisted.SerializedPayloadBytes);
+        Assert.True(persisted.Schedule.WorkerOptions!.HasExplicitProfilingEnabled);
+        Assert.True(persisted.Schedule.WorkerOptions.ProfilingEnabled);
+        Assert.Single(listed);
+        Assert.Single(unfiltered);
+        Assert.Null(missing);
+        Assert.Equal(now + TimeSpan.FromMinutes(3), completed!.Schedule.NextRunAt);
+        Assert.Equal(now, completed.Schedule.LastRunAt);
+        var storedOccurrence = Assert.Single(occurrences);
+        Assert.Equal(workerId, storedOccurrence.WorkerId);
+        Assert.Equal("scheduled", Assert.Single(storedOccurrence.Messages).Code);
+
+        var canceler = new WorkActor("sql-canceler");
+        var canceled = await store.Cancel(new(
+            "operations",
+            recurringId,
+            now + TimeSpan.FromMinutes(1),
+            canceler));
+        var secondCancel = await store.Cancel(new(
+            "operations",
+            recurringId,
+            now + TimeSpan.FromMinutes(2),
+            canceler));
+        Assert.Equal(WorkScheduleStatus.Canceled, canceled!.Schedule.Status);
+        Assert.Equal(canceler, canceled.Schedule.CanceledBy);
+        Assert.True(canceled.SerializedPayloadBytes > completed.SerializedPayloadBytes);
+        Assert.Null(secondCancel);
+        Assert.Equal(1, await store.DeleteExpiredSchedules(new("operations", now + TimeSpan.FromMinutes(2))));
+        Assert.Null(await store.Get(new("operations", recurringId)));
+        Assert.Empty(await store.ListOccurrences(new("operations", recurringId)));
+
+        var expiredId = WorkScheduleId.New();
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(recurring with
+        {
+            Schedule = recurring.Schedule with
+            {
+                Id = expiredId,
+                CreatedAt = now,
+                NextRunAt = now,
+            },
+        })));
+        var expiredClaim = Assert.Single(await store.ClaimDue(new(
+            "operations",
+            now,
+            TimeSpan.FromMinutes(1))));
+        Assert.True(await store.BeginDispatch(new(
+            "operations",
+            expiredId,
+            expiredClaim.LeaseId,
+            now,
+            now + TimeSpan.FromMinutes(5))));
+        await store.CompleteClaim(new(
+            "operations",
+            expiredId,
+            expiredClaim.LeaseId,
+            occurrence with
+            {
+                OccurrenceId = Guid.NewGuid(),
+                ScheduleId = expiredId,
+                Status = WorkScheduleOccurrenceStatus.Skipped,
+                QueueStatus = null,
+                WorkerId = null,
+                ExpiresAt = now - TimeSpan.FromSeconds(1),
+            },
+            WorkScheduleStatus.Completed,
+            null,
+            100_000,
+            67_108_864));
+        Assert.Equal(1, await store.DeleteExpiredOccurrences(new("operations", now)));
+        Assert.Empty(await store.ListOccurrences(new("operations", expiredId)));
+
+        var releasedId = WorkScheduleId.New();
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(recurring with
+        {
+            Schedule = recurring.Schedule with
+            {
+                Id = releasedId,
+                CreatedAt = now,
+                NextRunAt = now,
+                WorkerOptions = null,
+            },
+        })));
+        var releasedClaim = Assert.Single(await store.ClaimDue(new(
+            "operations",
+            now,
+            TimeSpan.FromMinutes(1))));
+        await store.ReleaseClaim(new("operations", releasedId, releasedClaim.LeaseId));
+        var reclaimed = Assert.Single(await store.ClaimDue(new(
+            "operations",
+            now,
+            TimeSpan.FromMinutes(1))));
+        Assert.Equal(releasedId, reclaimed.Record.Schedule.Id);
+        Assert.Null((await store.Get(new("operations", releasedId)))!.Schedule.WorkerOptions);
+        Assert.Equal(1, await store.DeleteExpiredSchedules(new("operations", now + TimeSpan.FromDays(1))));
+        Assert.NotNull(await store.Get(new("operations", releasedId)));
+
+        var unnamedId = WorkScheduleId.New();
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(recurring with
+        {
+            Schedule = recurring.Schedule with
+            {
+                Id = unnamedId,
+                WorkSystemName = null,
+                CreatedAt = now,
+                NextRunAt = now + TimeSpan.FromDays(1),
+                WorkerOptions = new WorkerOptions
+                {
+                    ProfilingCaptureMode = WorkProfileCaptureMode.Full,
+                },
+            },
+        })));
+        var unnamed = await store.Get(new(null, unnamedId));
+        Assert.Null(unnamed!.Schedule.WorkSystemName);
+        Assert.False(unnamed.Schedule.WorkerOptions!.HasExplicitProfilingEnabled);
+        Assert.True(unnamed.Schedule.WorkerOptions.HasExplicitProfilingCaptureMode);
+        Assert.Equal(WorkProfileCaptureMode.Full, unnamed.Schedule.WorkerOptions.ProfilingCaptureMode);
+    }
+
+    [Fact]
+    public async Task PageSchedulesAcrossEqualCreationTimesWithoutDuplicates()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var options = new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-page-tests",
+        };
+        var store = new WorkableSqlServerScheduleStore(options);
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var createdAt = DateTimeOffset.UtcNow;
+        var expectedIds = new[]
+        {
+            new WorkScheduleId(Guid.Parse("11111111-1111-1111-1111-111111111111")),
+            new WorkScheduleId(Guid.Parse("22222222-2222-2222-2222-222222222222")),
+            new WorkScheduleId(Guid.Parse("33333333-3333-3333-3333-333333333333")),
+            new WorkScheduleId(Guid.Parse("44444444-4444-4444-4444-444444444444")),
+        };
+        foreach (var record in expectedIds.Select(id =>
+        {
+            var record = CreateSqlScheduleRecord(
+                id,
+                "sql.schedule.page",
+                WorkScheduleTiming.Once(createdAt + TimeSpan.FromHours(1)),
+                createdAt);
+            return record with { Schedule = record.Schedule with { WorkSystemName = "operations" } };
+        }))
+        {
+            Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(record)));
+        }
+
+        var first = await store.List(new WorkScheduleStoreListRequest(
+            "operations",
+            Status: WorkScheduleStatus.Active,
+            Take: 2));
+        var firstLast = first[^1];
+        var second = await store.List(new WorkScheduleStoreListRequest(
+            "operations",
+            Status: WorkScheduleStatus.Active,
+            Take: 2,
+            Cursor: new WorkScheduleCursor(firstLast.CreatedAt, firstLast.Id)));
+
+        Assert.Equal(2, first.Count);
+        Assert.Equal(2, second.Count);
+        Assert.Equal(
+            expectedIds.OrderBy(id => id.Value),
+            first.Concat(second).Select(schedule => schedule.Id).OrderBy(id => id.Value));
+    }
+
+    [Fact]
+    public async Task ApplyScheduleReadScopesBeforeTakeAndPreserveCancellationPayloadQuotas()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = $"schedule-security-bounds-{Guid.NewGuid():N}",
+        });
+        await store.Initialize(new(null));
+        var now = DateTimeOffset.UtcNow;
+        var visible = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.visible",
+            WorkScheduleTiming.Once(now + TimeSpan.FromDays(1)),
+            now);
+        var hidden = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.hidden",
+            WorkScheduleTiming.Once(now + TimeSpan.FromDays(1)),
+            now + TimeSpan.FromSeconds(1));
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(visible)));
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(hidden)));
+
+        var scoped = await store.List(new(
+            null,
+            Take: 1,
+            DefinitionNames: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "sql.schedule.visible" }));
+
+        Assert.Equal("sql.schedule.visible", Assert.Single(scoped).DefinitionName);
+
+        const long basePayloadBytes = 100;
+        var reservedPayloadBytes = basePayloadBytes +
+            WorkScheduleStoreCreateRequest.CancellationActorPayloadReserveBytes;
+        var reserving = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.cancel-reserve",
+            WorkScheduleTiming.Once(now + TimeSpan.FromDays(1)),
+            now + TimeSpan.FromSeconds(2));
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(
+            reserving,
+            payloadSizeBytes: reservedPayloadBytes,
+            cancellationPayloadReserveBytes: WorkScheduleStoreCreateRequest.CancellationActorPayloadReserveBytes)));
+
+        var canceled = await store.Cancel(new(
+            null,
+            reserving.Schedule.Id,
+            now,
+            new WorkActor("bounded-canceler")));
+
+        Assert.NotNull(canceled);
+        Assert.True(canceled.SerializedPayloadBytes <= reservedPayloadBytes);
+
+        var terminal = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.completed-reserve",
+            WorkScheduleTiming.Once(now),
+            now - TimeSpan.FromSeconds(1));
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(
+            terminal,
+            payloadSizeBytes: reservedPayloadBytes,
+            cancellationPayloadReserveBytes: WorkScheduleStoreCreateRequest.CancellationActorPayloadReserveBytes)));
+        var claim = Assert.Single(await store.ClaimDue(new(null, now, TimeSpan.FromMinutes(1))));
+        Assert.True(await store.BeginDispatch(new(
+            null,
+            terminal.Schedule.Id,
+            claim.LeaseId,
+            now,
+            now + TimeSpan.FromMinutes(1))));
+        await store.CompleteClaim(new(
+            null,
+            terminal.Schedule.Id,
+            claim.LeaseId,
+            CreateSqlOccurrence(terminal.Schedule.Id, claim, now, WorkerId.New()),
+            WorkScheduleStatus.Completed,
+            NextRunAt: null,
+            MaximumRetainedOccurrences: 100,
+            MaximumRetainedOccurrencePayloadBytes: 1_000_000));
+
+        var completed = await store.Get(new(null, terminal.Schedule.Id));
+        Assert.Equal(basePayloadBytes, completed!.SerializedPayloadBytes);
+    }
+
+    [Fact]
+    public async Task PersistCronScheduleTimingWithoutASeparateSchemaShape()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-cron",
+        });
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var startsAt = new DateTimeOffset(2026, 9, 10, 0, 0, 0, TimeSpan.Zero);
+        var timing = WorkScheduleTiming.Cron(
+            "0 9 * * 1-5",
+            "America/Los_Angeles",
+            startsAt,
+            runMissedExecution: false);
+        var id = WorkScheduleId.New();
+        var record = CreateSqlScheduleRecord(id, "sql.schedule.cron", timing, startsAt);
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(record with
+        {
+            Schedule = record.Schedule with { WorkSystemName = "operations" },
+        })));
+
+        var persisted = await store.Get(new("operations", id));
+
+        Assert.NotNull(persisted);
+        Assert.Equal(timing, persisted.Schedule.Timing);
+        Assert.True(persisted.Schedule.Timing.IsCron);
+        Assert.Null(persisted.Schedule.Timing.Interval);
+        Assert.Equal("0 9 * * 1-5", persisted.Schedule.Timing.CronExpression);
+        Assert.Equal("America/Los_Angeles", persisted.Schedule.Timing.TimeZoneId);
+        Assert.False(persisted.Schedule.Timing.RunMissedExecution);
+    }
+
+    [Fact]
+    public async Task EnforceSqlScheduleAdmissionLimitsAtomicallyAcrossHosts()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var options = new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-admission-limits",
+        };
+        var firstStore = new WorkableSqlServerScheduleStore(options);
+        var secondStore = new WorkableSqlServerScheduleStore(options);
+        await firstStore.Initialize(new(null));
+        await secondStore.Initialize(new(null));
+        var now = DateTimeOffset.UtcNow;
+        var alpha = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.alpha",
+            WorkScheduleTiming.Once(now + TimeSpan.FromHours(1)),
+            now);
+        var beta = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.beta",
+            WorkScheduleTiming.Once(now + TimeSpan.FromHours(1)),
+            now);
+        var concurrent = await Task.WhenAll(
+            firstStore.Create(CreateStoreRequest(alpha, maximumActiveSchedules: 1, maximumActiveSchedulesPerDefinition: 1)),
+            secondStore.Create(CreateStoreRequest(beta, maximumActiveSchedules: 1, maximumActiveSchedulesPerDefinition: 1)));
+
+        Assert.Single(concurrent, status => status == WorkScheduleStoreCreationStatus.Accepted);
+        Assert.Single(concurrent, status => status == WorkScheduleStoreCreationStatus.SystemLimitReached);
+
+        var accepted = (await firstStore.Get(new(null, alpha.Schedule.Id))) ?? await firstStore.Get(new(null, beta.Schedule.Id));
+        Assert.NotNull(accepted);
+        await firstStore.Cancel(new(null, accepted.Schedule.Id, now, new WorkActor("capacity-canceler")));
+        var firstAlpha = await firstStore.Create(CreateStoreRequest(alpha with
+        {
+            Schedule = alpha.Schedule with { Id = WorkScheduleId.New() },
+        }, maximumActiveSchedules: 2, maximumActiveSchedulesPerDefinition: 1));
+        var secondAlpha = await secondStore.Create(CreateStoreRequest(alpha with
+        {
+            Schedule = alpha.Schedule with { Id = WorkScheduleId.New() },
+        }, maximumActiveSchedules: 2, maximumActiveSchedulesPerDefinition: 1));
+
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, firstAlpha);
+        Assert.Equal(WorkScheduleStoreCreationStatus.DefinitionLimitReached, secondAlpha);
+
+        var actorAlpha = alpha with
+        {
+            Schedule = alpha.Schedule with
+            {
+                Id = WorkScheduleId.New(),
+                WorkSystemName = "actor-capacity",
+            },
+        };
+        var actorBeta = beta with
+        {
+            Schedule = beta.Schedule with
+            {
+                Id = WorkScheduleId.New(),
+                WorkSystemName = "actor-capacity",
+            },
+        };
+        var actorConcurrent = await Task.WhenAll(
+            firstStore.Create(CreateStoreRequest(
+                actorAlpha,
+                maximumActiveSchedules: 10,
+                maximumActiveSchedulesPerDefinition: 10,
+                maximumActiveSchedulesPerActor: 1)),
+            secondStore.Create(CreateStoreRequest(
+                actorBeta,
+                maximumActiveSchedules: 10,
+                maximumActiveSchedulesPerDefinition: 10,
+                maximumActiveSchedulesPerActor: 1)));
+
+        Assert.Single(actorConcurrent, status => status == WorkScheduleStoreCreationStatus.Accepted);
+        Assert.Single(actorConcurrent, status => status == WorkScheduleStoreCreationStatus.ActiveActorLimitReached);
+
+        var otherActor = new WorkActor("other-sql-schedule-test");
+        var otherActorRecord = actorAlpha with
+        {
+            Schedule = actorAlpha.Schedule with
+            {
+                Id = WorkScheduleId.New(),
+                CreatedBy = otherActor,
+            },
+            RequestContext = WorkRequestContext.Create(
+                WorkInvocationChannel.InProcess,
+                otherActor,
+                isAuthenticated: true),
+        };
+        Assert.Equal(
+            WorkScheduleStoreCreationStatus.Accepted,
+            await firstStore.Create(CreateStoreRequest(
+                otherActorRecord,
+                maximumActiveSchedules: 10,
+                maximumActiveSchedulesPerDefinition: 10,
+                maximumActiveSchedulesPerActor: 1)));
+    }
+
+    [Fact]
+    public async Task ConcurrentSqlScheduleCreationAndCleanupUseOneLockOrder()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var options = new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = $"schedule-create-cleanup-{Guid.NewGuid():N}",
+        };
+        var createStore = new WorkableSqlServerScheduleStore(options);
+        var cleanupStore = new WorkableSqlServerScheduleStore(options);
+        await createStore.Initialize(new(null));
+        await cleanupStore.Initialize(new(null));
+        var now = DateTimeOffset.UtcNow;
+
+        for (var round = 0; round < 50; round++)
+        {
+            var systemName = $"create-cleanup-{round}";
+            var record = CreateSqlScheduleRecord(
+                WorkScheduleId.New(),
+                "sql.schedule.create-cleanup",
+                WorkScheduleTiming.Once(now + TimeSpan.FromDays(1)),
+                now);
+            record = record with { Schedule = record.Schedule with { WorkSystemName = systemName } };
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var create = Task.Run(async () =>
+            {
+                await gate.Task;
+                return await createStore.Create(CreateStoreRequest(record));
+            });
+            var cleanup = Task.Run(async () =>
+            {
+                await gate.Task;
+                return await cleanupStore.DeleteExpiredSchedules(new(systemName, now));
+            });
+
+            gate.SetResult();
+            await Task.WhenAll(create, cleanup).WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await create);
+            Assert.Equal(0, await cleanup);
+        }
+    }
+
+    [Fact]
+    public async Task EnforceSqlOccurrenceCountAndPayloadQuotasAcrossConcurrentSchedules()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var persistenceScope = $"schedule-occurrence-quotas-{Guid.NewGuid():N}";
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = persistenceScope,
+        });
+        const string systemName = "occurrence-quota-system";
+        await store.Initialize(new(systemName));
+        var now = DateTimeOffset.UtcNow;
+
+        async Task<WorkScheduleClaim[]> PrepareClaims(int count, string definitionPrefix)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                var record = CreateSqlScheduleRecord(
+                    WorkScheduleId.New(),
+                    $"{definitionPrefix}.{index}",
+                    WorkScheduleTiming.Once(now - TimeSpan.FromSeconds(1)),
+                    now - TimeSpan.FromMinutes(1));
+                record = record with { Schedule = record.Schedule with { WorkSystemName = systemName } };
+                Assert.Equal(
+                    WorkScheduleStoreCreationStatus.Accepted,
+                    await store.Create(CreateStoreRequest(record)));
+            }
+
+            var claims = (await store.ClaimDue(new(
+                systemName,
+                now,
+                TimeSpan.FromMinutes(1),
+                count))).ToArray();
+            Assert.Equal(count, claims.Length);
+            foreach (var claim in claims)
+            {
+                Assert.True(await store.BeginDispatch(new(
+                    systemName,
+                    claim.Record.Schedule.Id,
+                    claim.LeaseId,
+                    now,
+                    now + TimeSpan.FromMinutes(1))));
+            }
+
+            return claims;
+        }
+
+        static Task Complete(
+            WorkableSqlServerScheduleStore target,
+            string workSystemName,
+            WorkScheduleClaim claim,
+            DateTimeOffset attemptedAt,
+            int maximumCount,
+            long maximumBytes)
+            => target.CompleteClaim(new(
+                workSystemName,
+                claim.Record.Schedule.Id,
+                claim.LeaseId,
+                CreateSqlOccurrence(claim.Record.Schedule.Id, claim, attemptedAt, WorkerId.New()),
+                WorkScheduleStatus.Completed,
+                null,
+                maximumCount,
+                maximumBytes));
+
+        var countClaims = await PrepareClaims(2, "sql.schedule.count-quota");
+        await Task.WhenAll(countClaims.Select((claim, index) => Complete(
+            store,
+            systemName,
+            claim,
+            now + TimeSpan.FromSeconds(index),
+            maximumCount: 1,
+            maximumBytes: 1_000)));
+        var afterCountQuota = await Task.WhenAll(countClaims.Select(claim =>
+            store.ListOccurrences(new(systemName, claim.Record.Schedule.Id))));
+        Assert.Equal(1, afterCountQuota.Sum(static occurrences => occurrences.Count));
+        Assert.Equal((1L, 2L), await this.ReadOccurrenceUsage(persistenceScope, systemName));
+
+        var payloadClaims = await PrepareClaims(2, "sql.schedule.payload-quota");
+        await Task.WhenAll(payloadClaims.Select((claim, index) => Complete(
+            store,
+            systemName,
+            claim,
+            now + TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(index),
+            maximumCount: 100,
+            maximumBytes: 2)));
+        var everyClaim = countClaims.Concat(payloadClaims).ToArray();
+        var afterPayloadQuota = await Task.WhenAll(everyClaim.Select(claim =>
+            store.ListOccurrences(new(systemName, claim.Record.Schedule.Id))));
+        Assert.Equal(1, afterPayloadQuota.Sum(static occurrences => occurrences.Count));
+        Assert.Equal((1L, 2L), await this.ReadOccurrenceUsage(persistenceScope, systemName));
+    }
+
+    [Fact]
+    public async Task MaintainSqlOccurrenceUsageAcrossCompletionAndCleanup()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var persistenceScope = $"schedule-occurrence-usage-{Guid.NewGuid():N}";
+        const string systemName = "occurrence-usage-system";
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = persistenceScope,
+        });
+        await store.Initialize(new(systemName));
+        var now = DateTimeOffset.UtcNow;
+
+        async Task CompleteSchedule(string definitionName, DateTimeOffset expiresAt)
+        {
+            var record = CreateSqlScheduleRecord(
+                WorkScheduleId.New(),
+                definitionName,
+                WorkScheduleTiming.Once(now - TimeSpan.FromSeconds(1)),
+                now - TimeSpan.FromMinutes(1));
+            record = record with { Schedule = record.Schedule with { WorkSystemName = systemName } };
+            Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(record)));
+            var claim = Assert.Single(await store.ClaimDue(new(systemName, now, TimeSpan.FromMinutes(1))));
+            Assert.True(await store.BeginDispatch(new(
+                systemName,
+                record.Schedule.Id,
+                claim.LeaseId,
+                now,
+                now + TimeSpan.FromMinutes(1))));
+            await store.CompleteClaim(new(
+                systemName,
+                record.Schedule.Id,
+                claim.LeaseId,
+                CreateSqlOccurrence(record.Schedule.Id, claim, now, WorkerId.New()) with { ExpiresAt = expiresAt },
+                WorkScheduleStatus.Completed,
+                null,
+                MaximumRetainedOccurrences: 100,
+                MaximumRetainedOccurrencePayloadBytes: 1_000));
+        }
+
+        await CompleteSchedule("sql.schedule.usage.expired", now - TimeSpan.FromSeconds(1));
+        await CompleteSchedule("sql.schedule.usage.retained", now + TimeSpan.FromDays(1));
+        Assert.Equal((2L, 4L), await this.ReadOccurrenceUsage(persistenceScope, systemName));
+
+        Assert.Equal(1, await store.DeleteExpiredOccurrences(new(systemName, now)));
+        Assert.Equal((1L, 2L), await this.ReadOccurrenceUsage(persistenceScope, systemName));
+
+        Assert.Equal(2, await store.DeleteExpiredSchedules(new(systemName, now + TimeSpan.FromDays(1))));
+        Assert.Equal((0L, 0L), await this.ReadOccurrenceUsage(persistenceScope, systemName));
+
+        var repairRecord = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.usage.repair",
+            WorkScheduleTiming.Once(now - TimeSpan.FromSeconds(1)),
+            now);
+        repairRecord = repairRecord with { Schedule = repairRecord.Schedule with { WorkSystemName = systemName } };
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(repairRecord)));
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, $"""
+DELETE FROM workable.WorkScheduleOccurrenceUsage
+WHERE PersistenceScope = N'{persistenceScope}'
+  AND WorkSystemName = N'{systemName}';
+""");
+        }
+
+        var repairClaim = Assert.Single(await store.ClaimDue(new(systemName, now, TimeSpan.FromMinutes(1))));
+        Assert.True(await store.BeginDispatch(new(
+            systemName,
+            repairRecord.Schedule.Id,
+            repairClaim.LeaseId,
+            now,
+            now + TimeSpan.FromMinutes(1))));
+        await store.CompleteClaim(new(
+            systemName,
+            repairRecord.Schedule.Id,
+            repairClaim.LeaseId,
+            CreateSqlOccurrence(repairRecord.Schedule.Id, repairClaim, now, WorkerId.New()),
+            WorkScheduleStatus.Completed,
+            null,
+            MaximumRetainedOccurrences: 100,
+            MaximumRetainedOccurrencePayloadBytes: 1_000));
+        Assert.Equal((1L, 2L), await this.ReadOccurrenceUsage(persistenceScope, systemName));
+    }
+
+    [Fact]
+    public async Task BoundSqlScheduleClaimsAndOccurrenceQueriesBySerializedPayload()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = $"schedule-query-budgets-{Guid.NewGuid():N}",
+        });
+        const string claimSystem = "claim-byte-budget";
+        const string occurrenceSystem = "occurrence-query-byte-budget";
+        await store.Initialize(new(claimSystem));
+        var now = DateTimeOffset.UtcNow;
+        for (var index = 0; index < 3; index++)
+        {
+            var record = CreateSqlScheduleRecord(
+                WorkScheduleId.New(),
+                $"sql.schedule.claim-budget.{index}",
+                WorkScheduleTiming.Once(now - TimeSpan.FromSeconds(1)),
+                now - TimeSpan.FromMinutes(1));
+            record = record with { Schedule = record.Schedule with { WorkSystemName = claimSystem } };
+            Assert.Equal(
+                WorkScheduleStoreCreationStatus.Accepted,
+                await store.Create(CreateStoreRequest(record, payloadSizeBytes: 100)));
+        }
+
+        var boundedClaims = await store.ClaimDue(new(
+            claimSystem,
+            now,
+            TimeSpan.FromMinutes(1),
+            MaximumCount: 3,
+            MaximumPayloadBytes: 150));
+        Assert.Single(boundedClaims);
+        Assert.Equal(100, boundedClaims[0].Record.SerializedPayloadBytes);
+
+        var occurrenceRecord = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.occurrence-query-budget",
+            WorkScheduleTiming.Every(TimeSpan.FromMinutes(1), now - TimeSpan.FromSeconds(1)),
+            now - TimeSpan.FromMinutes(1));
+        occurrenceRecord = occurrenceRecord with
+        {
+            Schedule = occurrenceRecord.Schedule with { WorkSystemName = occurrenceSystem },
+        };
+        Assert.Equal(
+            WorkScheduleStoreCreationStatus.Accepted,
+            await store.Create(CreateStoreRequest(occurrenceRecord)));
+
+        async Task CompleteOccurrence(DateTimeOffset dueAt, WorkScheduleStatus status)
+        {
+            var claim = Assert.Single(await store.ClaimDue(new(
+                occurrenceSystem,
+                dueAt,
+                TimeSpan.FromMinutes(1))));
+            Assert.True(await store.BeginDispatch(new(
+                occurrenceSystem,
+                occurrenceRecord.Schedule.Id,
+                claim.LeaseId,
+                dueAt,
+                dueAt + TimeSpan.FromMinutes(1))));
+            await store.CompleteClaim(new(
+                occurrenceSystem,
+                occurrenceRecord.Schedule.Id,
+                claim.LeaseId,
+                CreateSqlOccurrence(occurrenceRecord.Schedule.Id, claim, dueAt, WorkerId.New()),
+                status,
+                status == WorkScheduleStatus.Active ? dueAt + TimeSpan.FromSeconds(1) : null,
+                MaximumRetainedOccurrences: 100,
+                MaximumRetainedOccurrencePayloadBytes: 1_000));
+        }
+
+        await CompleteOccurrence(now, WorkScheduleStatus.Active);
+        await CompleteOccurrence(now + TimeSpan.FromSeconds(2), WorkScheduleStatus.Completed);
+
+        var boundedOccurrences = await store.ListOccurrences(new(
+            occurrenceSystem,
+            occurrenceRecord.Schedule.Id,
+            Take: 100,
+            MaximumPayloadBytes: 2));
+        Assert.Single(boundedOccurrences);
+    }
+
+    [Fact]
+    public async Task EnforceSqlSchedulePayloadAndRetainedHistoryLimits()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = $"schedule-retained-limits-{Guid.NewGuid():N}",
+        });
+        await store.Initialize(new(null));
+        var now = DateTimeOffset.UtcNow;
+        WorkSchedulePersistenceRecord Record(string systemName)
+        {
+            var record = CreateSqlScheduleRecord(
+                WorkScheduleId.New(),
+                "sql.schedule.retained",
+                WorkScheduleTiming.Once(now + TimeSpan.FromHours(1)),
+                now);
+            return record with { Schedule = record.Schedule with { WorkSystemName = systemName } };
+        }
+
+        var payloadTooLarge = await store.Create(CreateStoreRequest(
+            Record("payload"),
+            payloadSizeBytes: 101,
+            maximumSchedulePayloadBytes: 100));
+
+        var systemCountSeed = Record("system-count");
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(
+            systemCountSeed,
+            maximumRetainedSchedules: 1,
+            maximumRetainedSchedulesPerActor: 10)));
+        Assert.NotNull(await store.Cancel(new("system-count", systemCountSeed.Schedule.Id, now, new WorkActor("canceler"))));
+        var retainedSystemCount = await store.Create(CreateStoreRequest(
+            Record("system-count"),
+            maximumRetainedSchedules: 1,
+            maximumRetainedSchedulesPerActor: 10));
+
+        var actorCountSeed = Record("actor-count");
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(
+            actorCountSeed,
+            maximumRetainedSchedules: 10,
+            maximumRetainedSchedulesPerActor: 1)));
+        Assert.NotNull(await store.Cancel(new("actor-count", actorCountSeed.Schedule.Id, now, new WorkActor("canceler"))));
+        var retainedActorCount = await store.Create(CreateStoreRequest(
+            Record("actor-count"),
+            maximumRetainedSchedules: 10,
+            maximumRetainedSchedulesPerActor: 1));
+
+        var retainedSystemBytes = await store.Create(CreateStoreRequest(
+            Record("system-bytes"),
+            payloadSizeBytes: 100,
+            maximumRetainedPayloadBytes: 50,
+            maximumRetainedPayloadBytesPerActor: 1_000));
+        var retainedActorBytes = await store.Create(CreateStoreRequest(
+            Record("actor-bytes"),
+            payloadSizeBytes: 100,
+            maximumRetainedPayloadBytes: 1_000,
+            maximumRetainedPayloadBytesPerActor: 50));
+        var longActor = new WorkActor(new string('a', 5_000));
+        var longActorContext = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            longActor,
+            isAuthenticated: true);
+        var longActorRecord = Record("long-actor");
+        longActorRecord = longActorRecord with
+        {
+            Schedule = longActorRecord.Schedule with { CreatedBy = longActor },
+            RequestContext = longActorContext,
+        };
+        var longActorStatus = await store.Create(CreateStoreRequest(longActorRecord, payloadSizeBytes: 10_000));
+        var persistedLongActor = await store.Get(new("long-actor", longActorRecord.Schedule.Id));
+        var maximumDefinitionRecord = Record("maximum-definition");
+        maximumDefinitionRecord = maximumDefinitionRecord with
+        {
+            Schedule = maximumDefinitionRecord.Schedule with { DefinitionName = new string('d', 450) },
+        };
+        var maximumDefinitionStatus = await store.Create(CreateStoreRequest(maximumDefinitionRecord));
+        var longDefinitionRecord = Record("long-definition");
+        longDefinitionRecord = longDefinitionRecord with
+        {
+            Schedule = longDefinitionRecord.Schedule with { DefinitionName = new string('d', 451) },
+        };
+        var longDefinitionStatus = await store.Create(CreateStoreRequest(longDefinitionRecord));
+
+        Assert.Equal(WorkScheduleStoreCreationStatus.PayloadTooLarge, payloadTooLarge);
+        Assert.Equal(WorkScheduleStoreCreationStatus.RetainedSystemLimitReached, retainedSystemCount);
+        Assert.Equal(WorkScheduleStoreCreationStatus.RetainedActorLimitReached, retainedActorCount);
+        Assert.Equal(WorkScheduleStoreCreationStatus.RetainedSystemBytesLimitReached, retainedSystemBytes);
+        Assert.Equal(WorkScheduleStoreCreationStatus.RetainedActorBytesLimitReached, retainedActorBytes);
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, longActorStatus);
+        Assert.Equal(longActor.Id, persistedLongActor!.Schedule.CreatedBy.Id);
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, maximumDefinitionStatus);
+        Assert.Equal(WorkScheduleStoreCreationStatus.InvalidDefinitionName, longDefinitionStatus);
+        Assert.Null(await store.Get(new("long-definition", longDefinitionRecord.Schedule.Id)));
+    }
+
+    [Fact]
+    public async Task TrackSchedulerAvailabilityPerHostAndSystem()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = $"schedule-host-presence-{Guid.NewGuid():N}",
+        });
+        await store.Initialize(new("operations"));
+        var hostRunId = Guid.NewGuid();
+        var startedAt = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(1);
+        var observedAt = DateTimeOffset.UtcNow;
+        var availableAt = observedAt + TimeSpan.FromSeconds(2);
+        var unavailableAt = observedAt + TimeSpan.FromSeconds(4);
+        Assert.Empty(await store.ClaimDueAndObserveHost(
+            new("operations", observedAt, TimeSpan.FromMinutes(1)),
+            new(
+                "operations",
+                hostRunId,
+                startedAt,
+                observedAt,
+                observedAt + TimeSpan.FromSeconds(3),
+                observedAt - TimeSpan.FromDays(7))));
+
+        var available = await store.FindAvailableTimes(new(
+            "operations",
+            new HashSet<DateTimeOffset> { availableAt, unavailableAt }));
+        var otherSystem = await store.FindAvailableTimes(new(
+            "other",
+            new HashSet<DateTimeOffset> { availableAt }));
+        await store.EndHost(new("operations", hostRunId, observedAt + TimeSpan.FromSeconds(1)));
+        var afterEnd = await store.FindAvailableTimes(new(
+            "operations",
+            new HashSet<DateTimeOffset> { availableAt }));
+
+        Assert.Contains(availableAt, available);
+        Assert.DoesNotContain(unavailableAt, available);
+        Assert.Empty(otherSystem);
+        Assert.Empty(afterEnd);
+    }
+
+    [Fact]
+    public async Task RecoverSqlBackedSchedulesAfterRestartUsingTheirMissedExecutionPolicy()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var executions = 0;
+        await using var provider = new ServiceCollection()
+            .AddWorkableSqlServerPersistence(
+                this.ConnectionString,
+                SchemaName,
+                persistenceScope: "schedule-restart")
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .EnableScheduling()
+                .AddWork(
+                    WorkDefinition.Create("sql.schedule.restart"),
+                    (_, _, _) =>
+                    {
+                        Interlocked.Increment(ref executions);
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    }))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var dueAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(300);
+        var retry = await system.Schedules.Create(new(
+            "sql.schedule.restart",
+            WorkScheduleTiming.Once(dueAt, runMissedExecution: true)));
+        var skip = await system.Schedules.Create(new(
+            "sql.schedule.restart",
+            WorkScheduleTiming.Once(dueAt, runMissedExecution: false)));
+        await system.Stop();
+        await Task.Delay(TimeSpan.FromMilliseconds(450));
+
+        await system.Start();
+        var retryOccurrence = await WaitForSqlOccurrence(system.Schedules, retry.Schedule!.Id);
+        var skipOccurrence = await WaitForSqlOccurrence(system.Schedules, skip.Schedule!.Id);
+
+        Assert.Equal(WorkScheduleOccurrenceStatus.Accepted, retryOccurrence.Status);
+        Assert.Equal(WorkScheduleOccurrenceStatus.Skipped, skipOccurrence.Status);
+        Assert.Equal(1, Volatile.Read(ref executions));
+    }
+
+    [Fact]
+    public async Task DispatchOneDueScheduleAcrossTwoSqlBackedSchedulerHosts()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var options = new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-multi-host",
+        };
+        var preparationStore = new WorkableSqlServerScheduleStore(options);
+        await preparationStore.Initialize(new(null));
+        var scheduleId = WorkScheduleId.New();
+        var now = DateTimeOffset.UtcNow;
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await preparationStore.Create(CreateStoreRequest(CreateSqlScheduleRecord(
+            scheduleId,
+            "sql.schedule.multi-host",
+            new WorkScheduleTiming(now - TimeSpan.FromSeconds(1)),
+            createdAt: now - TimeSpan.FromSeconds(2)))));
+        var coordinator = new FirstClaimCoordinator(participantCount: 2);
+        var executions = 0;
+        var firstStore = new CoordinatedScheduleStore(new WorkableSqlServerScheduleStore(options), coordinator);
+        var secondStore = new CoordinatedScheduleStore(new WorkableSqlServerScheduleStore(options), coordinator);
+        await using var firstProvider = CreateScheduledSqlHost(firstStore, () => Interlocked.Increment(ref executions));
+        await using var secondProvider = CreateScheduledSqlHost(secondStore, () => Interlocked.Increment(ref executions));
+        var firstSystem = firstProvider.GetRequiredService<IWorkSystemRegistry>().Default;
+        var secondSystem = secondProvider.GetRequiredService<IWorkSystemRegistry>().Default;
+
+        await Task.WhenAll(firstSystem.Start(), secondSystem.Start());
+        await TestEventually.Until(
+            () => Volatile.Read(ref executions) == 1,
+            "Expected one scheduler host to dispatch the due SQL schedule.");
+        var occurrence = await WaitForSqlOccurrence(firstSystem.Schedules, scheduleId);
+        await Task.Delay(TimeSpan.FromMilliseconds(1_200));
+
+        Assert.Equal(1, Volatile.Read(ref executions));
+        Assert.Equal(WorkScheduleOccurrenceStatus.Accepted, occurrence.Status);
+        Assert.Equal(2, coordinator.Arrivals);
+        Assert.True(firstStore.ClaimCalls > 0);
+        Assert.True(secondStore.ClaimCalls > 0);
+    }
+
+    [Fact]
+    public async Task ReclaimAnExpiredSqlScheduleLeaseAndFenceItsStaleCompletion()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var options = new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-lease-replay",
+        };
+        var firstStore = new WorkableSqlServerScheduleStore(options);
+        var secondStore = new WorkableSqlServerScheduleStore(options);
+        await firstStore.Initialize(new(null));
+        await secondStore.Initialize(new(null));
+        var scheduleId = WorkScheduleId.New();
+        var now = DateTimeOffset.UtcNow;
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await firstStore.Create(CreateStoreRequest(CreateSqlScheduleRecord(
+            scheduleId,
+            "sql.schedule.lease",
+            new WorkScheduleTiming(now - TimeSpan.FromSeconds(1)),
+            createdAt: now - TimeSpan.FromSeconds(2)))));
+        var firstClaim = Assert.Single(await firstStore.ClaimDue(new(
+            null,
+            now,
+            TimeSpan.FromSeconds(1))));
+        Assert.False(await firstStore.BeginDispatch(new(
+            null,
+            scheduleId,
+            Guid.NewGuid(),
+            now + TimeSpan.FromMilliseconds(500),
+            now + TimeSpan.FromSeconds(1))));
+        Assert.True(await firstStore.BeginDispatch(new(
+            null,
+            scheduleId,
+            firstClaim.LeaseId,
+            now + TimeSpan.FromMilliseconds(500),
+            now + TimeSpan.FromSeconds(1))));
+        Assert.Null(await secondStore.Cancel(new(
+            null,
+            scheduleId,
+            now + TimeSpan.FromMilliseconds(500),
+            new WorkActor("dispatch-race-canceler"))));
+
+        Assert.Empty(await secondStore.ClaimDue(new(
+            null,
+            now + TimeSpan.FromMilliseconds(500),
+            TimeSpan.FromSeconds(1))));
+        var replayedClaim = Assert.Single(await secondStore.ClaimDue(new(
+            null,
+            now + TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(1))));
+        Assert.False(await firstStore.BeginDispatch(new(
+            null,
+            scheduleId,
+            firstClaim.LeaseId,
+            now + TimeSpan.FromSeconds(1),
+            now + TimeSpan.FromSeconds(2))));
+        Assert.True(await secondStore.BeginDispatch(new(
+            null,
+            scheduleId,
+            replayedClaim.LeaseId,
+            now + TimeSpan.FromSeconds(1),
+            now + TimeSpan.FromSeconds(2))));
+        var staleOccurrence = CreateSqlOccurrence(scheduleId, firstClaim, now, WorkerId.New());
+        await firstStore.CompleteClaim(new(
+            null,
+            scheduleId,
+            firstClaim.LeaseId,
+            staleOccurrence,
+            WorkScheduleStatus.Completed,
+            null,
+            100_000,
+            67_108_864));
+
+        Assert.Empty(await firstStore.ListOccurrences(new(null, scheduleId)));
+        Assert.Equal(WorkScheduleStatus.Active, (await firstStore.Get(new(null, scheduleId)))!.Schedule.Status);
+        var acceptedWorkerId = WorkerId.New();
+        await secondStore.CompleteClaim(new(
+            null,
+            scheduleId,
+            replayedClaim.LeaseId,
+            CreateSqlOccurrence(scheduleId, replayedClaim, now + TimeSpan.FromSeconds(1), acceptedWorkerId),
+            WorkScheduleStatus.Completed,
+            null,
+            100_000,
+            67_108_864));
+
+        var occurrence = Assert.Single(await firstStore.ListOccurrences(new(null, scheduleId)));
+        Assert.Equal(acceptedWorkerId, occurrence.WorkerId);
+        Assert.Equal(WorkScheduleStatus.Completed, (await firstStore.Get(new(null, scheduleId)))!.Schedule.Status);
+    }
+
     private static string CreateDatabaseName()
         => "WorkableTests_" + Guid.NewGuid().ToString("N");
 
@@ -319,6 +1469,7 @@ WHERE schemas.name = N'workable'
         await WorkableSqlServerSchema.ValidateInstalled(this.ConnectionString, quotedSchemaName);
         await WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(this.ConnectionString, quotedSchemaName);
         await WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(this.ConnectionString, quotedSchemaName);
+        await WorkableSqlServerSchema.ValidateSchedulingInstalled(this.ConnectionString, quotedSchemaName);
     }
 
     [Fact]
@@ -345,11 +1496,53 @@ CREATE TABLE {WorkableSqlServerSchema.QuoteIdentifier(freshSchemaName)}.Unrelate
         await WorkableSqlServerSchema.ValidateInstalled(this.ConnectionString, freshSchemaName);
         await WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(this.ConnectionString, freshSchemaName);
         await WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(this.ConnectionString, freshSchemaName);
+        await WorkableSqlServerSchema.ValidateSchedulingInstalled(this.ConnectionString, freshSchemaName);
 
         await using var verification = await this.OpenConnection();
-        Assert.Equal(3, await Scalar<int>(verification, $"""
+        Assert.Equal(4, await Scalar<int>(verification, $"""
 SELECT COUNT(*)
 FROM {WorkableSqlServerSchema.QuoteIdentifier(freshSchemaName)}.SchemaVersion;
+"""));
+        Assert.Equal(1, await Scalar<int>(verification, $"""
+SELECT Version
+FROM {WorkableSqlServerSchema.QuoteIdentifier(freshSchemaName)}.SchemaVersion
+WHERE Component = N'Scheduling';
+"""));
+    }
+
+    [Fact]
+    public async Task SchemaApplyAddsFinalSchedulingSchemaToAnExistingWorkableDatabase()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, """
+DROP TABLE workable.WorkScheduleOccurrences;
+DROP TABLE workable.WorkSchedules;
+DROP TABLE workable.WorkScheduleOccurrenceUsage;
+DELETE FROM workable.SchemaVersion WHERE Component = N'Scheduling';
+""");
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await WorkableSqlServerSchema.ValidateSchedulingInstalled(this.ConnectionString, SchemaName);
+
+        await using var verification = await this.OpenConnection();
+        Assert.Equal(1, await Scalar<int>(verification, """
+SELECT Version
+FROM workable.SchemaVersion
+WHERE Component = N'Scheduling';
+"""));
+        Assert.Equal(0, await Scalar<int>(verification, """
+SELECT
+    (SELECT COUNT(1) FROM workable.WorkSchedules) +
+    (SELECT COUNT(1) FROM workable.WorkScheduleOccurrenceUsage) +
+    (SELECT COUNT(1) FROM workable.WorkScheduleOccurrences);
 """));
     }
 
@@ -384,6 +1577,15 @@ IF SCHEMA_ID(N'{emptySchemaName}') IS NULL
             WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(this.ConnectionString, emptySchemaName));
         Assert.Contains($"{emptySchemaName}.WorkIterationDiagnostics", diagnostics.Message, StringComparison.Ordinal);
         Assert.Contains("IX_WorkableWorkDiagnosticCaptureRules_System", diagnostics.Message, StringComparison.Ordinal);
+
+        var scheduling = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            WorkableSqlServerSchema.ValidateSchedulingInstalled(this.ConnectionString, emptySchemaName));
+        Assert.Contains($"{emptySchemaName}.WorkSchedules", scheduling.Message, StringComparison.Ordinal);
+        Assert.Contains($"{emptySchemaName}.WorkScheduleOccurrenceUsage", scheduling.Message, StringComparison.Ordinal);
+        Assert.Contains("IX_WorkableWorkSchedules_ActiveDefinition", scheduling.Message, StringComparison.Ordinal);
+        Assert.Contains("IX_WorkableWorkSchedules_ActiveList", scheduling.Message, StringComparison.Ordinal);
+        Assert.Contains("IX_WorkableWorkScheduleOccurrences_Retention", scheduling.Message, StringComparison.Ordinal);
+        Assert.Contains("IX_WorkableWorkScheduleOccurrences_Expiration", scheduling.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -419,6 +1621,7 @@ IF SCHEMA_ID(N'{emptySchemaName}') IS NULL
         await WorkableSqlServerSchema.ValidateInstalled(this.ConnectionString, concurrentSchemaName);
         await WorkableSqlServerSchema.ValidateWorkflowPersistenceInstalled(this.ConnectionString, concurrentSchemaName);
         await WorkableSqlServerSchema.ValidateExecutionDiagnosticsInstalled(this.ConnectionString, concurrentSchemaName);
+        await WorkableSqlServerSchema.ValidateSchedulingInstalled(this.ConnectionString, concurrentSchemaName);
     }
 
     [Fact]
@@ -718,7 +1921,7 @@ WHERE Component = N'WorkflowPersistence';
             WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName));
 
         Assert.Contains("no 'WorkflowPersistence' version row", exception.Message);
-        Assert.Equal(2, await Scalar<int>(connection, "SELECT COUNT(*) FROM workable.SchemaVersion;"));
+        Assert.Equal(3, await Scalar<int>(connection, "SELECT COUNT(*) FROM workable.SchemaVersion;"));
     }
 
     [Fact]
@@ -6574,6 +7777,126 @@ WHERE entries.SubjectValue = N'{Escape(subjectValue)}';
             async () => (await system.Query.Worker(workerId))?.State == state,
             $"Expected worker '{workerId.Value:D}' to reach state '{state}'.");
 
+    private static async Task<WorkScheduleOccurrence> WaitForSqlOccurrence(
+        IWorkScheduler scheduler,
+        WorkScheduleId scheduleId)
+    {
+        WorkScheduleOccurrence? occurrence = null;
+        await TestEventually.Until(
+            async () =>
+            {
+                occurrence = (await scheduler.ListOccurrences(scheduleId)).Occurrences.FirstOrDefault();
+                return occurrence is not null;
+            },
+            $"Expected SQL schedule '{scheduleId}' to retain an occurrence.",
+            timeout: TimeSpan.FromSeconds(10));
+        return occurrence!;
+    }
+
+    private static WorkSchedulePersistenceRecord CreateSqlScheduleRecord(
+        WorkScheduleId scheduleId,
+        string definitionName,
+        WorkScheduleTiming timing,
+        DateTimeOffset createdAt)
+    {
+        var context = WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("sql-schedule-test"),
+            isAuthenticated: true);
+        return new(
+            new WorkScheduleSnapshot(
+                scheduleId,
+                WorkSystemName: null,
+                definitionName,
+                timing,
+                Input: null,
+                WorkerOptions: null,
+                WorkScheduleStatus.Active,
+                createdAt,
+                context.Actor,
+                timing.FirstRunAt,
+                LastRunAt: null,
+                CanceledAt: null,
+                CanceledBy: null),
+            context,
+            WorkScheduleExecutionGrant.Unrestricted);
+    }
+
+    private async Task<(long OccurrenceCount, long PayloadSizeBytes)> ReadOccurrenceUsage(
+        string persistenceScope,
+        string workSystemName)
+    {
+        await using var connection = await this.OpenConnection();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+SELECT OccurrenceCount, PayloadSizeBytes
+FROM workable.WorkScheduleOccurrenceUsage
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName;
+""";
+        command.Parameters.AddWithValue("@PersistenceScope", persistenceScope);
+        command.Parameters.AddWithValue("@WorkSystemName", workSystemName);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync(), "Expected the work-system occurrence usage row to exist.");
+        return (reader.GetInt64(0), reader.GetInt64(1));
+    }
+
+    private static WorkScheduleStoreCreateRequest CreateStoreRequest(
+        WorkSchedulePersistenceRecord record,
+        int maximumActiveSchedules = WorkSystemSchedulingConfiguration.DefaultMaximumActiveSchedules,
+        int maximumActiveSchedulesPerDefinition = WorkSystemSchedulingConfiguration.DefaultMaximumActiveSchedulesPerDefinition,
+        int maximumActiveSchedulesPerActor = WorkSystemSchedulingConfiguration.DefaultMaximumActiveSchedulesPerActor,
+        long payloadSizeBytes = 100,
+        long maximumSchedulePayloadBytes = WorkSystemSchedulingConfiguration.DefaultMaximumSchedulePayloadBytes,
+        int maximumRetainedSchedules = WorkSystemSchedulingConfiguration.DefaultMaximumRetainedSchedules,
+        int maximumRetainedSchedulesPerActor = WorkSystemSchedulingConfiguration.DefaultMaximumRetainedSchedulesPerActor,
+        long maximumRetainedPayloadBytes = WorkSystemSchedulingConfiguration.DefaultMaximumRetainedPayloadBytes,
+        long maximumRetainedPayloadBytesPerActor = WorkSystemSchedulingConfiguration.DefaultMaximumRetainedPayloadBytesPerActor,
+        long cancellationPayloadReserveBytes = 0)
+        => new(
+            record,
+            payloadSizeBytes,
+            maximumSchedulePayloadBytes,
+            maximumActiveSchedules,
+            maximumActiveSchedulesPerDefinition,
+            maximumActiveSchedulesPerActor,
+            maximumRetainedSchedules,
+            maximumRetainedSchedulesPerActor,
+            maximumRetainedPayloadBytes,
+            maximumRetainedPayloadBytesPerActor,
+            cancellationPayloadReserveBytes);
+
+    private static WorkScheduleOccurrence CreateSqlOccurrence(
+        WorkScheduleId scheduleId,
+        WorkScheduleClaim claim,
+        DateTimeOffset attemptedAt,
+        WorkerId workerId)
+        => new(
+            Guid.NewGuid(),
+            scheduleId,
+            claim.ScheduledAt,
+            attemptedAt,
+            WorkScheduleOccurrenceStatus.Accepted,
+            WorkQueueStatus.Accepted,
+            workerId,
+            [],
+            attemptedAt + TimeSpan.FromDays(1));
+
+    private static ServiceProvider CreateScheduledSqlHost(IWorkScheduleStore store, Action execute)
+        => new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .EnableScheduling()
+                .AddWork(
+                    WorkDefinition.Create("sql.schedule.multi-host"),
+                    (_, _, _) =>
+                    {
+                        execute();
+                        return Task.FromResult(WorkExecutionResult.Success());
+                    }))
+            .BuildServiceProvider();
+
     private static Task<int> CountFailedRetainedRowsForSubject(SqlConnection connection, string subjectValue)
         => Scalar<int>(connection, $"""
 SELECT COUNT(*)
@@ -6590,6 +7913,116 @@ WHERE entries.SubjectValue = N'{Escape(subjectValue)}'
 
     private static string Escape(string value)
         => value.Replace("'", "''", StringComparison.Ordinal);
+
+    private sealed class FirstClaimCoordinator(int participantCount)
+    {
+        private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int arrivals;
+
+        public int Arrivals => Volatile.Read(ref this.arrivals);
+
+        public async Task Arrive(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref this.arrivals) == participantCount)
+            {
+                this.ready.TrySetResult();
+            }
+
+            await this.ready.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    private sealed class CoordinatedScheduleStore(
+        IWorkScheduleStore inner,
+        FirstClaimCoordinator coordinator) : IWorkScheduleStore
+    {
+        private int participated;
+        private int claimCalls;
+
+        public int ClaimCalls => Volatile.Read(ref this.claimCalls);
+
+        public Task Initialize(WorkScheduleStoreInitializationContext context, CancellationToken cancellationToken = default)
+            => inner.Initialize(context, cancellationToken);
+
+        public Task<WorkScheduleStoreCreationStatus> Create(
+            WorkScheduleStoreCreateRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.Create(request, cancellationToken);
+
+        public Task<WorkSchedulePersistenceRecord?> Get(
+            WorkScheduleStoreReadRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.Get(request, cancellationToken);
+
+        public Task<IReadOnlyList<WorkScheduleSummary>> List(
+            WorkScheduleStoreListRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.List(request, cancellationToken);
+
+        public Task<WorkSchedulePersistenceRecord?> Cancel(
+            WorkScheduleStoreCancelRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.Cancel(request, cancellationToken);
+
+        public async Task<IReadOnlyList<WorkScheduleClaim>> ClaimDue(
+            WorkScheduleClaimRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref this.claimCalls);
+            if (Interlocked.CompareExchange(ref this.participated, 1, 0) == 0)
+            {
+                await coordinator.Arrive(cancellationToken);
+            }
+
+            return await inner.ClaimDue(request, cancellationToken);
+        }
+
+        public async Task<IReadOnlyList<WorkScheduleClaim>> ClaimDueAndObserveHost(
+            WorkScheduleClaimRequest request,
+            WorkScheduleHostObservation observation,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref this.claimCalls);
+            if (Interlocked.CompareExchange(ref this.participated, 1, 0) == 0)
+            {
+                await coordinator.Arrive(cancellationToken);
+            }
+
+            return await inner.ClaimDueAndObserveHost(request, observation, cancellationToken);
+        }
+
+        public Task EndHost(WorkScheduleHostEnd hostEnd, CancellationToken cancellationToken = default)
+            => inner.EndHost(hostEnd, cancellationToken);
+
+        public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
+            WorkScheduleHostAvailabilityRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.FindAvailableTimes(request, cancellationToken);
+
+        public Task CompleteClaim(WorkScheduleClaimCompletion completion, CancellationToken cancellationToken = default)
+            => inner.CompleteClaim(completion, cancellationToken);
+
+        public Task<bool> BeginDispatch(WorkScheduleDispatchStart dispatch, CancellationToken cancellationToken = default)
+            => inner.BeginDispatch(dispatch, cancellationToken);
+
+        public Task ReleaseClaim(WorkScheduleClaimRelease release, CancellationToken cancellationToken = default)
+            => inner.ReleaseClaim(release, cancellationToken);
+
+        public Task<IReadOnlyList<WorkScheduleOccurrence>> ListOccurrences(
+            WorkScheduleOccurrenceReadRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.ListOccurrences(request, cancellationToken);
+
+        public Task<int> DeleteExpiredOccurrences(
+            WorkScheduleOccurrenceExpirationRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.DeleteExpiredOccurrences(request, cancellationToken);
+
+        public Task<int> DeleteExpiredSchedules(
+            WorkScheduleExpirationRequest request,
+            CancellationToken cancellationToken = default)
+            => inner.DeleteExpiredSchedules(request, cancellationToken);
+    }
 
     private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment
     {

@@ -27,7 +27,7 @@ public enum WorkOperationPermissions
     Pause = 1 << 2,
 
     /// <summary>
-    /// Allows canceling an existing worker.
+    /// Allows canceling an existing worker or runtime schedule.
     /// </summary>
     Cancel = 1 << 3,
 
@@ -62,7 +62,7 @@ public enum WorkOperationPermissions
     Reconfigure = ReconfigureWorker | ReconfigureDefinition,
 
     /// <summary>
-    /// Allows queueing, worker actions, and both reconfiguration surfaces.
+    /// Allows queueing, worker and schedule actions, and both reconfiguration surfaces.
     /// </summary>
     Operate = Queue | WorkerActions | Reconfigure,
 }

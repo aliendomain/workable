@@ -96,6 +96,12 @@ public interface IWorkSystem : IAsyncDisposable
     IWorkChangeStream Changes { get; }
 
     /// <summary>
+    /// Gets the direct runtime-scheduling surface for this system.
+    /// </summary>
+    IWorkScheduler Schedules
+        => throw new NotSupportedException("This work system does not expose runtime scheduling.");
+
+    /// <summary>
     /// Gets the direct diagnostics surface for the system.
     /// </summary>
     /// <remarks>

@@ -97,4 +97,10 @@ public interface IWorkSystemSession
     /// Gets the caller-scoped change-stream surface.
     /// </summary>
     IWorkChangeStream Changes { get; }
+
+    /// <summary>
+    /// Gets the caller-scoped runtime-scheduling surface.
+    /// </summary>
+    IWorkScheduler Schedules
+        => throw new NotSupportedException("This work system session does not expose runtime scheduling.");
 }

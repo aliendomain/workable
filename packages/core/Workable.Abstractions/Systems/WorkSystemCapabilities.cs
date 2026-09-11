@@ -24,6 +24,11 @@ public sealed record WorkSystemCapabilities(
     public bool ExecutionDiagnosticsPersistenceAvailable { get; init; }
 
     /// <summary>
+    /// Gets whether persisted runtime scheduling is configured and available.
+    /// </summary>
+    public bool SchedulingAvailable { get; init; }
+
+    /// <summary>
     /// Gets a capability snapshot with every known capability disabled.
     /// </summary>
     public static WorkSystemCapabilities None { get; } = new(false, false);

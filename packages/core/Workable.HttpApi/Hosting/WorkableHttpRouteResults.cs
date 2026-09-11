@@ -115,6 +115,29 @@ internal static class WorkableHttpRouteResults
                 _ => Results.BadRequest(result),
             };
 
+    internal static IResult ToScheduleCreationHttpResult(WorkScheduleCreationOutcome result)
+        => result.Status switch
+        {
+            WorkScheduleCreationStatus.Accepted => Results.Ok(result),
+            WorkScheduleCreationStatus.NotFound => Results.NotFound(result),
+            WorkScheduleCreationStatus.Unauthorized => Results.Json(result, statusCode: StatusCodes.Status403Forbidden),
+            WorkScheduleCreationStatus.LimitReached => Results.Conflict(result),
+            WorkScheduleCreationStatus.Unavailable => Results.Json(result, statusCode: StatusCodes.Status503ServiceUnavailable),
+            _ => Results.BadRequest(result),
+        };
+
+    internal static IResult ToScheduleCancellationHttpResult(WorkScheduleCancellationOutcome result)
+        => result.Status switch
+        {
+            WorkScheduleCancellationStatus.Accepted => Results.Ok(result),
+            WorkScheduleCancellationStatus.Invalid => Results.BadRequest(result),
+            WorkScheduleCancellationStatus.NotFound => Results.NotFound(result),
+            WorkScheduleCancellationStatus.Unauthorized => Results.Json(result, statusCode: StatusCodes.Status403Forbidden),
+            WorkScheduleCancellationStatus.Conflict => Results.Conflict(result),
+            WorkScheduleCancellationStatus.Unavailable => Results.Json(result, statusCode: StatusCodes.Status503ServiceUnavailable),
+            _ => Results.BadRequest(result),
+        };
+
     internal static IResult ToActionHttpResult(WorkActionOutcome result)
         => result.Status switch
         {

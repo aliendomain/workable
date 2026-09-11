@@ -1,18 +1,19 @@
 # Workable SQL Server Integration
 
-`Workable.SqlServer` provides SQL Server persistence for durable queueing, persistence-backed idempotency, persistence-backed concurrency, durable workflow-run persistence, and expiring execution diagnostics.
+`Workable.SqlServer` provides SQL Server persistence for durable queueing, runtime schedules, persistence-backed idempotency, persistence-backed concurrency, durable workflow-run persistence, and expiring execution diagnostics.
 
 See also:
 
 - [Documentation Index](../../../docs/README.md)
 - [Getting Started](../../../docs/guides/getting-started.md)
 - [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md)
+- [Runtime Scheduling](../../../docs/guides/scheduling.md)
 - [Queue Durability Configuration](../../../docs/guides/configuration/queue-durability.md)
 - [Configuration Interactions](../../../docs/guides/configuration/interactions.md)
 
 ## Runtime Configuration
 
-Register SQL Server for persistent iteration logs, profiles, instrumentation summaries, and temporary capture rules without enabling durable queueing:
+Register SQL Server for runtime schedules, persistent iteration logs, profiles, instrumentation summaries, and temporary capture rules without enabling durable queueing:
 
 ```csharp
 services.AddWorkableSqlServerPersistence(
@@ -22,6 +23,8 @@ services.AddWorkableSqlServerPersistence(
 ```
 
 This is host-level service registration: one SQL connection/schema pair supplies the repository for all Workable systems in the service collection. One host-scoped schema initializer coordinates those systems so one completed deployment result is reused and each used schema component is validated once per application host. A component failure is shared across the other systems encountering that same startup failure, while a repeated initialization attempt for the same system retries it. Canceled initialization is not cached and can be retried immediately. The persistence scope and logical Workable system name form each system's stable, isolated query boundary across application restarts. See [Persistent Execution Diagnostics](../../../docs/guides/configuration/execution-diagnostics-persistence.md) for work/system policy, expiry, background writing, and query surfaces.
+
+Enable runtime scheduling separately on each Workable system with `EnableScheduling(...)`. SQL Server stores active schedules plus expiring terminal schedules and dispatch-occurrence history by persistence scope and logical system name. It also records a small row per scheduler-host run so missed-execution policy reflects logical-system availability across rolling deployments; host observation is folded into the existing claim command and does not use a shared heartbeat lock. It enforces configured active, retained, per-creator, serialized-byte, and rolling occurrence-history limits transactionally across hosts. Rolling occurrence totals use one compact usage row per persistence scope and logical system; completion traverses ordered history only when adding an occurrence would cross a quota. Schedule creation reserves bounded space for later cancellation identity data, preventing cancellation from expanding retained storage beyond its admitted byte quota, and rejects definition names beyond the 450-character durable column bound before issuing SQL. Authorized definition scopes are applied in SQL before list limits, so hidden schedules cannot displace readable results. List queries select bounded schedule summaries rather than retained inputs and worker options; occurrence queries enforce both row and aggregate message-byte bounds. Due rows are selected under per-poll count and serialized-payload budgets, then use fenced leases and an atomic dispatch-start marker so multiple hosts can share a schedule boundary without a stale claimant dispatching after lease loss or an accepted cancellation racing with queueing. See [Runtime Scheduling](../../../docs/guides/scheduling.md) for authorization, recurrence, capacity, downtime, retention, and at-least-once behavior.
 
 Durable queue registration also registers this diagnostics repository:
 
@@ -33,7 +36,7 @@ services.AddWorkableSqlServerDurableQueue(
 
 When both methods are used, they must identify the same SQL Server connection and schema. The explicit `AddWorkableSqlServerPersistence(...)` options supply the diagnostics persistence scope regardless of registration order; conflicting stores or conflicting explicit persistence configurations fail during service registration. If the two registrations specify different automatic-deployment values, schema deployment is enabled when either registration enables it.
 
-By default, the SQL Server integration auto-deploys the required schema when the first Workable system needs it. Execution diagnostics uses the shared `SchemaVersion` table with its own component version, separate from queue durability and workflow persistence. Successful deployment and validation results are reused by later systems in the same host. A failed result is reused for other systems initializing that component, preventing an unavailable database from receiving a burst of identical startup connections; retrying initialization for the system that already observed the failure makes a fresh attempt. A diagnostics deployment failure does not suppress the first queue-durability or workflow-persistence deployment attempt.
+By default, the SQL Server integration auto-deploys the required schema when the first Workable system needs it. Execution diagnostics and runtime scheduling use the shared `SchemaVersion` table with their own component versions, separate from queue durability and workflow persistence. Successful deployment and validation results are reused by later systems in the same host. A failed result is reused for other systems initializing that component, preventing an unavailable database from receiving a burst of identical startup connections; retrying initialization for the system that already observed the failure makes a fresh attempt. A diagnostics deployment failure does not suppress the first queue-durability, workflow-persistence, or scheduling deployment attempt.
 
 Any execution-diagnostics provider initialization failure produces an `Error`-level log and disables persisted diagnostics for the affected Workable system until the process restarts; the system and application host continue starting. This includes an unavailable SQL Server or database, configuration or permission errors, and a missing or incomplete Workable diagnostics schema. Cancellation still interrupts startup. Durable queue and workflow initialization keep their own failure behavior when they share this initializer; durable queueing retains its existing store-unavailable fallback and retry behavior.
 
@@ -160,7 +163,7 @@ SQL Server treats `LeaseId` as a fencing token. Lease renewal, failed-row retent
 
 The SQL Server integration includes a CLI project at `apps/tools/Workable.SqlServer.Cli`.
 
-`schema generate` emits the complete current schema for a fresh installation. `schema apply` and runtime auto-deployment first inspect the component versions in `SchemaVersion`: an empty database receives the current schema directly, while a versioned database runs only the ordered migrations newer than its installed queue, workflow, or diagnostics version. A database containing Workable tables without version metadata is rejected as an ambiguous legacy or partial deployment instead of being silently treated as fresh.
+`schema generate` emits the complete current schema for a fresh installation. `schema apply` and runtime auto-deployment first inspect the component versions in `SchemaVersion`: an empty database receives the current schema directly, while a versioned database runs only the ordered migrations newer than its installed queue, workflow, diagnostics, or scheduling version. A database containing Workable tables without version metadata is rejected as an ambiguous legacy or partial deployment instead of being silently treated as fresh.
 
 Generate the schema script:
 
@@ -194,7 +197,7 @@ dotnet run --project apps\tools\Workable.SqlServer.Cli -- schema apply --project
 
 `--project` can be repeated, and `--solution` scans all non-test projects in the solution. Pass `--include-tests` when a test project is intentionally part of the scan. `schema apply` also accepts repeated `--connection-string` values so the same detected schema requirements can be deployed to multiple databases.
 
-The scanner looks for durable queue configuration, persistence-backed idempotency configuration, persistence-backed concurrency configuration, durable workflow configuration, and execution-diagnostics persistence registration or work configuration. If connection strings or schema names are supplied dynamically through application configuration, pass them to the CLI explicitly; literal `AddWorkableSqlServerPersistence("...", schemaName: "...")` and `AddWorkableSqlServerDurableQueue("...", schemaName: "...")` values can be discovered automatically.
+The scanner looks for runtime scheduling, durable queue configuration, persistence-backed idempotency configuration, persistence-backed concurrency configuration, durable workflow configuration, and execution-diagnostics persistence registration or work configuration. If connection strings or schema names are supplied dynamically through application configuration, pass them to the CLI explicitly; literal `AddWorkableSqlServerPersistence("...", schemaName: "...")` and `AddWorkableSqlServerDurableQueue("...", schemaName: "...")` values can be discovered automatically.
 
 You can also provide the connection string with `WORKABLE_SQLSERVER_CONNECTION_STRING`:
 

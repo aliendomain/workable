@@ -254,7 +254,7 @@ services.AddWorkableSystem("backstage", builder =>
 });
 ```
 
-In that example, the broad admin group keeps full access, while the narrower owner group can use the same work only for one area. These extra checks do not affect read visibility, but they can now target queueing, worker actions, worker reconfiguration, or definition reconfiguration depending on which requirement helper you choose.
+In that example, the broad admin group keeps full access, while the narrower owner group can use the same work only for one area. These extra checks do not affect read visibility, but they can now target queueing, worker actions, schedule actions, worker reconfiguration, or definition reconfiguration depending on which requirement helper you choose.
 
 If one definition needs separate audiences for queueing, worker actions, or reconfiguration, use the finer-grained helpers instead of cloning the definition:
 
@@ -277,14 +277,15 @@ In that shape, `AllowOperateToGroups(...)` remains the ergonomic full-access gra
 
 For constrained grants:
 
-- `WhenOperatingRequire(...)` applies to queueing, worker actions, and both reconfiguration surfaces
+- `WhenOperatingRequire(...)` applies to queueing, worker actions, schedule actions, and both reconfiguration surfaces
 - `WhenQueueingRequire(...)` applies only to queueing
 - `WhenWorkerActionsRequire(...)` applies only to worker actions
+- `WhenScheduleActionsRequire(...)` applies only to runtime schedule actions
 - `WhenReconfiguringRequire(...)` applies to worker and definition reconfiguration
 - `WhenWorkerReconfiguringRequire(...)` applies only to worker reconfiguration
 - `WhenDefinitionReconfiguringRequire(...)` applies only to definition reconfiguration
 
-Typed worker-action and worker-reconfiguration requirements deserialize the worker's retained original input. Definition reconfiguration requirements inspect the reconfiguration change shape directly because definition reconfiguration does not carry work input.
+Typed worker-action and worker-reconfiguration requirements deserialize the worker's retained original input. Typed schedule-action requirements deserialize the schedule's retained input. Definition reconfiguration requirements inspect the reconfiguration change shape directly because definition reconfiguration does not carry work input. A `Cancel` grant constrained only by `WhenWorkerActionsRequire(...)` fails closed for schedule cancellation; add an explicit schedule-action or common operating requirement when the same audience should also cancel schedules.
 
 ## Work Definition Sources
 

@@ -766,6 +766,381 @@ public sealed class WorkableHttpApiTests
     }
 
     [Fact]
+    public async Task MappedHttpCreatesSchedulesWithQueueInputOptionsAndRequestActor()
+    {
+        var store = new WorkSchedulingShould.InMemoryScheduleStore();
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.EnableScheduling();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("http.schedule.case"),
+                    SuccessfulWork);
+            },
+            configureServices: services => services.AddSingleton<IWorkScheduleStore>(store));
+        var firstRunAt = DateTimeOffset.UtcNow + TimeSpan.FromHours(1);
+        var response = await host.GetTestClient().PostAsJsonAsync(
+            "/workable/work/http.schedule.case/schedules",
+            new
+            {
+                timing = new
+                {
+                    firstRunAt,
+                    interval = "06:00:00",
+                    runMissedExecution = false,
+                },
+                work = new
+                {
+                    input = new { orderId = "A-100" },
+                    options = new
+                    {
+                        profilingEnabled = true,
+                    },
+                    description = "Scheduled from the queue dialog",
+                },
+            });
+
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var scheduleId = new WorkScheduleId(Guid.Parse(json["schedule"]?["id"]?["value"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected schedule id.")));
+        var persisted = await store.Get(new(null, scheduleId));
+
+        Assert.NotNull(persisted);
+        Assert.Equal("http.schedule.case", persisted.Schedule.DefinitionName);
+        Assert.Equal(firstRunAt, persisted.Schedule.Timing.FirstRunAt);
+        Assert.Equal(TimeSpan.FromHours(6), persisted.Schedule.Timing.Interval);
+        Assert.False(persisted.Schedule.Timing.RunMissedExecution);
+        Assert.Equal("A-100", persisted.Schedule.Input!.ToValue<JsonElement>().GetProperty("orderId").GetString());
+        Assert.True(persisted.Schedule.WorkerOptions!.ProfilingEnabled);
+        Assert.Equal("user-123", persisted.RequestContext.Actor.Id);
+        Assert.Equal("Scheduled from the queue dialog", persisted.RequestContext.Description);
+        Assert.Equal(WorkInvocationChannel.HttpApi, persisted.RequestContext.Origin.Channel);
+        Assert.Contains(
+            "/workable/work/http.schedule.case/schedules",
+            persisted.RequestContext.Url,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MappedHttpCreatesCronSchedulesWithCalendarTiming()
+    {
+        var store = new WorkSchedulingShould.InMemoryScheduleStore();
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.EnableScheduling();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("http.schedule.cron"),
+                    SuccessfulWork);
+            },
+            configureServices: services => services.AddSingleton<IWorkScheduleStore>(store));
+        var startsAt = new DateTimeOffset(2099, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var response = await host.GetTestClient().PostAsJsonAsync(
+            "/workable/work/http.schedule.cron/schedules",
+            new
+            {
+                timing = new
+                {
+                    firstRunAt = startsAt,
+                    cronExpression = "0 9 * * 1-5",
+                    timeZoneId = "America/Los_Angeles",
+                    runMissedExecution = false,
+                },
+            });
+
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var scheduleId = new WorkScheduleId(Guid.Parse(json["schedule"]?["id"]?["value"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected schedule id.")));
+        var persisted = await store.Get(new(null, scheduleId));
+
+        Assert.NotNull(persisted);
+        Assert.Equal("0 9 * * 1-5", persisted.Schedule.Timing.CronExpression);
+        Assert.Equal("America/Los_Angeles", persisted.Schedule.Timing.TimeZoneId);
+        Assert.Null(persisted.Schedule.Timing.Interval);
+        Assert.False(persisted.Schedule.Timing.RunMissedExecution);
+        Assert.Equal(
+            new DateTimeOffset(2099, 1, 1, 9, 0, 0, TimeSpan.FromHours(-8)),
+            persisted.Schedule.NextRunAt);
+    }
+
+    [Fact]
+    public async Task MappedHttpPreviewsCronOccurrencesAndRejectsInvalidPreviews()
+    {
+        using var host = await CreateHttpHost();
+        var client = host.GetTestClient();
+        var startsAt = new DateTimeOffset(2026, 9, 10, 0, 0, 0, TimeSpan.Zero);
+        var valid = await client.PostAsJsonAsync(
+            "/workable/schedules/cron-preview",
+            new
+            {
+                cronExpression = "0 9 * * 1-5",
+                timeZoneId = "America/Los_Angeles",
+                startsAt,
+                count = 2,
+            });
+        var defaults = await client.PostAsJsonAsync(
+            "/workable/schedules/cron-preview",
+            new
+            {
+                cronExpression = "0 9 * * 1-5",
+                timeZoneId = "UTC",
+            });
+        var belowMinimum = await client.PostAsJsonAsync(
+            "/workable/schedules/cron-preview",
+            new { cronExpression = "0 9 * * *", timeZoneId = "UTC", startsAt, count = 0 });
+        var aboveMaximum = await client.PostAsJsonAsync(
+            "/workable/schedules/cron-preview",
+            new { cronExpression = "0 9 * * *", timeZoneId = "UTC", startsAt, count = 11 });
+        var malformed = await client.PostAsJsonAsync(
+            "/workable/schedules/cron-preview",
+            new { cronExpression = "not cron", timeZoneId = "UTC", startsAt, count = 2 });
+        var oversizedCron = await client.PostAsJsonAsync(
+            "/workable/schedules/cron-preview",
+            new { cronExpression = new string('*', 257), timeZoneId = "UTC", startsAt, count = 2 });
+        var oversizedTimeZone = await client.PostAsJsonAsync(
+            "/workable/schedules/cron-preview",
+            new { cronExpression = "0 9 * * *", timeZoneId = new string('z', 257), startsAt, count = 2 });
+        var impossible = await client.PostAsJsonAsync(
+            "/workable/schedules/cron-preview",
+            new { cronExpression = "0 0 31 2 *", timeZoneId = "UTC", startsAt, count = 2 });
+
+        valid.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await valid.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var occurrences = json["occurrences"]?.AsArray()
+            ?? throw new InvalidOperationException("Expected occurrences.");
+        Assert.Equal(2, occurrences.Count);
+        Assert.Equal(
+            new DateTimeOffset(2026, 9, 10, 9, 0, 0, TimeSpan.FromHours(-7)),
+            occurrences[0]!.GetValue<DateTimeOffset>());
+        defaults.EnsureSuccessStatusCode();
+        var defaultJson = JsonNode.Parse(await defaults.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        Assert.Equal(5, defaultJson["occurrences"]!.AsArray().Count);
+        Assert.Equal(HttpStatusCode.BadRequest, belowMinimum.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, aboveMaximum.StatusCode);
+        Assert.Contains("workable.schedule.cron_invalid", await malformed.Content.ReadAsStringAsync());
+        Assert.Contains("workable.schedule.cron_too_long", await oversizedCron.Content.ReadAsStringAsync());
+        Assert.Contains("workable.schedule.time_zone_too_long", await oversizedTimeZone.Content.ReadAsStringAsync());
+        Assert.Contains("workable.schedule.cron_no_occurrence", await impossible.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task MappedHttpListsInspectsAndCancelsSchedulesWithOccurrenceHistory()
+    {
+        var store = new WorkSchedulingShould.InMemoryScheduleStore();
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.EnableScheduling();
+                builder.AddAuthorizedTransportWork(
+                    WorkDefinition.Create("http.schedule.manage"),
+                    SuccessfulWork);
+            },
+            configureServices: services => services.AddSingleton<IWorkScheduleStore>(store));
+        var client = host.GetTestClient();
+        var response = await client.PostAsJsonAsync(
+            "/workable/work/http.schedule.manage/schedules",
+            new
+            {
+                timing = new
+                {
+                    firstRunAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(100),
+                    interval = "01:00:00",
+                    runMissedExecution = true,
+                },
+            });
+        response.EnsureSuccessStatusCode();
+        var created = JsonNode.Parse(await response.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected JSON response.");
+        var scheduleId = Guid.Parse(created["schedule"]?["id"]?["value"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected schedule id."));
+
+        await TestEventually.Until(
+            async () => (await store.ListOccurrences(new(null, new(scheduleId)))).Count > 0,
+            "Expected the managed schedule to retain an occurrence.");
+
+        var list = await client.GetAsync(
+            "/workable/schedules?definitionName=http.schedule.manage&status=Active&take=10");
+        var detail = await client.GetAsync($"/workable/schedules/{scheduleId:D}");
+        var occurrences = await client.GetAsync($"/workable/schedules/{scheduleId:D}/occurrences?take=10");
+        var defaultOccurrences = await client.GetAsync($"/workable/schedules/{scheduleId:D}/occurrences");
+        var invalidId = await client.GetAsync("/workable/schedules/not-a-guid");
+        var invalidListTake = await client.GetAsync("/workable/schedules?take=0");
+        var invalidMaximumListTake = await client.GetAsync("/workable/schedules?take=1001");
+        var incompleteCursor = await client.GetAsync(
+            "/workable/schedules?cursorCreatedAt=2026-09-11T12%3A00%3A00Z");
+        var invalidOccurrenceTake = await client.GetAsync(
+            $"/workable/schedules/{scheduleId:D}/occurrences?take=101");
+        var unknownScheduleId = Guid.NewGuid();
+        var unknown = await client.GetAsync($"/workable/schedules/{unknownScheduleId:D}");
+        var unknownOccurrences = await client.GetAsync(
+            $"/workable/schedules/{unknownScheduleId:D}/occurrences");
+        var invalidCancel = await client.PostAsync("/workable/schedules/not-a-guid/cancel", content: null);
+
+        list.EnsureSuccessStatusCode();
+        var listJson = JsonNode.Parse(await list.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected schedule list JSON.");
+        Assert.Single(listJson["schedules"]!.AsArray());
+        var listedSchedule = listJson["schedules"]![0]!.AsObject();
+        Assert.Equal("http.schedule.manage", listedSchedule["definitionName"]!.GetValue<string>());
+        Assert.False(listedSchedule.ContainsKey("input"));
+        Assert.False(listedSchedule.ContainsKey("workerOptions"));
+        var listedCreatedAt = listedSchedule["createdAt"]!.GetValue<DateTimeOffset>();
+        var continuedList = await client.GetAsync(
+            "/workable/schedules?definitionName=http.schedule.manage&status=Active&take=10" +
+            $"&cursorCreatedAt={Uri.EscapeDataString(listedCreatedAt.ToString("O"))}" +
+            $"&cursorScheduleId={scheduleId:D}");
+        continuedList.EnsureSuccessStatusCode();
+        var continuedJson = JsonNode.Parse(await continuedList.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected continued schedule list JSON.");
+        Assert.Empty(continuedJson["schedules"]!.AsArray());
+        detail.EnsureSuccessStatusCode();
+        occurrences.EnsureSuccessStatusCode();
+        defaultOccurrences.EnsureSuccessStatusCode();
+        var occurrenceJson = JsonNode.Parse(await occurrences.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected occurrence JSON.");
+        Assert.Single(occurrenceJson["occurrences"]!.AsArray());
+        var defaultOccurrenceJson = JsonNode.Parse(await defaultOccurrences.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected default occurrence JSON.");
+        Assert.Single(defaultOccurrenceJson["occurrences"]!.AsArray());
+        Assert.Equal(HttpStatusCode.BadRequest, invalidId.StatusCode);
+        Assert.Contains("workable.schedule.id_invalid", await invalidId.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.BadRequest, invalidListTake.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidMaximumListTake.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, incompleteCursor.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidOccurrenceTake.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, unknownOccurrences.StatusCode);
+        Assert.Contains("workable.schedule.not_found", await unknownOccurrences.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.BadRequest, invalidCancel.StatusCode);
+        Assert.Contains("workable.schedule.id_invalid", await invalidCancel.Content.ReadAsStringAsync());
+
+        var cancel = await client.PostAsync($"/workable/schedules/{scheduleId:D}/cancel", content: null);
+        cancel.EnsureSuccessStatusCode();
+        var canceled = JsonNode.Parse(await cancel.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected cancellation JSON.");
+        Assert.Equal("Canceled", canceled["schedule"]?["status"]?.GetValue<string>());
+
+        var cancelAgain = await client.PostAsync($"/workable/schedules/{scheduleId:D}/cancel", content: null);
+        Assert.Equal(HttpStatusCode.Conflict, cancelAgain.StatusCode);
+        var canceledList = await client.GetAsync("/workable/schedules?status=Canceled");
+        canceledList.EnsureSuccessStatusCode();
+        var canceledListJson = JsonNode.Parse(await canceledList.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected canceled schedule list JSON.");
+        Assert.Single(canceledListJson["schedules"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task MappedHttpReturnsBadRequestForInvalidTypedScheduleCancelInput()
+    {
+        const string scheduleOperators = "http.schedule.operators";
+        var store = new WorkSchedulingShould.InMemoryScheduleStore();
+        using var host = await CreateHttpHost(
+            builder =>
+            {
+                builder.ConfigureAuthorization(authorization => authorization
+                    .AllowBuiltInHttpApiToGroups(scheduleOperators));
+                builder.EnableScheduling();
+                builder.AddWork(
+                    WorkDefinition.Create("http.schedule.invalid-cancel-input"),
+                    SuccessfulWork,
+                    configure: null,
+                    authorize: authorization => authorization
+                        .AllowReadToGroups(scheduleOperators)
+                        .AllowQueueToGroups(scheduleOperators)
+                        .AllowOperationsToGroups(
+                            [scheduleOperators],
+                            WorkOperationPermissions.Cancel,
+                            requirements => requirements.WhenScheduleActionsRequire<HttpScheduleCancelInput>(
+                                context => context.Input?.Value == "allowed")));
+            },
+            groups: [scheduleOperators],
+            configureServices: services => services.AddSingleton<IWorkScheduleStore>(store));
+        var client = host.GetTestClient();
+        var create = await client.PostAsJsonAsync(
+            "/workable/work/http.schedule.invalid-cancel-input/schedules",
+            new
+            {
+                timing = new
+                {
+                    firstRunAt = DateTimeOffset.UtcNow + TimeSpan.FromHours(1),
+                },
+                work = new
+                {
+                    input = "not-an-object",
+                },
+            });
+        create.EnsureSuccessStatusCode();
+        var created = JsonNode.Parse(await create.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected schedule creation JSON.");
+        var scheduleId = Guid.Parse(created["schedule"]?["id"]?["value"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("Expected schedule id."));
+
+        var cancel = await client.PostAsync($"/workable/schedules/{scheduleId:D}/cancel", content: null);
+        var json = JsonNode.Parse(await cancel.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected schedule cancellation JSON.");
+
+        Assert.Equal(HttpStatusCode.BadRequest, cancel.StatusCode);
+        Assert.Equal("Invalid", json["status"]?.GetValue<string>());
+        Assert.Contains(
+            json["messages"]?.AsArray() ?? throw new InvalidOperationException("Expected cancellation messages."),
+            message => message?["code"]?.GetValue<string>() ==
+                "workable.authorization.operate_requirement_input_invalid");
+        Assert.Equal(
+            WorkScheduleStatus.Active,
+            (await store.Get(new(null, new(scheduleId))))!.Schedule.Status);
+    }
+
+    [Fact]
+    public async Task MappedHttpReportsUnavailableScheduling()
+    {
+        using var host = await CreateHttpHost();
+        var response = await host.GetTestClient().PostAsJsonAsync(
+            "/workable/work/http.route.case/schedules",
+            new
+            {
+                timing = new
+                {
+                    firstRunAt = DateTimeOffset.UtcNow + TimeSpan.FromHours(1),
+                    runMissedExecution = true,
+                },
+            });
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Contains("Unavailable", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MappedHttpRejectsCompletionWaitingForSchedules()
+    {
+        using var host = await CreateHttpHost();
+        var response = await host.GetTestClient().PostAsJsonAsync(
+            "/workable/work/http.route.case/schedules",
+            new
+            {
+                timing = new
+                {
+                    firstRunAt = DateTimeOffset.UtcNow + TimeSpan.FromHours(1),
+                },
+                work = new
+                {
+                    completion = "WaitForCompletion",
+                },
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(
+            "workable.schedule.completion_not_supported",
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task HttpApiCanReturnAfterAccepted()
     {
         var definition = WorkDefinition.Create(
@@ -4796,6 +5171,12 @@ public sealed class WorkableHttpApiTests
             (HttpMethod.Post, "/definitions/query"),
             (HttpMethod.Get, "/definitions/missing/info"),
             (HttpMethod.Get, "/work/missing/info"),
+            (HttpMethod.Post, "/work/example/schedules"),
+            (HttpMethod.Get, "/schedules"),
+            (HttpMethod.Get, $"/schedules/{workerId}"),
+            (HttpMethod.Get, $"/schedules/{workerId}/occurrences"),
+            (HttpMethod.Post, $"/schedules/{workerId}/cancel"),
+            (HttpMethod.Post, "/schedules/cron-preview"),
             (HttpMethod.Get, $"/workers/{workerId}"),
             (HttpMethod.Get, $"/workers/{workerId}/configuration"),
             (HttpMethod.Get, $"/workers/{workerId}/overview"),
@@ -5754,6 +6135,8 @@ public sealed class WorkableHttpApiTests
     }
 
     private sealed record WorkflowHttpInput(string ExternalKey);
+
+    private sealed record HttpScheduleCancelInput(string Value);
 
     private sealed class CountingWorkAuthorizationGroupProvider(IEnumerable<string> groups) : IWorkAuthorizationGroupProvider
     {

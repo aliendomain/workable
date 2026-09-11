@@ -31,6 +31,7 @@ internal sealed class InMemoryWorkSystem :
     private readonly WorkflowRuntime workflowRuntime;
     private readonly WorkflowPersistenceCoordinator workflowPersistence;
     private readonly WorkQueueService queue;
+    private readonly WorkScheduler schedules;
     private readonly WorkerOperations workers;
     private readonly WorkSystemReadModel readModel;
     private readonly WorkSystemReadModelQueryService query;
@@ -83,10 +84,12 @@ internal sealed class InMemoryWorkSystem :
         this.ShutdownGracePeriod = shutdownGracePeriod;
         var persistenceStore = rootServices.GetService<IWorkPersistenceStore>();
         var executionDiagnosticsRepository = rootServices.GetService<IWorkExecutionDiagnosticsRepository>();
+        var scheduleStore = rootServices.GetService<IWorkScheduleStore>();
         var capabilities = new WorkSystemCapabilitiesBuilder
         {
             PersistentCoordinationAvailable = persistenceStore is not null,
             ExecutionDiagnosticsPersistenceAvailable = executionDiagnosticsRepository is not null,
+            SchedulingAvailable = registration.Scheduling.IsEnabled && scheduleStore is not null,
         };
         foreach (var contributor in rootServices.GetServices<IWorkSystemCapabilityContributor>())
         {
@@ -163,6 +166,14 @@ internal sealed class InMemoryWorkSystem :
         this.query = this.readModel.Query;
         this.queue = executionQueue = new WorkQueueService(this.catalog, this.workers, this.queueDiagnostics);
         this.groupResolver = rootServices.GetRequiredService<IWorkAuthorizationGroupResolver>();
+        this.schedules = new WorkScheduler(
+            this.Name,
+            this.catalog,
+            () => this.State,
+            this.queue,
+            scheduleStore,
+            registration.Scheduling,
+            rootServices.GetService<ILoggerFactory>()?.CreateLogger("Workable.Scheduling"));
         this.sessions = new WorkSystemSessionFactory(
             this.Id,
             this.Name,
@@ -172,6 +183,7 @@ internal sealed class InMemoryWorkSystem :
             this.catalog,
             this.workflows,
             this.queue,
+            this.schedules,
             this.workers,
             this.query,
             this.events,
@@ -355,6 +367,15 @@ internal sealed class InMemoryWorkSystem :
         {
             this.ThrowIfAuthorizationRequiredForDirectAccess();
             return this.diagnostics;
+        }
+    }
+
+    public IWorkScheduler Schedules
+    {
+        get
+        {
+            this.ThrowIfAuthorizationRequiredForDirectAccess();
+            return this.schedules;
         }
     }
 
@@ -584,6 +605,7 @@ internal sealed class InMemoryWorkSystem :
                 await this.executionDiagnostics.Initialize([.. this.catalog.Definitions], cancellationToken);
             }
             await this.workflowPersistence.Initialize(this.workflows.Definitions, cancellationToken);
+            await this.schedules.Initialize(cancellationToken);
             this.workflowRuntime.StartExecutionLifetime();
             var recoveredWorkflowRunIds = await this.workflowRuntime.LoadDurableRuns(cancellationToken);
             dispatchPreparationStarted = true;
@@ -591,6 +613,7 @@ internal sealed class InMemoryWorkSystem :
             this.workers.StartPreparedWorkerExecution();
             this.workers.StartPreparedBackgroundTasks();
             this.State = WorkSystemState.Started;
+            this.schedules.Start();
             lifecycleStarted = true;
             await this.workflowRuntime.ResumeRecoveredDurableRuns(recoveredWorkflowRunIds, cancellationToken);
             await this.NotifyStarted(cancellationToken);
@@ -601,6 +624,9 @@ internal sealed class InMemoryWorkSystem :
         {
             var cleanupExceptions = new List<Exception>();
             TryCleanup(() => this.workflowRuntime.CancelExecutionLifetime(), cleanupExceptions);
+            await TryCleanupAsync(
+                () => this.schedules.Stop(CancellationToken.None),
+                cleanupExceptions);
             if (dispatchPreparationStarted)
             {
                 await TryCleanupAsync(
@@ -700,6 +726,9 @@ internal sealed class InMemoryWorkSystem :
             var cleanupExceptions = new List<Exception>();
             await TryCleanupAsync(() => this.NotifyStopping(requestContext.Origin), cleanupExceptions);
             TryCleanup(() => this.workflowRuntime.CancelExecutionLifetime(), cleanupExceptions);
+            await TryCleanupAsync(
+                () => this.schedules.Stop(CancellationToken.None),
+                cleanupExceptions);
 
             WorkSystemStopResult? result = null;
             await TryCleanupAsync(
@@ -799,6 +828,7 @@ internal sealed class InMemoryWorkSystem :
         await this.StopCore(
             WorkRequestContext.Create(WorkInvocationChannel.InProcess));
         this.workers.Dispose();
+        this.schedules.Dispose();
         if (this.executionDiagnostics is not null)
         {
             await this.executionDiagnostics.DisposeAsync();

@@ -73,6 +73,7 @@ builder.Services.AddScoped<DemoProfilingOutputComposer>();
 builder.Services.AddWorkableSystem(workable =>
 {
     workable.StartWithHost();
+    workable.EnableScheduling();
     ConfigureSampleSystemAuthorization(workable, isFulfillment: false);
     var sampleQuickDefinition = DemoDefinition("sample.demo.quick", "Samples:Demo", "Short sample work for UI state testing.");
     var sampleLongDefinition = DemoDefinition("sample.demo.long", "Samples:Demo", "Longer sample work for UI state testing.");
@@ -455,6 +456,7 @@ builder.Services.AddWorkableSystem(workable =>
 builder.Services.AddWorkableSystem("fulfillment", workable =>
 {
     workable.StartWithHost();
+    workable.EnableScheduling();
     ConfigureSampleSystemAuthorization(workable, isFulfillment: true);
     workable.AddWork<OrderPickListWork>(
         configure: null,

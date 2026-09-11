@@ -5,6 +5,16 @@ namespace Workable;
 /// </summary>
 public sealed record WorkDefinition
 {
+    /// <summary>
+    /// Gets the default security-contract version attached to definitions that do not specify one explicitly.
+    /// </summary>
+    public const string DefaultScheduleSecurityVersion = "1";
+
+    /// <summary>
+    /// Gets the maximum accepted security-contract version length.
+    /// </summary>
+    public const int MaximumScheduleSecurityVersionLength = 128;
+
     private WorkDefinition(
         WorkDefinitionId id,
         string name,
@@ -14,6 +24,7 @@ public sealed record WorkDefinition
         WorkSchema outputSchema,
         WorkerOptions defaultOptions,
         WorkConfiguration configuration,
+        string scheduleSecurityVersion,
         WorkDefinitionMetadata? metadata = null,
         WorkDefinitionAuthorization? authorization = null,
         long revision = 0)
@@ -26,6 +37,7 @@ public sealed record WorkDefinition
         this.OutputSchema = outputSchema;
         this.DefaultOptions = defaultOptions;
         this.Configuration = configuration;
+        this.ScheduleSecurityVersion = scheduleSecurityVersion;
         this.Metadata = metadata;
         this.Authorization = authorization ?? WorkDefinitionAuthorization.None;
         this.Revision = revision;
@@ -72,6 +84,15 @@ public sealed record WorkDefinition
     public WorkConfiguration Configuration { get; init; }
 
     /// <summary>
+    /// Gets the developer-controlled security-contract version used to validate durable runtime schedules.
+    /// </summary>
+    /// <remarks>
+    /// Increment this value when a deployment changes the authority or business scope exercised by this definition.
+    /// Existing schedules whose retained version does not match are rejected at dispatch.
+    /// </remarks>
+    public string ScheduleSecurityVersion { get; init; }
+
+    /// <summary>
     /// Gets optional descriptive metadata for catalog and tool-oriented experiences.
     /// </summary>
     /// <remarks>
@@ -107,6 +128,10 @@ public sealed record WorkDefinition
     /// <param name="metadata">Optional descriptive metadata for catalog and tool-oriented experiences.</param>
     /// <param name="authorization">Optional work-level authorization metadata.</param>
     /// <param name="configuration">Optional runtime behavior configuration for the definition.</param>
+    /// <param name="scheduleSecurityVersion">
+    /// Developer-controlled security-contract version for durable schedules. Increment it when the definition begins
+    /// exercising materially different authority.
+    /// </param>
     /// <returns>A validated work definition instance.</returns>
     /// <exception cref="ArgumentException"><paramref name="name"/> is <see langword="null"/>, empty, or whitespace.</exception>
     public static WorkDefinition Create(
@@ -119,9 +144,18 @@ public sealed record WorkDefinition
         WorkerOptions? defaultOptions = null,
         WorkDefinitionMetadata? metadata = null,
         WorkDefinitionAuthorization? authorization = null,
-        WorkConfiguration? configuration = null)
+        WorkConfiguration? configuration = null,
+        string scheduleSecurityVersion = DefaultScheduleSecurityVersion)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scheduleSecurityVersion);
+        if (scheduleSecurityVersion.Length > MaximumScheduleSecurityVersionLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(scheduleSecurityVersion),
+                scheduleSecurityVersion.Length,
+                $"A schedule security version cannot exceed {MaximumScheduleSecurityVersionLength} characters.");
+        }
 
         return new(
             id ?? WorkDefinitionId.New(),
@@ -132,6 +166,7 @@ public sealed record WorkDefinition
             outputSchema ?? WorkSchema.None,
             defaultOptions ?? WorkerOptions.Default,
             WorkConfigurationValidator.ThrowIfInvalid(configuration ?? WorkConfiguration.Default),
+            scheduleSecurityVersion,
             metadata,
             authorization);
     }

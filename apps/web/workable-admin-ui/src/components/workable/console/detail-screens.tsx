@@ -6,6 +6,7 @@ import {
   ArrowUpNarrowWide,
   Ban,
   Braces,
+  CalendarClock,
   CheckCircle2,
   Clock3,
   Eye,
@@ -38,6 +39,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -2914,23 +2923,112 @@ export function resolveIterationHttpClientProfilingAvailable(
   return landing?.capabilities?.httpClientProfilingAvailable ?? fallback;
 }
 
+export type QueueScheduleMode = "once" | "repeat";
+export type QueueScheduleRepeatMode = "interval" | "cron";
+export type QueueScheduleIntervalUnit = "minutes" | "hours" | "days";
+
+export function createDefaultScheduleDateTime(now = new Date()): string {
+  const next = new Date(now.getTime() + 5 * 60_000);
+  next.setSeconds(0, 0);
+  const local = new Date(next.getTime() - next.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+export function formatScheduleInterval(
+  amount: number,
+  unit: QueueScheduleIntervalUnit
+): string {
+  const secondsPerUnit = unit === "days" ? 86_400 : unit === "hours" ? 3_600 : 60;
+  const totalSeconds = amount * secondsPerUnit;
+  const days = Math.floor(totalSeconds / 86_400);
+  const remainder = totalSeconds % 86_400;
+  const hours = Math.floor(remainder / 3_600);
+  const minutes = Math.floor((remainder % 3_600) / 60);
+  const seconds = remainder % 60;
+  const clock = [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+  return days > 0 ? `${days}.${clock}` : clock;
+}
+
+export function getDefaultScheduleTimeZone(
+  resolve = () => Intl.DateTimeFormat().resolvedOptions().timeZone
+): string {
+  try {
+    return resolve() || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+export function formatCronPreviewOccurrence(value: string, timeZoneId: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: timeZoneId,
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+export function validateScheduleSettings(
+  firstRunAt: string,
+  mode: QueueScheduleMode,
+  intervalAmount: string,
+  now = Date.now(),
+  repeatMode: QueueScheduleRepeatMode = "interval",
+  cronExpression = "",
+  timeZoneId = ""
+): string | null {
+  const firstRun = new Date(firstRunAt);
+  if (!firstRunAt || Number.isNaN(firstRun.getTime())) {
+    return "Choose a valid first run date and time.";
+  }
+  if (firstRun.getTime() <= now) {
+    return "Choose a first run date and time in the future.";
+  }
+
+  if (mode === "repeat" && repeatMode === "cron") {
+    if (!cronExpression.trim()) {
+      return "Enter a cron expression.";
+    }
+    if (cronExpression.trim().split(/\s+/).length !== 5) {
+      return "Cron expressions must contain five fields.";
+    }
+    if (!timeZoneId.trim()) {
+      return "Enter a time zone for the cron schedule.";
+    }
+  } else {
+    const amount = Number(intervalAmount);
+    if (mode === "repeat" && (!Number.isInteger(amount) || amount <= 0)) {
+      return "Repeat every must be a whole number greater than zero.";
+    }
+  }
+
+  return null;
+}
+
 export function QueueDialog({
   connection,
   definition,
   fetchQueueSchemaWhenNeeded = true,
+  initialSchedulePanelOpen = false,
   initialFormValue,
   initialRequest,
   onQueuedWorker,
   onOpenChange,
+  onScheduled,
   preloadedQueueSchemaDescriptor,
 }: {
   connection: WorkableConnection;
   definition: WorkDefinition | null;
   fetchQueueSchemaWhenNeeded?: boolean;
+  initialSchedulePanelOpen?: boolean;
   initialFormValue?: unknown;
   initialRequest?: QueueWorkRequest | null;
   onQueuedWorker: (workerId: string) => void;
   onOpenChange: (open: boolean) => void;
+  onScheduled?: () => void;
   preloadedQueueSchemaDescriptor?: QueueRequestSchemaDescriptor | null;
 }) {
   const inputSchema = useMemo(
@@ -2948,6 +3046,19 @@ export function QueueDialog({
   const [queueConfigurationDisplayMode, setQueueConfigurationDisplayMode] =
     useState<WorkerConfigurationDisplayMode>("all-values");
   const [isQueueing, setIsQueueing] = useState(false);
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [schedulePanelOpen, setSchedulePanelOpen] = useState(initialSchedulePanelOpen);
+  const [scheduleMode, setScheduleMode] = useState<QueueScheduleMode>("once");
+  const [scheduleRepeatMode, setScheduleRepeatMode] = useState<QueueScheduleRepeatMode>("interval");
+  const [firstRunAt, setFirstRunAt] = useState(() => createDefaultScheduleDateTime());
+  const [intervalAmount, setIntervalAmount] = useState("1");
+  const [intervalUnit, setIntervalUnit] = useState<QueueScheduleIntervalUnit>("hours");
+  const [cronExpression, setCronExpression] = useState("0 9 * * 1-5");
+  const [cronTimeZoneId, setCronTimeZoneId] = useState(() => getDefaultScheduleTimeZone());
+  const [cronPreview, setCronPreview] = useState<string[]>([]);
+  const [cronPreviewError, setCronPreviewError] = useState<string | undefined>();
+  const [isPreviewingCron, setIsPreviewingCron] = useState(false);
+  const [runMissedExecution, setRunMissedExecution] = useState(true);
   const [status, setStatus] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const baselineQueueRequest = useMemo(
@@ -3024,10 +3135,97 @@ export function QueueDialog({
       setQueueRequest(cloneQueueWorkRequest(baselineQueueRequest));
       setQueueConfigurationDisplayMode("all-values");
       setIsQueueing(false);
+      setIsScheduling(false);
+      setSchedulePanelOpen(initialSchedulePanelOpen);
+      setScheduleMode("once");
+      setScheduleRepeatMode("interval");
+      setFirstRunAt(createDefaultScheduleDateTime());
+      setIntervalAmount("1");
+      setIntervalUnit("hours");
+      setCronExpression("0 9 * * 1-5");
+      setCronTimeZoneId(getDefaultScheduleTimeZone());
+      setCronPreview([]);
+      setCronPreviewError(undefined);
+      setIsPreviewingCron(false);
+      setRunMissedExecution(true);
       setStatus(undefined);
       setError(undefined);
     });
-  }, [baselineQueueRequest, definition, initialFormValue, inputSchema]);
+  }, [baselineQueueRequest, definition, initialFormValue, initialSchedulePanelOpen, inputSchema]);
+
+  useEffect(() => {
+    if (!schedulePanelOpen || scheduleMode !== "repeat" || scheduleRepeatMode !== "cron") {
+      queueMicrotask(() => {
+        setCronPreview([]);
+        setCronPreviewError(undefined);
+        setIsPreviewingCron(false);
+      });
+      return;
+    }
+
+    const validationError = validateScheduleSettings(
+      firstRunAt,
+      scheduleMode,
+      intervalAmount,
+      0,
+      scheduleRepeatMode,
+      cronExpression,
+      cronTimeZoneId
+    );
+    if (validationError) {
+      queueMicrotask(() => {
+        setCronPreview([]);
+        setCronPreviewError(validationError);
+        setIsPreviewingCron(false);
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setIsPreviewingCron(true);
+      setCronPreviewError(undefined);
+      workableFetch<{ occurrences: string[] }>(connection, "schedules/cron-preview", {
+        method: "POST",
+        body: JSON.stringify({
+          cronExpression,
+          timeZoneId: cronTimeZoneId,
+          startsAt: new Date(firstRunAt).toISOString(),
+          count: 5,
+        }),
+        signal: controller.signal,
+      })
+        .then((result) => {
+          setCronPreview(result.occurrences);
+          setCronPreviewError(undefined);
+        })
+        .catch((caught) => {
+          if (!controller.signal.aborted) {
+            setCronPreview([]);
+            setCronPreviewError(caught instanceof Error ? caught.message : "Cron preview failed.");
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setIsPreviewingCron(false);
+          }
+        });
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    connection,
+    cronExpression,
+    cronTimeZoneId,
+    firstRunAt,
+    intervalAmount,
+    scheduleMode,
+    schedulePanelOpen,
+    scheduleRepeatMode,
+  ]);
 
   const updateFormValue = (nextValue: unknown) => {
     setFormValue(nextValue);
@@ -3047,6 +3245,12 @@ export function QueueDialog({
     return sanitizeQueueWorkRequest(request);
   };
 
+  const resolveCurrentRequest = () => activeTab === "manual"
+    ? sanitizeQueueWorkRequest(
+        parseOptionalObjectJson<QueueWorkRequest>(manualRequestJson, "Manual request") ?? {}
+      )
+    : createComposedRequest();
+
   const queue = async (postQueue: "open-worker" | "stay-on-screen") => {
     if (!definition) {
       return;
@@ -3057,12 +3261,7 @@ export function QueueDialog({
     setIsQueueing(true);
 
     try {
-      const request =
-        activeTab === "manual"
-          ? sanitizeQueueWorkRequest(
-              parseOptionalObjectJson<QueueWorkRequest>(manualRequestJson, "Manual request") ?? {}
-            )
-          : createComposedRequest();
+      const request = resolveCurrentRequest();
       const completionMode = request.completion ?? "ReturnAfterAccepted";
 
       const result = await workableFetch<{ queueOutcome?: { status: string }; workerId?: { value: string } }>(
@@ -3098,6 +3297,65 @@ export function QueueDialog({
       setIsQueueing(false);
     }
   };
+  const schedule = async () => {
+    if (!definition) {
+      return;
+    }
+
+    setError(undefined);
+    setStatus(undefined);
+    const validationError = validateScheduleSettings(
+      firstRunAt,
+      scheduleMode,
+      intervalAmount,
+      Date.now(),
+      scheduleRepeatMode,
+      cronExpression,
+      cronTimeZoneId
+    );
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    const firstRun = new Date(firstRunAt);
+    const amount = Number(intervalAmount);
+    setIsScheduling(true);
+    try {
+      const request = resolveCurrentRequest();
+      const scheduledWork = { ...request };
+      delete scheduledWork.completion;
+      await workableFetch(connection, `work/${definition.name}/schedules`, {
+        method: "POST",
+        body: JSON.stringify({
+          timing: {
+            firstRunAt: firstRun.toISOString(),
+            interval: scheduleMode === "repeat"
+              && scheduleRepeatMode === "interval"
+              ? formatScheduleInterval(amount, intervalUnit)
+              : null,
+            runMissedExecution,
+            cronExpression: scheduleMode === "repeat" && scheduleRepeatMode === "cron"
+              ? cronExpression.trim()
+              : null,
+            timeZoneId: scheduleMode === "repeat" && scheduleRepeatMode === "cron"
+              ? cronTimeZoneId.trim()
+              : null,
+          },
+          work: scheduledWork,
+        }),
+      });
+      onScheduled?.();
+      onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Schedule request failed.");
+    } finally {
+      setIsScheduling(false);
+    }
+  };
+  const isBusy = isQueueing || isScheduling;
+  const hasStaticRecurrence =
+    queueDefaultComparisonRequest.options?.configuration?.recurrence.isEnabled === true;
   const isWaitingForCompletion = isQueueing && (
     activeTab === "manual"
       ? manualRequestJson.includes("WaitForCompletion")
@@ -3126,7 +3384,11 @@ export function QueueDialog({
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 px-4">
           {error && (
-            <ErrorBanner key={error} message={error} title="Queue failed" />
+            <ErrorBanner
+              key={error}
+              message={error}
+              title={schedulePanelOpen ? "Schedule failed" : "Queue failed"}
+            />
           )}
           {status && (
             <FeedbackBanner
@@ -3222,51 +3484,291 @@ export function QueueDialog({
               />
             </TabsContent>
           </Tabs>
+          {schedulePanelOpen && connection.schedulingAvailable === true && (
+            <section
+              aria-label="Schedule settings"
+              className="shrink-0 rounded-lg border bg-muted/20 p-4"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 font-medium">
+                    <CalendarClock className="size-4 text-sky-300" />
+                    Schedule this work
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    The latest definition will be used each time this schedule runs.
+                  </p>
+                </div>
+                <div className="flex rounded-lg border bg-background p-1" role="group" aria-label="Schedule frequency">
+                  <Button
+                    aria-pressed={scheduleMode === "once"}
+                    onClick={() => setScheduleMode("once")}
+                    size="sm"
+                    type="button"
+                    variant={scheduleMode === "once" ? "secondary" : "ghost"}
+                  >
+                    Once
+                  </Button>
+                  <Button
+                    aria-pressed={scheduleMode === "repeat"}
+                    disabled={hasStaticRecurrence}
+                    onClick={() => setScheduleMode("repeat")}
+                    size="sm"
+                    type="button"
+                    variant={scheduleMode === "repeat" ? "secondary" : "ghost"}
+                  >
+                    Repeat
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="queue-schedule-first-run">
+                    {scheduleMode === "repeat" && scheduleRepeatMode === "cron" ? "Starts after" : "First run"}
+                  </Label>
+                  <Input
+                    id="queue-schedule-first-run"
+                    onChange={(event) => setFirstRunAt(event.target.value)}
+                    type="datetime-local"
+                    value={firstRunAt}
+                  />
+                  <p className="text-xs text-muted-foreground">Uses your local time zone.</p>
+                </div>
+                {scheduleMode === "repeat" && scheduleRepeatMode === "interval" ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="queue-schedule-interval">Repeat every</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        className="min-w-0"
+                        id="queue-schedule-interval"
+                        min="1"
+                        onChange={(event) => setIntervalAmount(event.target.value)}
+                        step="1"
+                        type="number"
+                        value={intervalAmount}
+                      />
+                      <Select
+                        onValueChange={(value) => setIntervalUnit(value as QueueScheduleIntervalUnit)}
+                        value={intervalUnit}
+                      >
+                        <SelectTrigger aria-label="Repeat interval unit" className="w-32">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="minutes">Minutes</SelectItem>
+                          <SelectItem value="hours">Hours</SelectItem>
+                          <SelectItem value="days">Days</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                ) : scheduleMode === "once" ? (
+                  <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                    This schedule will complete after its first scheduled dispatch attempt.
+                  </div>
+                ) : null}
+              </div>
+              {scheduleMode === "repeat" && (
+                <div className="mt-4 space-y-3 rounded-lg border bg-background/40 p-3">
+                  <div className="flex rounded-lg border bg-background p-1" role="group" aria-label="Repeat type">
+                    <Button
+                      aria-pressed={scheduleRepeatMode === "interval"}
+                      className="flex-1"
+                      onClick={() => setScheduleRepeatMode("interval")}
+                      size="sm"
+                      type="button"
+                      variant={scheduleRepeatMode === "interval" ? "secondary" : "ghost"}
+                    >
+                      Interval
+                    </Button>
+                    <Button
+                      aria-pressed={scheduleRepeatMode === "cron"}
+                      className="flex-1"
+                      onClick={() => setScheduleRepeatMode("cron")}
+                      size="sm"
+                      type="button"
+                      variant={scheduleRepeatMode === "cron" ? "secondary" : "ghost"}
+                    >
+                      Cron
+                    </Button>
+                  </div>
+                  {scheduleRepeatMode === "cron" && (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="queue-schedule-cron">Cron expression</Label>
+                        <Input
+                          autoCapitalize="off"
+                          autoComplete="off"
+                          className="font-mono"
+                          id="queue-schedule-cron"
+                          onChange={(event) => setCronExpression(event.target.value)}
+                          spellCheck={false}
+                          value={cronExpression}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Five fields: minute, hour, day of month, month, day of week.
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="queue-schedule-time-zone">Time zone</Label>
+                        <Input
+                          autoCapitalize="off"
+                          autoComplete="off"
+                          id="queue-schedule-time-zone"
+                          onChange={(event) => setCronTimeZoneId(event.target.value)}
+                          spellCheck={false}
+                          value={cronTimeZoneId}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Use an IANA identifier such as America/Los_Angeles or UTC.
+                        </p>
+                      </div>
+                      <div className="sm:col-span-2 rounded-md border border-dashed p-3">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          {isPreviewingCron && <Loader2 className="size-3.5 animate-spin" />}
+                          Next runs
+                        </div>
+                        {cronPreviewError ? (
+                          <p className="mt-2 text-xs text-destructive">{cronPreviewError}</p>
+                        ) : cronPreview.length > 0 ? (
+                          <ol className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                            {cronPreview.map((occurrence) => (
+                              <li key={occurrence}>{formatCronPreviewOccurrence(occurrence, cronTimeZoneId)}</li>
+                            ))}
+                          </ol>
+                        ) : (
+                          <p className="mt-2 text-xs text-muted-foreground">Enter a valid expression to preview it.</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {hasStaticRecurrence && (
+                <p className="mt-3 text-xs text-amber-300">
+                  Repeat is unavailable because this definition already has static recurrence.
+                </p>
+              )}
+              <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border bg-background/50 p-3">
+                <input
+                  aria-label="Run after downtime"
+                  checked={runMissedExecution}
+                  className="mt-0.5 size-4 accent-sky-400"
+                  id="queue-schedule-run-missed"
+                  onChange={(event) => setRunMissedExecution(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <span className="block text-sm font-medium">Run after downtime</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Queue one missed occurrence when the system becomes available again.
+                  </span>
+                </span>
+              </label>
+            </section>
+          )}
           <div className="-mx-4 shrink-0 flex items-center justify-between gap-3 border-t bg-muted/30 px-4 py-3">
             <div className="min-w-0 text-sm">
-              <span className="text-muted-foreground">Queue a worker for </span>
+              <span className="text-muted-foreground">
+                {schedulePanelOpen ? "Schedule work for " : "Queue a worker for "}
+              </span>
               <span className="font-mono font-semibold text-sky-300">
                 {definition?.name ?? "definition"}
               </span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <Tooltip delayDuration={250}>
-                <TooltipTrigger asChild>
+              {schedulePanelOpen ? (
+                <>
                   <Button
-                    disabled={isQueueing}
-                    onClick={() => void queue("stay-on-screen")}
+                    disabled={isBusy}
+                    onClick={() => {
+                      setSchedulePanelOpen(false);
+                      setError(undefined);
+                    }}
+                    type="button"
                     variant="outline"
                   >
-                    {isQueueing ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Send className="size-4" />
-                    )}
-                    {isWaitingForCompletion ? "Waiting" : "Queue"}
+                    Back
                   </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={6}>
-                  Queue the worker and close this dialog without navigating to the new worker.
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip delayDuration={250}>
-                <TooltipTrigger asChild>
                   <Button
-                    disabled={isQueueing}
-                    onClick={() => void queue("open-worker")}
+                    disabled={isBusy || (
+                      scheduleMode === "repeat" &&
+                      scheduleRepeatMode === "cron" &&
+                      (isPreviewingCron || cronPreview.length === 0 || cronPreviewError !== undefined)
+                    )}
+                    onClick={() => void schedule()}
+                    type="button"
                   >
-                    {isQueueing ? (
+                    {isScheduling ? (
                       <Loader2 className="size-4 animate-spin" />
                     ) : (
-                      <Eye className="size-4" />
+                      <CalendarClock className="size-4" />
                     )}
-                    {isWaitingForCompletion ? "Waiting" : "Watch"}
+                    {isScheduling ? "Scheduling" : "Create schedule"}
                   </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={6}>
-                  Queue the worker and open its detail screen when the new worker id is returned.
-                </TooltipContent>
-              </Tooltip>
+                </>
+              ) : (
+                <>
+                  {connection.schedulingAvailable === true && (
+                    <Tooltip delayDuration={250}>
+                      <TooltipTrigger asChild>
+                        <Button
+                          disabled={isBusy}
+                          onClick={() => {
+                            setSchedulePanelOpen(true);
+                            setError(undefined);
+                            setStatus(undefined);
+                          }}
+                          variant="outline"
+                        >
+                          <CalendarClock className="size-4" />
+                          Schedule
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" sideOffset={6}>
+                        Run this work once in the future or on a recurring interval.
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                  <Tooltip delayDuration={250}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        disabled={isBusy}
+                        onClick={() => void queue("stay-on-screen")}
+                        variant="outline"
+                      >
+                        {isQueueing ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Send className="size-4" />
+                        )}
+                        {isWaitingForCompletion ? "Waiting" : "Queue"}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6}>
+                      Queue the worker and close this dialog without navigating to the new worker.
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip delayDuration={250}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        disabled={isBusy}
+                        onClick={() => void queue("open-worker")}
+                      >
+                        {isQueueing ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Eye className="size-4" />
+                        )}
+                        {isWaitingForCompletion ? "Waiting" : "Watch"}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6}>
+                      Queue the worker and open its detail screen when the new worker id is returned.
+                    </TooltipContent>
+                  </Tooltip>
+                </>
+              )}
             </div>
           </div>
         </div>

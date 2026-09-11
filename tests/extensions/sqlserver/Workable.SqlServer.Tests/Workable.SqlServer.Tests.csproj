@@ -21,6 +21,9 @@
 
   <ItemGroup>
     <None Include="appsettings.local.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('appsettings.local.json')" />
+    <None Include="..\..\..\..\apps\samples\Workable.SampleHost\workable-sqlserver-schema.sql"
+          Link="workable-sqlserver-schema.sql"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

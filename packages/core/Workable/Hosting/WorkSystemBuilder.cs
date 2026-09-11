@@ -26,6 +26,7 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
     private WorkSystemProfilingConfiguration profiling = WorkSystemProfilingConfiguration.Default;
     private WorkSystemExecutionDiagnosticsPersistenceConfiguration executionDiagnostics =
         WorkSystemExecutionDiagnosticsPersistenceConfiguration.Default;
+    private WorkSystemSchedulingConfiguration scheduling = WorkSystemSchedulingConfiguration.Default;
 
     public IWorkSystemBuilder WithWorkDefaults(
         Action<IWorkDefinitionBuilder> register,
@@ -316,6 +317,28 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             ProfileCaptureMode = profileCaptureMode,
         });
 
+    public IWorkSystemBuilder UseScheduling(WorkSystemSchedulingConfiguration scheduling)
+    {
+        ArgumentNullException.ThrowIfNull(scheduling);
+        ValidateScheduling(scheduling);
+        this.scheduling = scheduling;
+        return this;
+    }
+
+    public IWorkSystemBuilder EnableScheduling(
+        TimeSpan? historyRetention = null,
+        int? maximumActiveSchedules = null,
+        int? maximumActiveSchedulesPerDefinition = null,
+        int? maximumActiveSchedulesPerActor = null)
+        => this.UseScheduling(new WorkSystemSchedulingConfiguration
+        {
+            IsEnabled = true,
+            HistoryRetention = historyRetention ?? WorkSystemSchedulingConfiguration.Default.HistoryRetention,
+            MaximumActiveSchedules = maximumActiveSchedules ?? WorkSystemSchedulingConfiguration.Default.MaximumActiveSchedules,
+            MaximumActiveSchedulesPerDefinition = maximumActiveSchedulesPerDefinition ?? WorkSystemSchedulingConfiguration.Default.MaximumActiveSchedulesPerDefinition,
+            MaximumActiveSchedulesPerActor = maximumActiveSchedulesPerActor ?? WorkSystemSchedulingConfiguration.Default.MaximumActiveSchedulesPerActor,
+        });
+
     public IWorkSystemBuilder IncludeContributedWork(bool enabled = true)
     {
         this.includeContributedWork = enabled;
@@ -435,7 +458,8 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
             this.capacity,
             this.iterationStatuses,
             this.profiling,
-            this.executionDiagnostics);
+            this.executionDiagnostics,
+            this.scheduling);
 
     private static WorkflowDefinition ApplyWorkflowAuthorization(
         WorkflowDefinition definition,
@@ -631,6 +655,56 @@ internal sealed class WorkSystemBuilder(IServiceCollection services, string? nam
         {
             throw new InvalidOperationException(
                 "Execution diagnostics cleanup bounds must be greater than zero and the backlog delay must not be negative.");
+        }
+    }
+
+    private static void ValidateScheduling(WorkSystemSchedulingConfiguration scheduling)
+    {
+        if (scheduling.HistoryRetention < WorkSystemSchedulingConfiguration.MinimumHistoryRetention ||
+            scheduling.HistoryRetention > WorkSystemSchedulingConfiguration.MaximumHistoryRetention)
+        {
+            throw new InvalidOperationException(
+                "Schedule history retention must be between one minute and seven days.");
+        }
+
+        if (scheduling.MaximumActiveSchedules <= 0 ||
+            scheduling.MaximumActiveSchedulesPerDefinition <= 0 ||
+            scheduling.MaximumActiveSchedulesPerActor <= 0)
+        {
+            throw new InvalidOperationException("Active schedule limits must be greater than zero.");
+        }
+
+        if (scheduling.MaximumRetainedSchedules <= 0 || scheduling.MaximumRetainedSchedulesPerActor <= 0)
+        {
+            throw new InvalidOperationException("Retained schedule limits must be greater than zero.");
+        }
+
+        if (scheduling.MaximumSchedulePayloadBytes <= 0 ||
+            scheduling.MaximumRetainedPayloadBytes <= 0 ||
+            scheduling.MaximumRetainedPayloadBytesPerActor <= 0)
+        {
+            throw new InvalidOperationException("Schedule payload limits must be greater than zero.");
+        }
+
+        if (scheduling.MaximumRetainedOccurrences <= 0 ||
+            scheduling.MaximumOccurrencePayloadBytes < WorkSystemSchedulingConfiguration.MinimumOccurrencePayloadBytes ||
+            scheduling.MaximumRetainedOccurrencePayloadBytes < scheduling.MaximumOccurrencePayloadBytes ||
+            scheduling.MaximumOccurrenceQueryPayloadBytes < scheduling.MaximumOccurrencePayloadBytes)
+        {
+            throw new InvalidOperationException(
+                "Schedule occurrence limits must be positive, the per-occurrence byte limit must accommodate an empty JSON array, and aggregate retained and query bytes cannot be smaller than the per-occurrence limit.");
+        }
+
+        if (scheduling.MaximumDispatchesPerBatch <= 0 ||
+            scheduling.MaximumClaimedPayloadBytesPerBatch < scheduling.MaximumSchedulePayloadBytes)
+        {
+            throw new InvalidOperationException(
+                "Schedule dispatch limits must be positive and the claimed-payload budget cannot be smaller than the per-schedule payload limit.");
+        }
+
+        if (scheduling.MinimumInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("The minimum schedule interval must be greater than zero.");
         }
     }
 }

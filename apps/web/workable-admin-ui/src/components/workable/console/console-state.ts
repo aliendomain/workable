@@ -377,7 +377,8 @@ export function isServerView(value: unknown): value is ServerView {
     value === "definitions" ||
     value === "definition" ||
     value === "workers" ||
-    value === "iterations"
+    value === "iterations" ||
+    value === "schedules"
   );
 }
 
@@ -439,6 +440,8 @@ export function navTitle(view: View) {
       return "Workers";
     case "iterations":
       return "Iterations";
+    case "schedules":
+      return "Schedules";
     default:
       return "Overview";
   }
@@ -460,6 +463,8 @@ export function headerRefreshTitle(view: View) {
       return "Refresh iteration";
     case "workers":
       return "Refresh workers";
+    case "schedules":
+      return "Refresh schedules";
     default:
       return "Refresh overview";
   }

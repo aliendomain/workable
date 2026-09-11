@@ -24,10 +24,15 @@ public enum WorkOperateRequirementSurface
     /// The caller is reconfiguring a work definition for future workers.
     /// </summary>
     DefinitionReconfiguration,
+
+    /// <summary>
+    /// The caller is applying an action to a runtime schedule.
+    /// </summary>
+    ScheduleAction,
 }
 
 /// <summary>
-/// Identifies the worker action currently being authorized by an operate requirement.
+/// Identifies the worker or schedule action currently being authorized by an operate requirement.
 /// </summary>
 public enum WorkOperateAction
 {
@@ -42,7 +47,7 @@ public enum WorkOperateAction
     Pause,
 
     /// <summary>
-    /// Cancels a worker.
+    /// Cancels a worker or runtime schedule.
     /// </summary>
     Cancel,
 
@@ -58,7 +63,7 @@ public enum WorkOperateAction
 }
 
 /// <summary>
-/// Provides common context for operate requirements that can apply to queueing, worker actions, and reconfiguration.
+/// Provides common context for operate requirements that can apply to queueing, worker actions, schedule actions, and reconfiguration.
 /// </summary>
 public record WorkOperateRequirementContext(
     WorkDefinition Definition,
@@ -68,10 +73,16 @@ public record WorkOperateRequirementContext(
     WorkOperateAction? Action = null,
     string? WorkerId = null,
     WorkWorkerReconfigurationChanges? WorkerChanges = null,
-    WorkDefinitionReconfigurationChanges? DefinitionChanges = null);
+    WorkDefinitionReconfigurationChanges? DefinitionChanges = null)
+{
+    /// <summary>
+    /// Gets the runtime schedule identifier for a schedule action, if applicable.
+    /// </summary>
+    public string? ScheduleId { get; init; }
+}
 
 /// <summary>
-/// Provides common typed context for operate requirements that can apply to queueing, worker actions, and reconfiguration.
+/// Provides common typed context for operate requirements that can apply to queueing, worker actions, schedule actions, and reconfiguration.
 /// </summary>
 /// <typeparam name="TInput">The typed input value deserialized for the requirement.</typeparam>
 public sealed record WorkOperateRequirementContext<TInput>(

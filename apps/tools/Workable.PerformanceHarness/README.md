@@ -144,6 +144,9 @@ Current benchmark groups:
 - `BaselineAuthorizedBulkActionBenchmarks` measures authorized `ExecuteAll(Cancel)` over queued workers at 100, 1,000, and 5,000 workers.
 - `BaselineDurableLifecycleBenchmarks` measures representative SQL-backed queue, complete, queued-start action, and caller-owned transaction commit/notify paths.
 - `BaselineSqlSchemaInitializationBenchmarks` measures application-host startup with an installed SQL schema across 1, 8, and 32 Workable systems, isolating whether schema validation scales per host or per system. `BaselineUnavailableDiagnosticsStartupBenchmarks` measures the corresponding fail-open path against one unavailable diagnostics database and verifies that later systems reuse the failed deployment result.
+- `BaselineSqlScheduleCreationBenchmarks` measures schedule creation with 0, 1,000, and 10,000 retained schedule records. `BaselineSqlScheduleHistoryCompletionBenchmarks` measures occurrence completion and retention enforcement with 0, 10,000, and 100,000 retained occurrences. `BaselineSqlScheduleCompletionContentionBenchmarks` compares sequential and concurrent completion inside one system so system-scoped retention-lock contention remains visible.
+- `BaselineSqlScheduleQueryBenchmarks` and `BaselineSqlScheduleOccurrenceQueryBenchmarks` measure the maximum 1,000-row initial and continued schedule-list queries and bounded occurrence-history reads used by the administration UI at configured retention scales.
+- `BaselineSqlScheduleBacklogBenchmarks` measures the real polling and dispatch loop with 25, 100, and 1,000 simultaneously due schedules. `BaselineIdleSchedulerQueueBenchmarks` compares a 100,000-worker in-memory queue batch with SQL scheduling disabled and enabled-but-idle.
 - `BaselineExecutionDiagnosticsHealthBenchmarks` measures steady-state reads of not-configured, healthy, and unhealthy persistence status plus dynamic capabilities after initialization failure. `BaselineExecutionDiagnosticsHealthHttpBenchmarks` measures the authorized HTTP diagnostics response that exposes that status.
 - `BaselineDurableSoakBenchmarks` measures larger SQL-backed queue, completion, and follow-up query batches to catch durable memory or latency regressions.
 - `BaselineWorkflowDispatchBenchmarks` measures single-dispatch workflow startup and completion overhead and reports per-workflow cost from batched invocations.
@@ -175,6 +178,45 @@ Current benchmark groups:
 - `BaselineIterationStatusSystemRetentionBenchmarks` measures steady-state publication at the full system replay limit across 4,096 to 65,536 iteration buffers.
 - `BaselineIterationStatusReplayBenchmarks` measures completed-stream replay for short resume windows and the full default buffer.
 - `StressMillionWorkerQueryBenchmarks` measures broad and indexed first-page queries over 1,000,000 queued workers. This benchmark is intentionally excluded from the default filter.
+
+### Scheduling baseline
+
+The initial scheduling baseline on 2026-09-10 ran on an Apple M5 Max with .NET 10.0.8 and BenchmarkDotNet 0.15.6. The SQL cases used the auto-managed SQL Server 2022 container. Representative storage results were:
+
+| Operation | Empty/small store | Medium store | Large store |
+| --- | ---: | ---: | ---: |
+| Create schedule, retained schedules 0 / 1,000 / 10,000 | 28.31 ms | 55.54 ms | 123.91 ms |
+| Complete occurrence, retained occurrences 0 / 10,000 / 100,000 | 30.75 ms | 80.88 ms | 434.10 ms |
+| List recent schedules, retained schedules 1,000 / 10,000 | 40.28 ms | 125.57 ms | — |
+| List recent occurrences, retained occurrences 100 / 10,000 / 100,000 | 19.13 ms | 35.39 ms | 193.51 ms |
+
+The end-to-end polling and dispatch benchmark, with observation limited to four SQL checks per second, measured:
+
+| Simultaneously due schedules | Drain time | Managed allocation |
+| ---: | ---: | ---: |
+| 25 | 1.360 s | 7.35 MB |
+| 100 | 8.293 s | 30.08 MB |
+| 1,000 | 103.306 s | 521.41 MB |
+
+The 1,000-schedule result had a 0.359-second standard deviation across the three measured iterations, so the approximately 9.7-completion-per-second ceiling was repeatable. Enabling an otherwise idle scheduler did not regress the 100,000-worker in-memory queue baseline: scheduling disabled measured 1.248 seconds and enabled measured 1.210 seconds, within short-run variance.
+
+The follow-up replaced the exclusive application lock and repeated full-history count/sum with a compact occurrence-usage row per persistence scope and work system. The row keeps the exact count and payload totals transactional, while ordered history is traversed only when a completion actually crosses a retention limit. Twenty-five simultaneous completions at the 10,000-occurrence count boundary initially improved from 887.55 ms to 200.69 ms; the sequential comparison improved from 1,460.13 ms to 749.65 ms. Completing one occurrence with 100,000 retained entries improved from 434.10 ms to 328.82 ms despite intentionally exercising the pruning path.
+
+The final deadlock-hardening pass made schedule creation, occurrence completion, and terminal cleanup acquire the same per-system coordination range before schedule-table locks. Its focused rerun measured 25 simultaneous completions at 276.55 ms and sequential completion at 865.78 ms, still 3.21x and 1.69x faster than the original implementation. Final schedule creation measured 35.79 ms with no retained schedules, 64.86 ms with 1,000, and 134.75 ms with 10,000. The consistent lock order prevents creation and cleanup from taking opposing primary-key and due-index ranges while leaving different Workable systems independent.
+
+The scheduler next changed to dispatch each claimed batch concurrently and measure its one-second rate limit from the start of the polling interval. A final greenfield pass separated backlog draining from fallback polling: while due work remains, the scheduler now claims the next bounded batch immediately. The one-second poll remains only for idle cross-process discovery and error backoff. Repeating the end-to-end backlog benchmark at each stage produced:
+
+| Simultaneously due schedules | Initial | One-second batches | Continuous drain | Final lock order | Final change | Final allocation |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 25 | 1.360 s | 581.3 ms | 579.5 ms | 572.7 ms | 2.37x faster | 7.40 MB |
+| 100 | 8.293 s | 3.696 s | 1.654 s | 1.689 s | 4.91x faster | 27.61 MB |
+| 1,000 | 103.306 s | 39.904 s | 12.054 s | 14.226 s | 7.26x faster | 430.16 MB |
+
+The final 1,000-item result has a 0.180-second standard deviation and drains at approximately 70 schedules per second on the baseline machine. `MaximumDispatchesPerBatch` and `MaximumClaimedPayloadBytesPerBatch` continue to bound concurrent host and database pressure without imposing an artificial per-second ceiling.
+
+The 2026-09-11 review fix added per-host availability intervals and piggybacked their one-second observation on the existing claim query. The focused backlog rerun measured 590.1 ms for 25 due schedules, 1.655 seconds for 100, and 12.737 seconds for 1,000, keeping throughput within or better than the final lock-order run. The 100,000-worker idle comparison measured 1.427 seconds with scheduling disabled and 1.445 seconds enabled, within short-run variance. Corrected maximum-page schedule-list benchmarks measured recent/active queries at 43.44/41.72 ms with 1,000 retained schedules and 129.65/121.32 ms with 10,000 retained schedules. After adding keyset pagination and its matching active-list index, the focused query suite measured recent/active/continued-active pages at 33.36/27.96/26.91 ms with 1,000 retained schedules and 44.78/43.33/41.23 ms with 10,000 retained schedules.
+
+The complete `*Baseline*` run of the intermediate one-second-batch implementation executed all 186 cases in 41 minutes 27 seconds with no failed reports or critical validation errors. The continuous-drain change was then measured with the focused three-case scheduling backlog suite because it changes only non-empty scheduler-loop behavior. The final lock-order change was measured with the nine directly affected schedule-creation and completion-contention cases plus another three-case backlog run.
 
 ### Profiling optimization comparison
 

@@ -95,6 +95,9 @@ test("workable console restores an authenticated host, loads overview data, and 
     await result.click(result.getByRole("button", { name: "Iterations" }));
     await result.waitFor(() => result.getByText("No iterations matched the current query."));
 
+    await result.click(result.getByRole("button", { name: "Schedules" }));
+    await result.waitFor(() => result.getByText("No scheduled work is currently pending."));
+
     assert.equal(
       fetchMock.calls.some((call) => call.input === "/api/workable/host"),
       true
@@ -109,6 +112,10 @@ test("workable console restores an authenticated host, loads overview data, and 
     );
     assert.equal(
       fetchMock.calls.some((call) => call.input === "/api/workable/systems/Ops/views/iterations"),
+      true
+    );
+    assert.equal(
+      fetchMock.calls.some((call) => call.input === "/api/workable/systems/Ops/schedules?take=1000"),
       true
     );
     assert.deepEqual(
@@ -225,6 +232,11 @@ test("workable console navigates to catalog, refreshes definitions, and restores
     await result.waitFor(() => {
       assert.equal(readStoredView(result.dom), "workers");
     });
+
+    await result.click(result.getByRole("button", { name: "Go back" }));
+    await result.waitFor(() => result.getByText("ImportOrders"));
+    await result.click(result.getByRole("button", { name: "Queue" }));
+    await result.waitFor(() => result.getByRole("button", { name: "Schedule" }));
   } finally {
     fetchMock.restore();
     await result.restore();
@@ -361,6 +373,10 @@ function installConsoleFetch(
       }));
     }
 
+    if (call.input === "/api/workable/systems/Ops/schedules?take=1000") {
+      return Response.json({ schedules: [] });
+    }
+
     return Response.json(
       { error: `Unhandled console test request: ${call.input}` },
       { status: 500 }
@@ -447,6 +463,7 @@ function storedHost(access: WorkSystemAccessSummary): WorkableHostConnection {
         capabilities: {
           httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: true,
+          schedulingAvailable: true,
           sqlProfilingAvailable: false,
         },
         state: "Started",
@@ -471,6 +488,7 @@ function hostDescriptor(access: WorkSystemAccessSummary): WorkableHttpHostDescri
         capabilities: {
           httpClientProfilingAvailable: false,
           persistentCoordinationAvailable: true,
+          schedulingAvailable: true,
           sqlProfilingAvailable: false,
         },
         isDefault: false,

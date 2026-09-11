@@ -190,6 +190,196 @@ BEGIN
 END
 GO
 
+IF OBJECT_ID(N'workable.WorkScheduleHosts', N'U') IS NULL
+BEGIN
+    CREATE TABLE [workable].[WorkScheduleHosts]
+    (
+        HostRunId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkScheduleHosts PRIMARY KEY,
+        PersistenceScope nvarchar(450) NOT NULL,
+        WorkSystemName nvarchar(256) NOT NULL,
+        StartedAt datetimeoffset NOT NULL,
+        ObservedAt datetimeoffset NOT NULL,
+        AvailableThrough datetimeoffset NOT NULL
+    );
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkScheduleHosts'
+      AND indexes.name = N'IX_WorkableWorkScheduleHosts_Availability')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkScheduleHosts_Availability ON [workable].[WorkScheduleHosts] (PersistenceScope, WorkSystemName, StartedAt, AvailableThrough);');
+END
+GO
+
+IF OBJECT_ID(N'workable.WorkSchedules', N'U') IS NULL
+BEGIN
+    CREATE TABLE [workable].[WorkSchedules]
+    (
+        ScheduleId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkSchedules PRIMARY KEY,
+        PersistenceScope nvarchar(450) NOT NULL,
+        WorkSystemName nvarchar(256) NOT NULL,
+        DefinitionName nvarchar(450) NOT NULL,
+        TimingJson nvarchar(max) NOT NULL,
+        InputJson nvarchar(max) NULL,
+        WorkerOptionsJson nvarchar(max) NULL,
+        RequestContextJson nvarchar(max) NOT NULL,
+        Status nvarchar(32) NOT NULL,
+        CreatedAt datetimeoffset NOT NULL,
+        NextRunAt datetimeoffset NULL,
+        LastRunAt datetimeoffset NULL,
+        CanceledAt datetimeoffset NULL,
+        CanceledByJson nvarchar(max) NULL,
+        LeaseId uniqueidentifier NULL,
+        LeaseExpiresAt datetimeoffset NULL,
+        DispatchStarted bit NOT NULL CONSTRAINT DF_WorkableWorkSchedules_DispatchStarted DEFAULT (0),
+        ExecutionGrantJson nvarchar(max) NOT NULL,
+        CreatedByJson nvarchar(max) NOT NULL,
+        CreatedByKey varbinary(32) NOT NULL,
+        PayloadSizeBytes bigint NOT NULL,
+        CancellationPayloadReserveBytes bigint NOT NULL
+    );
+END
+GO
+
+IF OBJECT_ID(N'workable.WorkScheduleOccurrenceUsage', N'U') IS NULL
+BEGIN
+    CREATE TABLE [workable].[WorkScheduleOccurrenceUsage]
+    (
+        OccurrenceUsageId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkScheduleOccurrenceUsage PRIMARY KEY,
+        PersistenceScope nvarchar(450) NOT NULL,
+        WorkSystemName nvarchar(256) NOT NULL,
+        OccurrenceCount bigint NOT NULL,
+        PayloadSizeBytes bigint NOT NULL,
+        CONSTRAINT CK_WorkableWorkScheduleOccurrenceUsage_OccurrenceCount CHECK (OccurrenceCount >= 0),
+        CONSTRAINT CK_WorkableWorkScheduleOccurrenceUsage_PayloadSizeBytes CHECK (PayloadSizeBytes >= 0)
+    );
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkScheduleOccurrenceUsage'
+      AND indexes.name = N'UX_WorkableWorkScheduleOccurrenceUsage_ScopeSystem')
+BEGIN
+    EXEC(N'CREATE UNIQUE INDEX UX_WorkableWorkScheduleOccurrenceUsage_ScopeSystem ON [workable].[WorkScheduleOccurrenceUsage] (PersistenceScope, WorkSystemName);');
+END
+GO
+
+IF OBJECT_ID(N'workable.WorkScheduleOccurrences', N'U') IS NULL
+BEGIN
+    CREATE TABLE [workable].[WorkScheduleOccurrences]
+    (
+        OccurrenceId uniqueidentifier NOT NULL CONSTRAINT PK_WorkableWorkScheduleOccurrences PRIMARY KEY,
+        OccurrenceUsageId uniqueidentifier NOT NULL,
+        ScheduleId uniqueidentifier NOT NULL,
+        ScheduledAt datetimeoffset NOT NULL,
+        AttemptedAt datetimeoffset NOT NULL,
+        Status nvarchar(32) NOT NULL,
+        QueueStatus nvarchar(32) NULL,
+        WorkerId uniqueidentifier NULL,
+        MessagesJson nvarchar(max) NOT NULL,
+        ExpiresAt datetimeoffset NOT NULL,
+        PayloadSizeBytes bigint NOT NULL,
+        CONSTRAINT FK_WorkableWorkScheduleOccurrences_Usage FOREIGN KEY (OccurrenceUsageId)
+            REFERENCES [workable].[WorkScheduleOccurrenceUsage](OccurrenceUsageId),
+        CONSTRAINT FK_WorkableWorkScheduleOccurrences_Schedules FOREIGN KEY (ScheduleId)
+            REFERENCES [workable].[WorkSchedules](ScheduleId) ON DELETE CASCADE
+    );
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkScheduleOccurrences'
+      AND indexes.name = N'IX_WorkableWorkScheduleOccurrences_Retention')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkScheduleOccurrences_Retention ON [workable].[WorkScheduleOccurrences] (OccurrenceUsageId, AttemptedAt, OccurrenceId) INCLUDE (PayloadSizeBytes);');
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_ActiveDefinition')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_ActiveDefinition ON [workable].[WorkSchedules] (PersistenceScope, WorkSystemName, Status, DefinitionName, ScheduleId);');
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_ActiveList')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_ActiveList ON [workable].[WorkSchedules] (PersistenceScope, WorkSystemName, Status, CreatedAt DESC, ScheduleId);');
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_RetainedCreator')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_RetainedCreator ON [workable].[WorkSchedules] (PersistenceScope, WorkSystemName, CreatedByKey, ScheduleId) INCLUDE (PayloadSizeBytes);');
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_Due')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_Due ON [workable].[WorkSchedules] (PersistenceScope, WorkSystemName, Status, NextRunAt, ScheduleId) INCLUDE (LeaseExpiresAt);');
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkScheduleOccurrences'
+      AND indexes.name = N'IX_WorkableWorkScheduleOccurrences_Schedule')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkScheduleOccurrences_Schedule ON [workable].[WorkScheduleOccurrences] (ScheduleId, AttemptedAt DESC, OccurrenceId) INCLUDE (ExpiresAt);');
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkScheduleOccurrences'
+      AND indexes.name = N'IX_WorkableWorkScheduleOccurrences_Expiration')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkScheduleOccurrences_Expiration ON [workable].[WorkScheduleOccurrences] (OccurrenceUsageId, ExpiresAt, OccurrenceId) INCLUDE (PayloadSizeBytes);');
+END
+GO
+
 IF OBJECT_ID(N'workable.WorkflowRuns', N'U') IS NOT NULL
    AND COL_LENGTH(N'workable.WorkflowRuns', N'DefinitionFingerprint') IS NULL
 BEGIN
@@ -569,6 +759,13 @@ GO
 
 MERGE [workable].[SchemaVersion] WITH (HOLDLOCK) AS target
 USING (SELECT N'ExecutionDiagnostics' AS Component, 7 AS Version) AS source
+ON target.Component = source.Component
+WHEN MATCHED THEN UPDATE SET Version = source.Version, UpdatedAt = SYSDATETIMEOFFSET()
+WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Component, source.Version, SYSDATETIMEOFFSET());
+GO
+
+MERGE [workable].[SchemaVersion] WITH (HOLDLOCK) AS target
+USING (SELECT N'Scheduling' AS Component, 1 AS Version) AS source
 ON target.Component = source.Component
 WHEN MATCHED THEN UPDATE SET Version = source.Version, UpdatedAt = SYSDATETIMEOFFSET()
 WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Component, source.Version, SYSDATETIMEOFFSET());

@@ -9,6 +9,7 @@ This document focuses on that smaller set: the public seams where advanced hosts
 Reach for these APIs only when one of these is true:
 
 - you are implementing a persistence-backed durability provider
+- you are implementing durable runtime-schedule storage
 - you are implementing an expiring execution-diagnostics repository
 - you want Workable iterations translated into your metrics pipeline
 - you are adding automatic profiling instrumentation for another dependency or protocol
@@ -123,6 +124,14 @@ The public exceptions here matter because they communicate expected provider-lev
 That last one is especially important. Lease loss is not a generic error; it is part of the durable replay model and can lead to worker interruption and later replay.
 
 If you are implementing a provider, study [Workable SQL Server Integration](../../packages/extensions/sqlserver/README.md) as the concrete example.
+
+## Runtime Schedule Store
+
+`IWorkScheduleStore` is independent of `IWorkPersistenceStore`. It persists caller-created schedules by logical Workable system and definition name, atomically enforces active and retained count/byte admission limits, leases due occurrences under per-poll row and payload budgets, records dispatch results, returns occurrence history under row and payload budgets, and deletes expired occurrence and terminal-schedule history.
+
+Its protocol consists of initialization, atomic bounded create/get/list/cancel operations, `ClaimDue(...)`, `ClaimDueAndObserveHost(...)`, `FindAvailableTimes(...)`, `EndHost(...)`, `BeginDispatch(...)`, lease-fenced `CompleteClaim(...)` or `ReleaseClaim(...)`, occurrence reads, and bounded occurrence and terminal-schedule cleanup. Implementations must be safe for multiple hosts creating and polling within the same persistence boundary. Host availability must be isolated by persistence scope and logical system name; observation and claiming share one operation so a provider can avoid an extra steady-state poll. Availability evidence lets a new claimant distinguish actual full-system downtime from an already-healthy host during rolling deployment. `EndHost(...)` is best-effort and must observe cancellation because core bounds graceful cleanup independently of the longer host lease. `Create(...)` must enforce every supplied count and byte limit and insert atomically. The create request's payload size includes `CancellationPayloadReserveBytes`; a store must retain that reserve with the schedule, replace it with the serialized cancellation actor when cancellation succeeds, and release it when a schedule otherwise becomes terminal. This keeps later audit enrichment within the quota admitted at creation. `List(...)` must apply `DefinitionNames` and the keyset `Cursor` before `Take`, because authorization scope and paging belong in the provider rather than in a result-side filter. Results are ordered by descending creation time and then schedule id so equal creation instants can be continued without omission. `BeginDispatch(...)` must atomically verify the unexpired lease and mark dispatch committed; cancellation must succeed only before that marker. Expiration permits recovery when a host disappears before completing the claim. Because queue acceptance and schedule completion are not one atomic provider transaction, consumers should treat dispatch as at least once and use idempotency for duplicate-sensitive work.
+
+Stored `WorkSchedulePersistenceRecord` values retain request identity and origin for worker audit without retaining an authorization snapshot. Successful creation is the durable authorization grant, so dispatch does not resolve the creator's current groups; it queues through the trusted scheduler path while retaining the stored context. The record also retains narrowly scoped security capabilities: whether full profile capture was authorized at creation and the definition's developer-controlled schedule security version. Later definition changes therefore cannot silently expand the grant, and a version mismatch rejects dispatch. Store implementations should honor `MaximumCount` and `MaximumPayloadBytes` on claim and occurrence-read requests; actor identity fields have already been validated against the durable 512-character bound. See [Runtime Scheduling](../guides/scheduling.md) for the public scheduler behavior.
 
 ## Execution Diagnostics Repository
 

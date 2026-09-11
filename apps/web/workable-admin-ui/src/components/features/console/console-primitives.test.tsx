@@ -35,6 +35,8 @@ test("console layout primitives expose toolbar, fill, scroll, and padding option
   assertMarkupIncludes(page, "flex-1");
   assertMarkupIncludes(page, "overflow-hidden");
   assertMarkupIncludes(page, "page-extra");
+  assertMarkupIncludes(page, "translate-y-0");
+  assertMarkupExcludes(page, "-translate-y-2");
   assertMarkupIncludes(page, "Refresh");
   assertMarkupIncludes(page, "Body");
 
@@ -131,4 +133,10 @@ test("view action primitives handle empty and populated toolbar slots", () => {
   assertMarkupIncludes(populatedLane, "inline-flex min-h-9");
   assertMarkupIncludes(populatedLane, "frame-extra");
   assertMarkupIncludes(populatedLane, "Action");
+
+  const containedLane = renderMarkup(
+    <ViewActionLane contained>Contained action</ViewActionLane>
+  );
+  assertMarkupIncludes(containedLane, "translate-y-0");
+  assertMarkupExcludes(containedLane, "-translate-y-2");
 });

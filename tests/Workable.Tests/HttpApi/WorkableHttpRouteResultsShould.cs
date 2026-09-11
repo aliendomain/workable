@@ -24,6 +24,39 @@ public sealed class WorkableHttpRouteResultsShould
     }
 
     [Fact]
+    public void MapScheduleCreationOutcomesToStableHttpStatuses()
+    {
+        AssertStatus(StatusCodes.Status200OK, Schedule(WorkScheduleCreationStatus.Accepted));
+        AssertStatus(StatusCodes.Status404NotFound, Schedule(WorkScheduleCreationStatus.NotFound));
+        AssertStatus(StatusCodes.Status403Forbidden, Schedule(WorkScheduleCreationStatus.Unauthorized));
+        AssertStatus(StatusCodes.Status409Conflict, Schedule(WorkScheduleCreationStatus.LimitReached));
+        AssertStatus(StatusCodes.Status503ServiceUnavailable, Schedule(WorkScheduleCreationStatus.Unavailable));
+        AssertStatus(StatusCodes.Status400BadRequest, Schedule(WorkScheduleCreationStatus.Invalid));
+
+        static IResult Schedule(WorkScheduleCreationStatus status)
+            => WorkableHttpRouteResults.ToScheduleCreationHttpResult(new(status, null, []));
+    }
+
+    [Fact]
+    public void MapScheduleCancellationOutcomesToStableHttpStatuses()
+    {
+        AssertStatus(StatusCodes.Status200OK, Cancel(WorkScheduleCancellationStatus.Accepted));
+        AssertStatus(StatusCodes.Status400BadRequest, Cancel(WorkScheduleCancellationStatus.Invalid));
+        AssertStatus(StatusCodes.Status404NotFound, Cancel(WorkScheduleCancellationStatus.NotFound));
+        AssertStatus(StatusCodes.Status403Forbidden, Cancel(WorkScheduleCancellationStatus.Unauthorized));
+        AssertStatus(StatusCodes.Status409Conflict, Cancel(WorkScheduleCancellationStatus.Conflict));
+        AssertStatus(StatusCodes.Status503ServiceUnavailable, Cancel(WorkScheduleCancellationStatus.Unavailable));
+        AssertStatus(StatusCodes.Status400BadRequest, Cancel((WorkScheduleCancellationStatus)int.MaxValue));
+
+        static IResult Cancel(WorkScheduleCancellationStatus status)
+            => WorkableHttpRouteResults.ToScheduleCancellationHttpResult(new(
+                status,
+                WorkScheduleId.New(),
+                null,
+                []));
+    }
+
+    [Fact]
     public void MapWorkerActionOutcomesToStableHttpStatuses()
     {
         AssertStatus(StatusCodes.Status200OK, Action(WorkActionStatus.Accepted));

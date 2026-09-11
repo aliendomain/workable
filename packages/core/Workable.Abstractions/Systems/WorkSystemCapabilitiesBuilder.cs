@@ -26,6 +26,11 @@ public sealed class WorkSystemCapabilitiesBuilder
     public bool ExecutionDiagnosticsPersistenceAvailable { get; set; }
 
     /// <summary>
+    /// Gets or sets whether persisted runtime scheduling is available.
+    /// </summary>
+    public bool SchedulingAvailable { get; set; }
+
+    /// <summary>
     /// Creates an immutable snapshot from the current capability values.
     /// </summary>
     /// <returns>The immutable system capability snapshot.</returns>
@@ -34,5 +39,6 @@ public sealed class WorkSystemCapabilitiesBuilder
         {
             HttpClientProfilingAvailable = this.HttpClientProfilingAvailable,
             ExecutionDiagnosticsPersistenceAvailable = this.ExecutionDiagnosticsPersistenceAvailable,
+            SchedulingAvailable = this.SchedulingAvailable,
         };
 }

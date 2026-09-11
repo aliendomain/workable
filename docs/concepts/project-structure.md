@@ -122,11 +122,12 @@ Applications reference `Workable.SignalR` when they want ASP.NET Core clients to
 `packages/extensions/sqlserver/Workable.SqlServer` contains the SQL Server durability integration:
 
 - SQL Server-backed `IWorkPersistenceStore` implementation
+- SQL Server-backed `IWorkScheduleStore` implementation for runtime schedules and dispatch history
 - SQL Server queue durability option records and worker option helpers
 - SQL schema helpers used by the package and CLI
 - service registration extensions for SQL Server durability
 
-Applications reference `Workable.SqlServer` when they want durable queueing, persistence-backed idempotency, or persistence-backed coordination backed by SQL Server.
+Applications reference `Workable.SqlServer` when they want runtime scheduling, durable queueing, persistence-backed idempotency, or persistence-backed coordination backed by SQL Server.
 
 `apps/tools/Workable.SqlServer.Cli` contains the SQL Server support CLI:
 

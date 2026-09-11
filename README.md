@@ -16,6 +16,7 @@ Workable also gives applications a path to expose the same authored work through
 - Register workflow definitions that coordinate existing work through dispatch, typed fan-out, parallel branches, and join steps inside the host runtime.
 - Keep feature libraries independent from the host runtime while still letting them contribute work.
 - Queue fire-and-forget work without losing the ability to query, observe, cancel, pause, retry, or purge it.
+- Let authorized backend callers durably schedule work once, at an elapsed interval, or from a timezone-aware cron expression, with bounded storage and a creation-time queue authorization grant that cannot gain diagnostic privileges later.
 - Give operators a real admin surface for work: live system and worker visibility, executable definitions, diagnostics, and control actions instead of one-off job screens and custom tooling.
 - Attach runtime behavior such as recurrence, transient retry, failed-worker handling, idempotency, concurrency, durability, retention, logging, profiling, initialization, invocation policy, and start policy.
 - Persist short-lived iteration logs and profiles so developers and agents can inspect the work they just ran and answer questions such as how many SQL commands or HTTP requests it executed.
@@ -32,11 +33,11 @@ Workable also gives applications a path to expose the same authored work through
 
 ### Optional Packages
 
-- `Workable.SqlServer`: SQL Server persistence integration for durable queueing and completion, durable workflows, persistence-backed idempotency and concurrency, and expiring execution diagnostics.
+- `Workable.SqlServer`: SQL Server persistence integration for runtime schedules, durable queueing and completion, durable workflows, persistence-backed idempotency and concurrency, and expiring execution diagnostics.
 - `Workable.AspNetCore`: ASP.NET Core request-context and authorization integration for custom endpoints and hosts.
 - `Workable.Entra`: Workable actor and authorization-claim integration for ASP.NET Core hosts that already authenticate Microsoft Entra identities.
 - `Workable.Views`: shared component-view contracts and projections used by HTTP and SignalR adapters; most applications receive it transitively through `Workable.HttpApi` or `Workable.SignalR` instead of referencing it directly.
-- `Workable.HttpApi`: standard HTTP endpoints for queueing, querying, and controlling workers and workflow runs.
+- `Workable.HttpApi`: standard HTTP endpoints for queueing and scheduling work, querying and controlling workers, and operating workflow runs.
 - `Workable.Mcp`: MCP server adapter for authored work, worker and workflow queries, and worker and workflow actions.
 - `Workable.SignalR`: realtime worker collections, worker and workflow events, worker details, and component-view updates for ASP.NET Core clients.
 
@@ -58,6 +59,7 @@ Recommended entry points:
 - [Workflows](https://github.com/aliendomain/workable/blob/main/docs/guides/workflows.md) if you want to author multi-step orchestrations from existing work definitions.
 - [Implementation](https://github.com/aliendomain/workable/blob/main/docs/guides/implementing-work.md) if you want to implement work classes and understand what executor code can do at runtime.
 - [Queueing](https://github.com/aliendomain/workable/blob/main/docs/guides/queueing.md) if you already have work definitions and want to invoke them.
+- [Runtime Scheduling](https://github.com/aliendomain/workable/blob/main/docs/guides/scheduling.md) if backend callers need to queue work later, at a runtime-selected interval, or on a timezone-aware calendar schedule.
 - [Configuration](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/README.md) if you are tuning start behavior, retry, recurrence, failed-worker handling, concurrency, durability, logging, retention, or invocation rules.
 - [Persistent Execution Diagnostics](https://github.com/aliendomain/workable/blob/main/docs/guides/configuration/execution-diagnostics-persistence.md) if a developer or agent needs expiring iteration logs, profiles, or SQL/HTTP operation counts from recently executed work.
 - [HTTP API](https://github.com/aliendomain/workable/blob/main/docs/adapters/http-api.md), [MCP](https://github.com/aliendomain/workable/blob/main/docs/adapters/mcp.md), and [Realtime](https://github.com/aliendomain/workable/blob/main/docs/adapters/realtime.md) if you are exposing Workable over transports.
