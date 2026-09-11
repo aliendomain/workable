@@ -86,8 +86,29 @@ export async function loadScheduleIndex(connection: WorkableConnection): Promise
   const schedulesById = new Map(
     recent.schedules.map((schedule) => [schedule.id.value, schedule] as const)
   );
-  for (const schedule of active.schedules) {
-    schedulesById.set(schedule.id.value, schedule);
+  const followedCursors = new Set<string>();
+  let activePage = active;
+  while (true) {
+    for (const schedule of activePage.schedules) {
+      schedulesById.set(schedule.id.value, schedule);
+    }
+
+    if (!activePage.cursor) {
+      break;
+    }
+
+    const cursorKey = `${activePage.cursor.createdAt}\n${activePage.cursor.scheduleId.value}`;
+    if (followedCursors.has(cursorKey)) {
+      throw new Error("The schedule list returned a repeated continuation cursor.");
+    }
+    followedCursors.add(cursorKey);
+
+    activePage = await workableFetch<WorkScheduleQueryResult>(
+      connection,
+      `schedules?status=Active&take=${schedulePageSize}` +
+        `&cursorCreatedAt=${encodeURIComponent(activePage.cursor.createdAt)}` +
+        `&cursorScheduleId=${encodeURIComponent(activePage.cursor.scheduleId.value)}`
+    );
   }
 
   return Array.from(schedulesById.values());

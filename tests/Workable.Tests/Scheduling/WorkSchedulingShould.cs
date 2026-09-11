@@ -671,6 +671,79 @@ public sealed class WorkSchedulingShould
     }
 
     [Fact]
+    public async Task BoundBestEffortHostPresenceCleanupDuringShutdown()
+    {
+        var store = new InMemoryScheduleStore { BlockEndHost = true };
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .EnableScheduling()
+                .AddWork(
+                    WorkDefinition.Create("scheduled.shutdown"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        await system.Stop().WaitAsync(TimeSpan.FromSeconds(3));
+
+        await store.EndHostStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await store.EndHostCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task ContinueScheduleListsWithoutDuplicatesAcrossEqualCreationTimes()
+    {
+        var store = new InMemoryScheduleStore();
+        var createdAt = DateTimeOffset.UtcNow;
+        var ids = new[]
+        {
+            new WorkScheduleId(Guid.Parse("11111111-1111-1111-1111-111111111111")),
+            new WorkScheduleId(Guid.Parse("22222222-2222-2222-2222-222222222222")),
+            new WorkScheduleId(Guid.Parse("33333333-3333-3333-3333-333333333333")),
+        };
+        foreach (var id in ids)
+        {
+            var record = ScheduleRecord(
+                "scheduled.pagination",
+                WorkScheduleTiming.Once(createdAt + TimeSpan.FromHours(1)),
+                new WorkActor("scheduler"),
+                WorkScheduleExecutionGrant.Unrestricted);
+            record = record with
+            {
+                Schedule = record.Schedule with
+                {
+                    Id = id,
+                    CreatedAt = createdAt,
+                },
+            };
+            Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(StoreRequest(record)));
+        }
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .EnableScheduling()
+                .AddWork(
+                    WorkDefinition.Create("scheduled.pagination"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+
+        var first = await system.Schedules.List(new WorkScheduleCriteria(Take: 2));
+        var second = await system.Schedules.List(new WorkScheduleCriteria(Take: 2, Cursor: first.Cursor));
+
+        Assert.Equal(2, first.Schedules.Count);
+        Assert.NotNull(first.Cursor);
+        Assert.Single(second.Schedules);
+        Assert.Null(second.Cursor);
+        Assert.Equal(ids.OrderBy(id => id.Value), first.Schedules.Concat(second.Schedules).Select(schedule => schedule.Id).OrderBy(id => id.Value));
+    }
+
+    [Fact]
     public async Task DoNotTreatAHealthyClusterAsDownWhenANewHostClaimsOverdueWork()
     {
         var store = new InMemoryScheduleStore();
@@ -1115,6 +1188,15 @@ public sealed class WorkSchedulingShould
             new WorkActor("visible-creator"),
             WorkScheduleExecutionGrant.Unrestricted);
         Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(LargeStoreRequest(visible)));
+        var secondVisible = visible with
+        {
+            Schedule = visible.Schedule with
+            {
+                Id = WorkScheduleId.New(),
+                CreatedAt = visible.Schedule.CreatedAt + TimeSpan.FromTicks(1),
+            },
+        };
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(LargeStoreRequest(secondVisible)));
         for (var index = 0; index < WorkScheduleCriteria.MaximumTake; index++)
         {
             var hidden = ScheduleRecord(
@@ -1131,8 +1213,12 @@ public sealed class WorkSchedulingShould
             isAuthenticated: true));
 
         var result = await reader.Schedules.List(new(Take: 1));
+        var continued = await reader.Schedules.List(new(Take: 1, Cursor: result.Cursor));
 
         Assert.Equal("scheduled.visible-window", Assert.Single(result.Schedules).DefinitionName);
+        Assert.NotNull(result.Cursor);
+        Assert.Equal("scheduled.visible-window", Assert.Single(continued.Schedules).DefinitionName);
+        Assert.Null(continued.Cursor);
     }
 
     [Fact]
@@ -2011,6 +2097,12 @@ public sealed class WorkSchedulingShould
 
         public bool AllowDispatchStart { get; set; } = true;
 
+        public bool BlockEndHost { get; set; }
+
+        public TaskCompletionSource EndHostStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource EndHostCancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public WorkScheduleStoreCreationStatus? CreationStatusOverride { get; set; }
 
         public Task Initialize(WorkScheduleStoreInitializationContext context, CancellationToken cancellationToken = default)
@@ -2046,10 +2138,24 @@ public sealed class WorkSchedulingShould
             }
         }
 
-        public Task EndHost(
+        public async Task EndHost(
             WorkScheduleHostEnd hostEnd,
             CancellationToken cancellationToken = default)
         {
+            if (this.BlockEndHost)
+            {
+                this.EndHostStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    this.EndHostCancellationObserved.TrySetResult();
+                    throw;
+                }
+            }
+
             lock (this.sync)
             {
                 if (this.hostObservations.TryGetValue(hostEnd.HostRunId, out var observation) &&
@@ -2067,7 +2173,6 @@ public sealed class WorkSchedulingShould
                 }
             }
 
-            return Task.CompletedTask;
         }
 
         public Task<IReadOnlySet<DateTimeOffset>> FindAvailableTimes(
@@ -2192,7 +2297,12 @@ public sealed class WorkSchedulingShould
                     .Where(record => request.DefinitionName is null || string.Equals(record.Schedule.DefinitionName, request.DefinitionName, StringComparison.OrdinalIgnoreCase))
                     .Where(record => request.DefinitionNames is null || request.DefinitionNames.Contains(record.Schedule.DefinitionName))
                     .Where(record => request.Status is null || record.Schedule.Status == request.Status)
+                    .Where(record => request.Cursor is null ||
+                        record.Schedule.CreatedAt < request.Cursor.CreatedAt ||
+                        (record.Schedule.CreatedAt == request.Cursor.CreatedAt &&
+                            record.Schedule.Id.Value.CompareTo(request.Cursor.ScheduleId.Value) > 0))
                     .OrderByDescending(record => record.Schedule.CreatedAt)
+                    .ThenBy(record => record.Schedule.Id.Value)
                     .Take(request.Take)
                     .Select(static record => ToSummary(record.Schedule))];
                 return Task.FromResult(result);

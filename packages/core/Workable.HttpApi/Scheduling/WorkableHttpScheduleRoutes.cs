@@ -12,6 +12,8 @@ internal static class WorkableHttpScheduleRoutes
             string? definitionName,
             WorkScheduleStatus? status,
             int? take,
+            DateTimeOffset? cursorCreatedAt,
+            Guid? cursorScheduleId,
             HttpContext httpContext,
             WorkableHttpTopologyResolver topology,
             IWorkRequestContextFactory requestContexts,
@@ -28,6 +30,15 @@ internal static class WorkableHttpScheduleRoutes
                 return InvalidTake("Schedule list take must be between one and 1000.");
             }
 
+            if (cursorCreatedAt.HasValue != cursorScheduleId.HasValue)
+            {
+                return InvalidCursor();
+            }
+
+            var cursor = cursorCreatedAt is { } createdAt && cursorScheduleId is { } scheduleId
+                ? new WorkScheduleCursor(createdAt, new(scheduleId))
+                : null;
+
             var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
@@ -35,7 +46,7 @@ internal static class WorkableHttpScheduleRoutes
                 description: null,
                 cancellationToken);
             return Results.Ok(await session.Schedules.List(
-                new WorkScheduleCriteria(definitionName, status, resolvedTake),
+                new WorkScheduleCriteria(definitionName, status, resolvedTake, cursor),
                 cancellationToken));
         });
 
@@ -301,6 +312,18 @@ internal static class WorkableHttpScheduleRoutes
             Messages = new[]
             {
                 WorkMessage.Error("workable.schedule.take_invalid", message, "take"),
+            },
+        });
+
+    private static IResult InvalidCursor()
+        => Results.BadRequest(new
+        {
+            Messages = new[]
+            {
+                WorkMessage.Error(
+                    "workable.schedule.cursor_invalid",
+                    "Schedule list cursorCreatedAt and cursorScheduleId must be supplied together.",
+                    "cursor"),
             },
         });
 

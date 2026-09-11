@@ -10,6 +10,7 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
     private static readonly TimeSpan FallbackPollingInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan HostPresenceLeaseDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan HostPresenceObservationInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan HostPresenceShutdownTimeout = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan HostPresenceRetention = TimeSpan.FromDays(7);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromMinutes(1);
     private const int MaximumCleanupBatchesPerInterval = 10;
@@ -115,15 +116,23 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
 
         if (this.store is not null && this.hostRunId != Guid.Empty)
         {
+            using var hostEndCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            hostEndCancellation.CancelAfter(HostPresenceShutdownTimeout);
             try
             {
                 await this.store.EndHost(
                     new WorkScheduleHostEnd(this.systemName, this.hostRunId, DateTimeOffset.UtcNow),
-                    cancellationToken);
+                    hostEndCancellation.Token);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (OperationCanceledException) when (hostEndCancellation.IsCancellationRequested)
+            {
+                this.logger.LogWarning(
+                    "Scheduler host presence cleanup timed out for system {WorkSystemName}.",
+                    FormatSystemName(this.systemName));
             }
             catch (Exception exception) when (
                 exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -297,10 +306,18 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
                 this.systemName,
                 criteria.DefinitionName,
                 criteria.Status,
-                criteria.Take,
-                definitionNames),
+                criteria.Take + 1,
+                definitionNames,
+                criteria.Cursor),
             cancellationToken);
-        return new(schedules);
+        if (schedules.Count <= criteria.Take)
+        {
+            return new(schedules);
+        }
+
+        var page = schedules.Take(criteria.Take).ToArray();
+        var last = page[^1];
+        return new(page, new WorkScheduleCursor(last.CreatedAt, last.Id));
     }
 
     public async Task<WorkScheduleOccurrenceQueryResult> ListOccurrences(

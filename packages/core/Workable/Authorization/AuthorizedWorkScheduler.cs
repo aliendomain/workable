@@ -100,7 +100,8 @@ internal sealed class AuthorizedWorkScheduler(
         return new(
             [.. result.Schedules
                 .Where(schedule => this.CanRead(schedule.DefinitionName))
-                .Take(criteria.Take)]);
+                .Take(criteria.Take)],
+            result.Cursor);
     }
 
     public async Task<WorkScheduleOccurrenceQueryResult> ListOccurrences(

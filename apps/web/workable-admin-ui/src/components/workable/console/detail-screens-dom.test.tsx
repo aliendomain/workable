@@ -293,6 +293,7 @@ test("queue dialog creates a one-time schedule from the configured request", asy
     await result.waitFor(() => result.getByText("ImportOrders"));
     await result.click(result.getByRole("button", { name: "Schedule" }));
     result.getByText("The latest definition will be used each time this schedule runs.");
+    result.getByText("This schedule will complete after its first scheduled dispatch attempt.");
     const firstRun = result.getByLabelText("First run");
     assert.ok(firstRun instanceof result.dom.window.HTMLInputElement);
     await result.input(firstRun, "2099-01-02T03:04");

@@ -70,12 +70,26 @@ test("schedule index retains active schedules hidden behind the recent-history c
     id: { value: `completed-${index}` },
     status: "Completed",
   }));
+  const firstActivePage = Array.from({ length: 1000 }, (_, index) => schedule({
+    definitionName: `Active${index}`,
+    id: { value: `active-${index}` },
+  }));
+  const cursor = {
+    createdAt: "2098-12-01T10:00:00Z",
+    scheduleId: { value: "active-999" },
+  };
   const fetchMock = installFetch((call) => {
     if (call.input.endsWith("/schedules?take=1000")) {
       return Response.json({ schedules: recent });
     }
     if (call.input.endsWith("/schedules?status=Active&take=1000")) {
-      return Response.json({ schedules: [hiddenActive] });
+      return Response.json({ schedules: firstActivePage, cursor });
+    }
+    if (call.input.endsWith(
+      "/schedules?status=Active&take=1000" +
+        "&cursorCreatedAt=2098-12-01T10%3A00%3A00Z&cursorScheduleId=active-999"
+    )) {
+      return Response.json({ schedules: [hiddenActive], cursor: null });
     }
     return Response.json({ error: "Unhandled" }, { status: 500 });
   });
@@ -83,9 +97,36 @@ test("schedule index retains active schedules hidden behind the recent-history c
   try {
     const loaded = await loadScheduleIndex(connection);
 
-    assert.equal(loaded.length, 1001);
+    assert.equal(loaded.length, 2001);
     assert.equal(loaded.some((item) => item.id.value === hiddenActive.id.value), true);
-    assert.equal(fetchMock.calls.length, 2);
+    assert.equal(fetchMock.calls.length, 3);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("schedule index stops when the server repeats an active cursor", async () => {
+  const recent = Array.from({ length: 1000 }, (_, index) => schedule({
+    id: { value: `completed-${index}` },
+    status: "Completed",
+  }));
+  const cursor = {
+    createdAt: "2098-12-01T10:00:00Z",
+    scheduleId: { value: "active-999" },
+  };
+  const fetchMock = installFetch((call) => {
+    if (call.input.endsWith("/schedules?take=1000")) {
+      return Response.json({ schedules: recent });
+    }
+    return Response.json({ schedules: [schedule()], cursor });
+  });
+
+  try {
+    await assert.rejects(
+      () => loadScheduleIndex(connection),
+      /repeated continuation cursor/
+    );
+    assert.equal(fetchMock.calls.length, 3);
   } finally {
     fetchMock.restore();
   }

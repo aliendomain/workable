@@ -3564,7 +3564,7 @@ export function QueueDialog({
                   </div>
                 ) : scheduleMode === "once" ? (
                   <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
-                    This schedule will complete after its first accepted run.
+                    This schedule will complete after its first scheduled dispatch attempt.
                   </div>
                 ) : null}
               </div>

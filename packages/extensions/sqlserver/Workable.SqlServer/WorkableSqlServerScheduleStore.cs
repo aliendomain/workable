@@ -300,6 +300,8 @@ WHERE PersistenceScope = @PersistenceScope
   AND (@DefinitionNamesJson IS NULL OR DefinitionName IN (
       SELECT [value] FROM OPENJSON(@DefinitionNamesJson)))
   AND (@Status IS NULL OR Status = @Status)
+  AND (@CursorCreatedAt IS NULL OR CreatedAt < @CursorCreatedAt OR
+      (CreatedAt = @CursorCreatedAt AND ScheduleId > @CursorScheduleId))
 ORDER BY CreatedAt DESC, ScheduleId;
 """;
         AddScope(command, request.WorkSystemName);
@@ -309,6 +311,8 @@ ORDER BY CreatedAt DESC, ScheduleId;
             ? null
             : Serialize(request.DefinitionNames));
         Add(command, "@Status", request.Status?.ToString());
+        Add(command, "@CursorCreatedAt", request.Cursor?.CreatedAt);
+        Add(command, "@CursorScheduleId", request.Cursor?.ScheduleId.Value);
         var schedules = new List<WorkScheduleSummary>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))

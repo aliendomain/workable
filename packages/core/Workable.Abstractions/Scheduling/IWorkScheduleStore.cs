@@ -147,7 +147,8 @@ public sealed record WorkScheduleStoreListRequest(
     string? DefinitionName = null,
     WorkScheduleStatus? Status = null,
     int Take = 100,
-    IReadOnlySet<string>? DefinitionNames = null);
+    IReadOnlySet<string>? DefinitionNames = null,
+    WorkScheduleCursor? Cursor = null);
 
 public sealed record WorkScheduleStoreCancelRequest(
     string? WorkSystemName,

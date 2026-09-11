@@ -125,15 +125,23 @@ public sealed record WorkScheduleSummary(
 public sealed record WorkScheduleCriteria(
     string? DefinitionName = null,
     WorkScheduleStatus? Status = null,
-    int Take = 100)
+    int Take = 100,
+    WorkScheduleCursor? Cursor = null)
 {
     public const int MaximumTake = 1_000;
 }
 
 /// <summary>
+/// Continues a schedule query after the last item in the preceding page.
+/// </summary>
+public sealed record WorkScheduleCursor(DateTimeOffset CreatedAt, WorkScheduleId ScheduleId);
+
+/// <summary>
 /// Returns schedules visible to the caller.
 /// </summary>
-public sealed record WorkScheduleQueryResult(IReadOnlyList<WorkScheduleSummary> Schedules);
+public sealed record WorkScheduleQueryResult(
+    IReadOnlyList<WorkScheduleSummary> Schedules,
+    WorkScheduleCursor? Cursor = null);
 
 /// <summary>
 /// Identifies the immediate result of schedule creation.

@@ -64,8 +64,14 @@ export type WorkScheduleSnapshot = {
 
 export type WorkScheduleSummary = Omit<WorkScheduleSnapshot, "input" | "workerOptions">;
 
+export type WorkScheduleCursor = {
+  createdAt: string;
+  scheduleId: { value: string };
+};
+
 export type WorkScheduleQueryResult = {
   schedules: WorkScheduleSummary[];
+  cursor?: WorkScheduleCursor | null;
 };
 
 export type WorkScheduleOccurrence = {

@@ -89,7 +89,7 @@ var weekdays = await session.Schedules.Create(
     cancellationToken);
 ```
 
-The built-in HTTP adapter exposes `POST /workable/work/{definitionName}/schedules`, and the admin UI surfaces it through **Schedule** in the queue dialog whenever host discovery reports `schedulingAvailable`. The dialog supports a local first-run date and time, intervals in minutes, hours, or days, and five-field cron expressions with an explicit IANA time zone. Cron input is checked by the server and the dialog previews the next five occurrences before creation. It reuses the same input and worker-option form as immediate queueing. The system tree's **Schedules** screen lists upcoming active work plus the 1,000 most recently created retained schedules, displays recent dispatch history, links accepted dispatches to their workers, and supports creating or canceling schedules. When retained history fills that recent window, the screen performs a separate bounded active-schedule query so older active schedules remain visible and cancelable.
+The built-in HTTP adapter exposes `POST /workable/work/{definitionName}/schedules`, and the admin UI surfaces it through **Schedule** in the queue dialog whenever host discovery reports `schedulingAvailable`. The dialog supports a local first-run date and time, intervals in minutes, hours, or days, and five-field cron expressions with an explicit IANA time zone. Cron input is checked by the server and the dialog previews the next five occurrences before creation. It reuses the same input and worker-option form as immediate queueing. The system tree's **Schedules** screen lists upcoming active work plus the 1,000 most recently created retained schedules, displays recent dispatch history, links accepted dispatches to their workers, and supports creating or canceling schedules. When retained history fills that recent window, the screen follows the active query's continuation cursor through bounded pages so every active schedule remains visible and cancelable even when the configured active limit exceeds 1,000.
 
 Use intervals for elapsed-time requirements such as “every 90 minutes from the first run.” Interval schedules must recur no more frequently than once per minute. Use cron for calendar requirements such as “09:00 every weekday.” `FirstRunAt` is the actual first due instant for one-time and interval schedules. For cron schedules it is the earliest eligible instant; the first matching calendar occurrence on or after that instant becomes `NextRunAt`. An interval and cron expression are mutually exclusive.
 
@@ -160,6 +160,13 @@ WorkScheduleQueryResult active = await session.Schedules.List(
         Take: 100),
     cancellationToken);
 
+while (active.Cursor is not null)
+{
+    active = await session.Schedules.List(
+        new WorkScheduleCriteria(Status: WorkScheduleStatus.Active, Take: 100, Cursor: active.Cursor),
+        cancellationToken);
+}
+
 WorkScheduleOccurrenceQueryResult history = await session.Schedules.ListOccurrences(
     scheduleId,
     take: 100,
@@ -177,6 +184,6 @@ The equivalent HTTP management routes are:
 - `GET /workable/schedules/{scheduleId}/occurrences?take={count}`
 - `POST /workable/schedules/{scheduleId}/cancel`
 
-Named systems use the same paths under `/workable/systems/{systemName}`. Schedule queries accept between one and 1,000 rows; occurrence-history queries accept between one and 100 rows and are also constrained by `MaximumOccurrenceQueryPayloadBytes`. Schedule lists return bounded summaries and omit retained input and worker options; fetch one schedule by id when those details are needed. The list applies read authorization per target definition; detail and history return `404` for unknown or non-visible schedules. Cancellation applies the target definition's current cancel authorization. Creator and canceler actor id, name, and email fields are each limited to 512 characters; Workable rejects an oversized actor instead of truncating security identity data before durable audit or per-actor quota enforcement. The SQL schedule store also rejects definition names longer than its 450-character column bound with a structured invalid-creation outcome instead of allowing a truncation exception to escape.
+Named systems use the same paths under `/workable/systems/{systemName}`. Schedule queries accept between one and 1,000 rows. A full page includes a `cursor`; pass its `createdAt` and `scheduleId.value` back as `cursorCreatedAt` and `cursorScheduleId` to fetch the next page. Both cursor query parameters are required together. Occurrence-history queries accept between one and 100 rows and are also constrained by `MaximumOccurrenceQueryPayloadBytes`. Schedule lists return bounded summaries and omit retained input and worker options; fetch one schedule by id when those details are needed. The list applies read authorization per target definition before paging; detail and history return `404` for unknown or non-visible schedules. Cancellation applies the target definition's current cancel authorization. Creator and canceler actor id, name, and email fields are each limited to 512 characters; Workable rejects an oversized actor instead of truncating security identity data before durable audit or per-actor quota enforcement. The SQL schedule store also rejects definition names longer than its 450-character column bound with a structured invalid-creation outcome instead of allowing a truncation exception to escape.
 
 Only an active schedule can be canceled. Canceling a completed or already canceled schedule returns `Conflict`; an unknown or non-visible schedule returns `NotFound`. A due row is revalidated immediately before dispatch, so cancellation accepted after claiming but before the atomic dispatch-start marker suppresses that stale claim. Once dispatch is marked as begun, cancellation returns `Conflict` and does not retroactively cancel a worker being created or already queued; control that worker through the normal worker-action surface.

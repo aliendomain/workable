@@ -972,6 +972,8 @@ public sealed class WorkableHttpApiTests
         var invalidId = await client.GetAsync("/workable/schedules/not-a-guid");
         var invalidListTake = await client.GetAsync("/workable/schedules?take=0");
         var invalidMaximumListTake = await client.GetAsync("/workable/schedules?take=1001");
+        var incompleteCursor = await client.GetAsync(
+            "/workable/schedules?cursorCreatedAt=2026-09-11T12%3A00%3A00Z");
         var invalidOccurrenceTake = await client.GetAsync(
             $"/workable/schedules/{scheduleId:D}/occurrences?take=101");
         var unknownScheduleId = Guid.NewGuid();
@@ -988,6 +990,15 @@ public sealed class WorkableHttpApiTests
         Assert.Equal("http.schedule.manage", listedSchedule["definitionName"]!.GetValue<string>());
         Assert.False(listedSchedule.ContainsKey("input"));
         Assert.False(listedSchedule.ContainsKey("workerOptions"));
+        var listedCreatedAt = listedSchedule["createdAt"]!.GetValue<DateTimeOffset>();
+        var continuedList = await client.GetAsync(
+            "/workable/schedules?definitionName=http.schedule.manage&status=Active&take=10" +
+            $"&cursorCreatedAt={Uri.EscapeDataString(listedCreatedAt.ToString("O"))}" +
+            $"&cursorScheduleId={scheduleId:D}");
+        continuedList.EnsureSuccessStatusCode();
+        var continuedJson = JsonNode.Parse(await continuedList.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected continued schedule list JSON.");
+        Assert.Empty(continuedJson["schedules"]!.AsArray());
         detail.EnsureSuccessStatusCode();
         occurrences.EnsureSuccessStatusCode();
         defaultOccurrences.EnsureSuccessStatusCode();
@@ -1001,6 +1012,7 @@ public sealed class WorkableHttpApiTests
         Assert.Contains("workable.schedule.id_invalid", await invalidId.Content.ReadAsStringAsync());
         Assert.Equal(HttpStatusCode.BadRequest, invalidListTake.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, invalidMaximumListTake.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, incompleteCursor.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, invalidOccurrenceTake.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, unknownOccurrences.StatusCode);

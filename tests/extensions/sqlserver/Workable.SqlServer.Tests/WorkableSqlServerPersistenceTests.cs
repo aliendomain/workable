@@ -283,6 +283,59 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PageSchedulesAcrossEqualCreationTimesWithoutDuplicates()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var options = new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-page-tests",
+        };
+        var store = new WorkableSqlServerScheduleStore(options);
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var createdAt = DateTimeOffset.UtcNow;
+        var expectedIds = new[]
+        {
+            new WorkScheduleId(Guid.Parse("11111111-1111-1111-1111-111111111111")),
+            new WorkScheduleId(Guid.Parse("22222222-2222-2222-2222-222222222222")),
+            new WorkScheduleId(Guid.Parse("33333333-3333-3333-3333-333333333333")),
+            new WorkScheduleId(Guid.Parse("44444444-4444-4444-4444-444444444444")),
+        };
+        foreach (var id in expectedIds)
+        {
+            var record = CreateSqlScheduleRecord(
+                id,
+                "sql.schedule.page",
+                WorkScheduleTiming.Once(createdAt + TimeSpan.FromHours(1)),
+                createdAt);
+            record = record with { Schedule = record.Schedule with { WorkSystemName = "operations" } };
+            Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(record)));
+        }
+
+        var first = await store.List(new WorkScheduleStoreListRequest(
+            "operations",
+            Status: WorkScheduleStatus.Active,
+            Take: 2));
+        var firstLast = first[^1];
+        var second = await store.List(new WorkScheduleStoreListRequest(
+            "operations",
+            Status: WorkScheduleStatus.Active,
+            Take: 2,
+            Cursor: new WorkScheduleCursor(firstLast.CreatedAt, firstLast.Id)));
+
+        Assert.Equal(2, first.Count);
+        Assert.Equal(2, second.Count);
+        Assert.Equal(
+            expectedIds.OrderBy(id => id.Value),
+            first.Concat(second).Select(schedule => schedule.Id).OrderBy(id => id.Value));
+    }
+
+    [Fact]
     public async Task ApplyScheduleReadScopesBeforeTakeAndPreserveCancellationPayloadQuotas()
     {
         if (this.SkipIfUnavailable())
@@ -1528,6 +1581,7 @@ IF SCHEMA_ID(N'{emptySchemaName}') IS NULL
         Assert.Contains($"{emptySchemaName}.WorkSchedules", scheduling.Message, StringComparison.Ordinal);
         Assert.Contains($"{emptySchemaName}.WorkScheduleOccurrenceUsage", scheduling.Message, StringComparison.Ordinal);
         Assert.Contains("IX_WorkableWorkSchedules_ActiveDefinition", scheduling.Message, StringComparison.Ordinal);
+        Assert.Contains("IX_WorkableWorkSchedules_ActiveList", scheduling.Message, StringComparison.Ordinal);
         Assert.Contains("IX_WorkableWorkScheduleOccurrences_Retention", scheduling.Message, StringComparison.Ordinal);
         Assert.Contains("IX_WorkableWorkScheduleOccurrences_Expiration", scheduling.Message, StringComparison.Ordinal);
     }
