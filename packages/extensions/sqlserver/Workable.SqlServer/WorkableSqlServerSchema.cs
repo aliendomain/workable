@@ -1542,22 +1542,8 @@ WHERE schemas.name = @SchemaName AND tables.name = @Name;
         };
         foreach (var (table, indexes) in requiredIndexes)
         {
-            var missingIndexes = new List<string>();
-            foreach (var index in indexes)
-            {
-                if (await Scalar<int>(connection, """
-SELECT COUNT(*)
-FROM sys.indexes indexes
-INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
-INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
-WHERE schemas.name = @SchemaName AND tables.name = @Name AND indexes.name = @IndexName;
-""", schemaName, cancellationToken, table, index) == 0)
-                {
-                    missingIndexes.Add(index);
-                }
-            }
-
-            missing.AddRange(missingIndexes);
+            var existingIndexes = await ReadExistingIndexes(connection, schemaName, table, cancellationToken);
+            missing.AddRange(indexes.Where(index => !existingIndexes.Contains(index)));
         }
 
         if (!missing.Any(item => item.StartsWith($"{schemaName}.SchemaVersion", StringComparison.Ordinal)))
@@ -1662,19 +1648,8 @@ WHERE schemas.name = @SchemaName AND tables.name = @Name;
         };
         foreach (var (table, indexes) in requiredIndexes)
         {
-            foreach (var index in indexes)
-            {
-                if (await Scalar<int>(connection, """
-SELECT COUNT(*)
-FROM sys.indexes indexes
-INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
-INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
-WHERE schemas.name = @SchemaName AND tables.name = @Name AND indexes.name = @IndexName;
-""", schemaName, cancellationToken, table, index) == 0)
-                {
-                    missing.Add(index);
-                }
-            }
+            var existingIndexes = await ReadExistingIndexes(connection, schemaName, table, cancellationToken);
+            missing.AddRange(indexes.Where(index => !existingIndexes.Contains(index)));
         }
 
         if (!missing.Any(item => item.StartsWith($"{schemaName}.SchemaVersion", StringComparison.Ordinal)))
@@ -1765,6 +1740,35 @@ WHERE schemas.name = @SchemaName
         }
 
         return columns;
+    }
+
+    private static async Task<HashSet<string>> ReadExistingIndexes(
+        SqlConnection connection,
+        string schemaName,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+SELECT indexes.name
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = @SchemaName
+  AND tables.name = @TableName
+  AND indexes.name IS NOT NULL;
+""";
+        command.Parameters.AddWithValue("@SchemaName", schemaName);
+        command.Parameters.AddWithValue("@TableName", tableName);
+
+        var indexes = new HashSet<string>(StringComparer.Ordinal);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            indexes.Add(reader.GetString(0));
+        }
+
+        return indexes;
     }
 
     private sealed record InstalledSchemaState(

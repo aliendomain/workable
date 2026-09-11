@@ -306,14 +306,16 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
             new WorkScheduleId(Guid.Parse("33333333-3333-3333-3333-333333333333")),
             new WorkScheduleId(Guid.Parse("44444444-4444-4444-4444-444444444444")),
         };
-        foreach (var id in expectedIds)
+        foreach (var record in expectedIds.Select(id =>
         {
             var record = CreateSqlScheduleRecord(
                 id,
                 "sql.schedule.page",
                 WorkScheduleTiming.Once(createdAt + TimeSpan.FromHours(1)),
                 createdAt);
-            record = record with { Schedule = record.Schedule with { WorkSystemName = "operations" } };
+            return record with { Schedule = record.Schedule with { WorkSystemName = "operations" } };
+        }))
+        {
             Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(record)));
         }
 
