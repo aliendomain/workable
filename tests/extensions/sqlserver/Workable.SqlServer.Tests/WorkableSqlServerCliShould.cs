@@ -27,6 +27,18 @@ public sealed class WorkableSqlServerCliShould
     }
 
     [Fact]
+    public void KeepSampleHostSchemaInSyncWithGeneratedSchema()
+    {
+        var sampleSchema = File.ReadAllText(
+            Path.Join(AppContext.BaseDirectory, "workable-sqlserver-schema.sql"));
+        var generatedSchema = Workable.SqlServer.WorkableSqlServerSchema.GenerateScript("workable");
+
+        Assert.Equal(
+            generatedSchema.ReplaceLineEndings("\n").TrimEnd(),
+            sampleSchema.ReplaceLineEndings("\n").TrimEnd());
+    }
+
+    [Fact]
     public async Task SkipGenerateWhenDiscoveryFindsNoPersistenceFeatures()
     {
         using var workspace = SqlServerCliTestWorkspace.Create();
