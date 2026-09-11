@@ -38,11 +38,17 @@ export const consolePanelActionGapClassName = "gap-2";
 
 export type ConsoleScrollMode = "browser" | "panel";
 
-export function ViewActionLane({ children }: { children?: ReactNode }) {
+export function ViewActionLane({
+  children,
+  contained = false,
+}: {
+  children?: ReactNode;
+  contained?: boolean;
+}) {
   return (
     <div
       aria-hidden={children ? undefined : true}
-      className={consoleToolbarLaneClassName}
+      className={cn(consoleToolbarLaneClassName, contained && "translate-y-0")}
     >
       {children}
     </div>
@@ -111,7 +117,9 @@ export function ConsolePageLayout({
       )}
       {...props}
     >
-      {(reserveToolbar || toolbar) ? <ViewActionLane>{toolbar}</ViewActionLane> : null}
+      {(reserveToolbar || toolbar) ? (
+        <ViewActionLane contained={scrollMode === "panel"}>{toolbar}</ViewActionLane>
+      ) : null}
       {children}
     </div>
   );
