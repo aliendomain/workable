@@ -130,7 +130,8 @@ export function loadScheduleOverview(
   return workableFetch<WorkScheduleOverviewResult>(
     connection,
     createScheduleOverviewPath(selectedScheduleId),
-    { signal }
+    { signal },
+    { coalesce: false }
   );
 }
 
@@ -156,14 +157,39 @@ export function mergeSchedulePages(
   };
 }
 
+const sqlServerUniqueIdentifierByteOrder = [
+  10, 11, 12, 13, 14, 15, 8, 9, 7, 6, 5, 4, 3, 2, 1, 0,
+] as const;
+
+function sqlServerUniqueIdentifierSortKey(value: string) {
+  const normalized = value.replaceAll("-", "").toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(normalized)) {
+    return null;
+  }
+
+  return sqlServerUniqueIdentifierByteOrder
+    .map((index) => normalized.slice(index * 2, (index * 2) + 2))
+    .join("");
+}
+
+export function compareSqlServerUniqueIdentifiers(left: string, right: string) {
+  const leftKey = sqlServerUniqueIdentifierSortKey(left);
+  const rightKey = sqlServerUniqueIdentifierSortKey(right);
+  if (leftKey === null || rightKey === null) {
+    return left.localeCompare(right);
+  }
+
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
 function compareRecentSchedules(left: WorkScheduleSummary, right: WorkScheduleSummary) {
   return Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
-    left.id.value.localeCompare(right.id.value);
+    compareSqlServerUniqueIdentifiers(left.id.value, right.id.value);
 }
 
 function compareUpcomingSchedules(left: WorkScheduleSummary, right: WorkScheduleSummary) {
   return Date.parse(left.nextRunAt!) - Date.parse(right.nextRunAt!) ||
-    left.id.value.localeCompare(right.id.value);
+    compareSqlServerUniqueIdentifiers(left.id.value, right.id.value);
 }
 
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {

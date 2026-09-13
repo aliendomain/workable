@@ -4,6 +4,7 @@ import { act } from "react";
 import {
   SchedulesView,
   calculateSchedulePollDelay,
+  compareSqlServerUniqueIdentifiers,
   createScheduleOverviewPath,
   createSchedulePagePath,
   createUpcomingSchedulePagePath,
@@ -158,6 +159,17 @@ test("schedule page merging caps both traversal edges", () => {
   assert.deepEqual(untrimmed.schedules.map((item) => item.id.value), ["newest", "middle"]);
 });
 
+test("schedule tie ordering matches SQL Server uniqueidentifier ordering", () => {
+  const lexicallyFirst = "00000000-0000-0000-0000-000000000002";
+  const sqlServerFirst = "ffffffff-ffff-ffff-ffff-000000000001";
+
+  assert.equal(lexicallyFirst.localeCompare(sqlServerFirst) < 0, true);
+  assert.equal(compareSqlServerUniqueIdentifiers(lexicallyFirst, sqlServerFirst) > 0, true);
+  assert.equal(compareSqlServerUniqueIdentifiers(sqlServerFirst, lexicallyFirst) < 0, true);
+  assert.equal(compareSqlServerUniqueIdentifiers(sqlServerFirst, sqlServerFirst), 0);
+  assert.equal(compareSqlServerUniqueIdentifiers("first", "second") < 0, true);
+});
+
 test("schedule overview uses one request for the index, selection, and occurrences", async () => {
   const hiddenActive = schedule({
     definitionName: "LongRunningSchedule",
@@ -183,6 +195,30 @@ test("schedule overview uses one request for the index, selection, and occurrenc
       fetchMock.calls[0]?.input,
       `/api/workable/systems/Ops/${createScheduleOverviewPath(hiddenActive.id.value)}`
     );
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("concurrent abortable overview loads do not share an in-flight GET", async () => {
+  const firstResponse = deferredResponse();
+  const secondResponse = deferredResponse();
+  const responses = [firstResponse, secondResponse];
+  const fetchMock = installFetch(() => responses.shift()!.promise);
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+
+  try {
+    const firstLoad = loadScheduleOverview(connection, null, firstController.signal);
+    const secondLoad = loadScheduleOverview(connection, null, secondController.signal);
+
+    assert.equal(fetchMock.calls.length, 2);
+    assert.equal(fetchMock.calls[0]?.init?.signal, firstController.signal);
+    assert.equal(fetchMock.calls[1]?.init?.signal, secondController.signal);
+
+    firstResponse.resolve(Response.json(scheduleOverview([])));
+    secondResponse.resolve(Response.json(scheduleOverview([])));
+    await Promise.all([firstLoad, secondLoad]);
   } finally {
     fetchMock.restore();
   }

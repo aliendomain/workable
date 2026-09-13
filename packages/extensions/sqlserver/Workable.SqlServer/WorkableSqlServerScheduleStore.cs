@@ -496,7 +496,10 @@ WHERE RunningPayloadBytes <= @MaximumOccurrencePayloadBytes
 ORDER BY AttemptedAt DESC, OccurrenceId;
 """;
         AddScope(command, request.WorkSystemName);
-        Add(command, "@SelectedScheduleId", request.SelectedScheduleId?.Value);
+        object? selectedScheduleIdParameter = request.SelectedScheduleId is { } selectedScheduleIdValue
+            ? selectedScheduleIdValue.Value
+            : null;
+        Add(command, "@SelectedScheduleId", selectedScheduleIdParameter);
         Add(command, "@RecentScheduleTake", request.RecentScheduleTake);
         Add(command, "@UpcomingScheduleTake", request.UpcomingScheduleTake);
         Add(command, "@OccurrenceTake", request.OccurrenceTake);
