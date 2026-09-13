@@ -391,7 +391,9 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
                 criteria.UpcomingScheduleTake,
                 criteria.OccurrenceTake,
                 this.configuration.MaximumOccurrenceQueryPayloadBytes,
-                definitionNames),
+                definitionNames,
+                criteria.RecentCursor,
+                criteria.UpcomingCursor),
             cancellationToken);
         var selected = result.SelectedSchedule;
         var occurrences = selected is null

@@ -104,13 +104,15 @@ public interface IWorkScheduleStore : IWorkScheduleHostPresenceStore
             new(
                 request.WorkSystemName,
                 Take: request.RecentScheduleTake + 1,
-                DefinitionNames: request.DefinitionNames),
+                DefinitionNames: request.DefinitionNames,
+                Cursor: request.RecentCursor),
             cancellationToken);
         var recentPage = CreateRecentPage(recent, request.RecentScheduleTake);
         var upcoming = await this.ListUpcoming(
             new(
                 request.WorkSystemName,
                 request.UpcomingScheduleTake + 1,
+                request.UpcomingCursor,
                 DefinitionNames: request.DefinitionNames),
             cancellationToken);
         var upcomingPage = CreateUpcomingPage(upcoming, request.UpcomingScheduleTake);
@@ -335,7 +337,9 @@ public sealed record WorkScheduleStoreOverviewRequest(
     int UpcomingScheduleTake = 100,
     int OccurrenceTake = 50,
     long MaximumOccurrencePayloadBytes = 4_194_304,
-    IReadOnlySet<string>? DefinitionNames = null);
+    IReadOnlySet<string>? DefinitionNames = null,
+    WorkScheduleCursor? RecentCursor = null,
+    WorkScheduleUpcomingCursor? UpcomingCursor = null);
 
 public sealed record WorkScheduleStoreOverviewResult(
     WorkScheduleQueryResult Recent,

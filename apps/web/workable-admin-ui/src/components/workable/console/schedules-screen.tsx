@@ -76,6 +76,13 @@ export const scheduleLoadedWindowSize = schedulePageSize * 5;
 export const schedulePollIntervalMs = 10_000;
 export const schedulePollMaximumIntervalMs = 60_000;
 
+type ScheduleOverviewWindow = {
+  recentCursor?: WorkScheduleCursor | null;
+  recentTake?: number;
+  upcomingCursor?: WorkScheduleUpcomingCursor | null;
+  upcomingTake?: number;
+};
+
 export function calculateSchedulePollDelay(
   intervalMs: number,
   consecutiveFailures: number,
@@ -91,14 +98,25 @@ export function calculateSchedulePollDelay(
   return Math.max(1, Math.min(schedulePollMaximumIntervalMs, Math.round(jitteredDelay)));
 }
 
-export function createScheduleOverviewPath(selectedScheduleId?: string | null) {
+export function createScheduleOverviewPath(
+  selectedScheduleId?: string | null,
+  window: ScheduleOverviewWindow = {}
+) {
   const query = new URLSearchParams({
     occurrenceTake: "50",
-    recentTake: String(schedulePageSize),
-    upcomingTake: String(schedulePageSize),
+    recentTake: String(window.recentTake ?? schedulePageSize),
+    upcomingTake: String(window.upcomingTake ?? schedulePageSize),
   });
   if (selectedScheduleId) {
     query.set("selectedScheduleId", selectedScheduleId);
+  }
+  if (window.recentCursor) {
+    query.set("recentCursorCreatedAt", window.recentCursor.createdAt);
+    query.set("recentCursorScheduleId", window.recentCursor.scheduleId.value);
+  }
+  if (window.upcomingCursor) {
+    query.set("upcomingCursorNextRunAt", window.upcomingCursor.nextRunAt);
+    query.set("upcomingCursorScheduleId", window.upcomingCursor.scheduleId.value);
   }
 
   return `schedules/overview?${query}`;
@@ -125,71 +143,35 @@ export function createUpcomingSchedulePagePath(cursor: WorkScheduleUpcomingCurso
 export function loadScheduleOverview(
   connection: WorkableConnection,
   selectedScheduleId?: string | null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  window?: ScheduleOverviewWindow
 ) {
   return workableFetch<WorkScheduleOverviewResult>(
     connection,
-    createScheduleOverviewPath(selectedScheduleId),
+    createScheduleOverviewPath(selectedScheduleId, window),
     { signal },
     { coalesce: false }
   );
 }
 
-export function mergeSchedulePages(
+export function appendProviderOrderedSchedulePage(
   current: WorkScheduleSummary[],
   incoming: WorkScheduleSummary[],
-  compare: (left: WorkScheduleSummary, right: WorkScheduleSummary) => number,
-  maximumSize = scheduleLoadedWindowSize,
-  keep: "start" | "end" = "start"
+  maximumSize = scheduleLoadedWindowSize
 ) {
-  const schedules = new Map(current.map((schedule) => [schedule.id.value, schedule]));
+  const seen = new Set(current.map((schedule) => schedule.id.value));
+  const combined = [...current];
   for (const schedule of incoming) {
-    schedules.set(schedule.id.value, schedule);
+    if (!seen.has(schedule.id.value)) {
+      seen.add(schedule.id.value);
+      combined.push(schedule);
+    }
   }
-  const merged = Array.from(schedules.values()).toSorted(compare);
-  if (merged.length <= maximumSize) {
-    return { schedules: merged, trimmed: false };
-  }
-
+  const trimCount = Math.max(0, combined.length - maximumSize);
   return {
-    schedules: keep === "start" ? merged.slice(0, maximumSize) : merged.slice(-maximumSize),
-    trimmed: true,
+    schedules: trimCount === 0 ? combined : combined.slice(trimCount),
+    trimmedThrough: trimCount === 0 ? null : combined[trimCount - 1],
   };
-}
-
-const sqlServerUniqueIdentifierByteOrder = [
-  10, 11, 12, 13, 14, 15, 8, 9, 7, 6, 5, 4, 3, 2, 1, 0,
-] as const;
-
-function sqlServerUniqueIdentifierSortKey(value: string) {
-  const normalized = value.replaceAll("-", "").toLowerCase();
-  if (!/^[0-9a-f]{32}$/.test(normalized)) {
-    return null;
-  }
-
-  return sqlServerUniqueIdentifierByteOrder
-    .map((index) => normalized.slice(index * 2, (index * 2) + 2))
-    .join("");
-}
-
-export function compareSqlServerUniqueIdentifiers(left: string, right: string) {
-  const leftKey = sqlServerUniqueIdentifierSortKey(left);
-  const rightKey = sqlServerUniqueIdentifierSortKey(right);
-  if (leftKey === null || rightKey === null) {
-    return left.localeCompare(right);
-  }
-
-  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
-}
-
-function compareRecentSchedules(left: WorkScheduleSummary, right: WorkScheduleSummary) {
-  return Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
-    compareSqlServerUniqueIdentifiers(left.id.value, right.id.value);
-}
-
-function compareUpcomingSchedules(left: WorkScheduleSummary, right: WorkScheduleSummary) {
-  return Date.parse(left.nextRunAt!) - Date.parse(right.nextRunAt!) ||
-    compareSqlServerUniqueIdentifiers(left.id.value, right.id.value);
 }
 
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -219,9 +201,9 @@ export function formatScheduleTiming(schedule: WorkScheduleSummary) {
 }
 
 export function getUpcomingSchedules(schedules: WorkScheduleSummary[]) {
-  return schedules
-    .filter((schedule) => schedule.status === "Active" && Boolean(schedule.nextRunAt))
-    .toSorted((left, right) => Date.parse(left.nextRunAt!) - Date.parse(right.nextRunAt!));
+  return schedules.filter(
+    (schedule) => schedule.status === "Active" && Boolean(schedule.nextRunAt)
+  );
 }
 
 export function SchedulesView({
@@ -271,8 +253,10 @@ export function SchedulesView({
   const pagingRef = useRef(false);
   const recentExpandedRef = useRef(false);
   const upcomingExpandedRef = useRef(false);
-  const recentWindowTrimmedRef = useRef(false);
-  const upcomingWindowTrimmedRef = useRef(false);
+  const recentWindowTakeRef = useRef(schedulePageSize);
+  const upcomingWindowTakeRef = useRef(schedulePageSize);
+  const recentWindowStartCursorRef = useRef<WorkScheduleCursor | null>(null);
+  const upcomingWindowStartCursorRef = useRef<WorkScheduleUpcomingCursor | null>(null);
   const schedulesRef = useRef<WorkScheduleSummary[]>([]);
   const upcomingSchedulesRef = useRef<WorkScheduleSummary[]>([]);
   const connectionGenerationRef = useRef(0);
@@ -283,8 +267,10 @@ export function SchedulesView({
     pagingRef.current = false;
     recentExpandedRef.current = false;
     upcomingExpandedRef.current = false;
-    recentWindowTrimmedRef.current = false;
-    upcomingWindowTrimmedRef.current = false;
+    recentWindowTakeRef.current = schedulePageSize;
+    upcomingWindowTakeRef.current = schedulePageSize;
+    recentWindowStartCursorRef.current = null;
+    upcomingWindowStartCursorRef.current = null;
     schedulesRef.current = [];
     upcomingSchedulesRef.current = [];
     selectedScheduleIdRef.current = null;
@@ -331,7 +317,22 @@ export function SchedulesView({
         setError(undefined);
       }
     });
-    loadScheduleOverview(connection, selectedScheduleIdRef.current, controller.signal)
+    const overviewWindow: ScheduleOverviewWindow = {
+      recentCursor: recentWindowStartCursorRef.current,
+      recentTake: recentExpandedRef.current
+        ? recentWindowTakeRef.current
+        : schedulePageSize,
+      upcomingCursor: upcomingWindowStartCursorRef.current,
+      upcomingTake: upcomingExpandedRef.current
+        ? upcomingWindowTakeRef.current
+        : schedulePageSize,
+    };
+    loadScheduleOverview(
+      connection,
+      selectedScheduleIdRef.current,
+      controller.signal,
+      overviewWindow
+    )
       .then((overview) => {
         if (canceled) {
           return;
@@ -339,42 +340,12 @@ export function SchedulesView({
 
         const resolvedSelectedScheduleId = overview.selectedSchedule?.id.value ?? null;
         selectedScheduleIdRef.current = resolvedSelectedScheduleId;
-        const recentResult = recentExpandedRef.current
-          ? mergeSchedulePages(
-              schedulesRef.current,
-              overview.recent.schedules,
-              compareRecentSchedules,
-              loadedWindowSize,
-              recentWindowTrimmedRef.current ? "end" : "start"
-            )
-          : { schedules: overview.recent.schedules, trimmed: false };
-        schedulesRef.current = recentResult.schedules;
-        setSchedules(recentResult.schedules);
-        if (recentResult.trimmed && !recentWindowTrimmedRef.current) {
-          recentWindowTrimmedRef.current = true;
-          setRecentWindowTrimmed(true);
-        }
-        if (!recentExpandedRef.current) {
-          setRecentCursor(overview.recent.cursor ?? null);
-        }
-        const upcomingResult = upcomingExpandedRef.current
-          ? mergeSchedulePages(
-              upcomingSchedulesRef.current,
-              overview.upcoming.schedules,
-              compareUpcomingSchedules,
-              loadedWindowSize,
-              upcomingWindowTrimmedRef.current ? "end" : "start"
-            )
-          : { schedules: overview.upcoming.schedules, trimmed: false };
-        upcomingSchedulesRef.current = upcomingResult.schedules;
-        setUpcomingSchedules(upcomingResult.schedules);
-        if (upcomingResult.trimmed && !upcomingWindowTrimmedRef.current) {
-          upcomingWindowTrimmedRef.current = true;
-          setUpcomingWindowTrimmed(true);
-        }
-        if (!upcomingExpandedRef.current) {
-          setUpcomingCursor(overview.upcoming.cursor ?? null);
-        }
+        schedulesRef.current = overview.recent.schedules;
+        setSchedules(overview.recent.schedules);
+        setRecentCursor(overview.recent.cursor ?? null);
+        upcomingSchedulesRef.current = overview.upcoming.schedules;
+        setUpcomingSchedules(overview.upcoming.schedules);
+        setUpcomingCursor(overview.upcoming.cursor ?? null);
         setActiveCount(overview.upcoming.activeScheduleCount);
         setUpcomingCount(overview.upcoming.upcomingScheduleCount);
         setRecurringCount(overview.upcoming.recurringScheduleCount);
@@ -465,17 +436,24 @@ export function SchedulesView({
       if (generation !== connectionGenerationRef.current) {
         return;
       }
-      const result = mergeSchedulePages(
+      const result = appendProviderOrderedSchedulePage(
         schedulesRef.current,
         page.schedules,
-        compareRecentSchedules,
-        loadedWindowSize,
-        "end"
+        loadedWindowSize
       );
       schedulesRef.current = result.schedules;
       setSchedules(result.schedules);
-      if (result.trimmed) {
-        recentWindowTrimmedRef.current = true;
+      recentWindowTakeRef.current = recentExpandedRef.current
+        ? Math.min(
+            loadedWindowSize,
+            Math.max(recentWindowTakeRef.current, result.schedules.length)
+          )
+        : Math.max(1, result.schedules.length);
+      if (result.trimmedThrough) {
+        recentWindowStartCursorRef.current = {
+          createdAt: result.trimmedThrough.createdAt,
+          scheduleId: result.trimmedThrough.id,
+        };
         setRecentWindowTrimmed(true);
       }
       setRecentCursor(page.cursor ?? null);
@@ -509,17 +487,24 @@ export function SchedulesView({
       if (generation !== connectionGenerationRef.current) {
         return;
       }
-      const result = mergeSchedulePages(
+      const result = appendProviderOrderedSchedulePage(
         upcomingSchedulesRef.current,
         page.schedules,
-        compareUpcomingSchedules,
-        loadedWindowSize,
-        "end"
+        loadedWindowSize
       );
       upcomingSchedulesRef.current = result.schedules;
       setUpcomingSchedules(result.schedules);
-      if (result.trimmed) {
-        upcomingWindowTrimmedRef.current = true;
+      upcomingWindowTakeRef.current = upcomingExpandedRef.current
+        ? Math.min(
+            loadedWindowSize,
+            Math.max(upcomingWindowTakeRef.current, result.schedules.length)
+          )
+        : Math.max(1, result.schedules.length);
+      if (result.trimmedThrough) {
+        upcomingWindowStartCursorRef.current = {
+          nextRunAt: result.trimmedThrough.nextRunAt!,
+          scheduleId: result.trimmedThrough.id,
+        };
         setUpcomingWindowTrimmed(true);
       }
       setUpcomingCursor(page.cursor ?? null);
@@ -622,6 +607,7 @@ export function SchedulesView({
             <ScheduleTableEmptyOrLoading
               empty="No scheduled work is currently pending."
               loading={loading}
+              renderWhenEmpty={upcomingWindowTrimmed}
               rows={upcoming.length}
             >
               <PanelScrollViewport
@@ -643,6 +629,13 @@ export function SchedulesView({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
+                    {upcoming.length === 0 && (
+                      <TableRow>
+                        <TableCell className="py-8 text-center text-muted-foreground" colSpan={4}>
+                          No scheduled work is currently pending in this window.
+                        </TableCell>
+                      </TableRow>
+                    )}
                     {upcoming.map((schedule) => (
                       <TableRow
                         className="cursor-pointer"
@@ -669,7 +662,8 @@ export function SchedulesView({
                       disabled={loading}
                       onClick={() => {
                         upcomingExpandedRef.current = false;
-                        upcomingWindowTrimmedRef.current = false;
+                        upcomingWindowTakeRef.current = schedulePageSize;
+                        upcomingWindowStartCursorRef.current = null;
                         upcomingSchedulesRef.current = [];
                         setUpcomingSchedules([]);
                         setUpcomingCursor(null);
@@ -694,6 +688,7 @@ export function SchedulesView({
             <ScheduleTableEmptyOrLoading
               empty="No schedules have been created for this work system."
               loading={loading}
+              renderWhenEmpty={recentWindowTrimmed}
               rows={schedules.length}
             >
               <PanelScrollViewport
@@ -717,6 +712,13 @@ export function SchedulesView({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
+                    {schedules.length === 0 && (
+                      <TableRow>
+                        <TableCell className="py-8 text-center text-muted-foreground" colSpan={6}>
+                          No schedules remain in this window.
+                        </TableCell>
+                      </TableRow>
+                    )}
                     {schedules.map((schedule) => (
                       <TableRow
                         className="cursor-pointer"
@@ -742,7 +744,8 @@ export function SchedulesView({
                       disabled={loading}
                       onClick={() => {
                         recentExpandedRef.current = false;
-                        recentWindowTrimmedRef.current = false;
+                        recentWindowTakeRef.current = schedulePageSize;
+                        recentWindowStartCursorRef.current = null;
                         schedulesRef.current = [];
                         setSchedules([]);
                         setRecentCursor(null);
@@ -971,18 +974,20 @@ function ScheduleTableEmptyOrLoading({
   children,
   empty,
   loading,
+  renderWhenEmpty = false,
   rows,
 }: {
   children: ReactNode;
   empty: string;
   loading: boolean;
+  renderWhenEmpty?: boolean;
   rows: number;
 }) {
   if (loading && rows === 0) {
     return <div className="space-y-2">{Array.from({ length: 3 }).map((_, index) => <Skeleton className="h-12" key={index} />)}</div>;
   }
 
-  if (rows === 0) {
+  if (rows === 0 && !renderWhenEmpty) {
     return <ConsoleEmptyState padding="spacious">{empty}</ConsoleEmptyState>;
   }
 

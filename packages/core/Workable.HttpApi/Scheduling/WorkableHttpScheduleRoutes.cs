@@ -95,6 +95,10 @@ internal static class WorkableHttpScheduleRoutes
             int? recentTake,
             int? upcomingTake,
             int? occurrenceTake,
+            DateTimeOffset? recentCursorCreatedAt,
+            Guid? recentCursorScheduleId,
+            DateTimeOffset? upcomingCursorNextRunAt,
+            Guid? upcomingCursorScheduleId,
             HttpContext httpContext,
             WorkableHttpTopologyResolver topology,
             IWorkRequestContextFactory requestContexts,
@@ -135,6 +139,27 @@ internal static class WorkableHttpScheduleRoutes
                     $"Schedule overview occurrence take must be between one and {WorkScheduleOccurrenceReadRequest.MaximumTake}.");
             }
 
+            if (recentCursorCreatedAt.HasValue != recentCursorScheduleId.HasValue)
+            {
+                return InvalidCursor(
+                    "Schedule overview recentCursorCreatedAt and recentCursorScheduleId must be supplied together.");
+            }
+
+            if (upcomingCursorNextRunAt.HasValue != upcomingCursorScheduleId.HasValue)
+            {
+                return InvalidCursor(
+                    "Schedule overview upcomingCursorNextRunAt and upcomingCursorScheduleId must be supplied together.");
+            }
+
+            var recentCursor = recentCursorCreatedAt is { } createdAt &&
+                recentCursorScheduleId is { } recentScheduleId
+                    ? new WorkScheduleCursor(createdAt, new(recentScheduleId))
+                    : null;
+            var upcomingCursor = upcomingCursorNextRunAt is { } nextRunAt &&
+                upcomingCursorScheduleId is { } upcomingScheduleId
+                    ? new WorkScheduleUpcomingCursor(nextRunAt, new(upcomingScheduleId))
+                    : null;
+
             var session = await WorkableHttpRequestContext.CreateSession(
                 httpContext,
                 system,
@@ -142,7 +167,13 @@ internal static class WorkableHttpScheduleRoutes
                 description: null,
                 cancellationToken);
             return Results.Ok(await session.Schedules.GetOverview(
-                new(selected, resolvedRecentTake, resolvedUpcomingTake, resolvedOccurrenceTake),
+                new(
+                    selected,
+                    resolvedRecentTake,
+                    resolvedUpcomingTake,
+                    resolvedOccurrenceTake,
+                    recentCursor,
+                    upcomingCursor),
                 cancellationToken));
         });
 
@@ -411,14 +442,15 @@ internal static class WorkableHttpScheduleRoutes
             },
         });
 
-    private static IResult InvalidCursor()
+    private static IResult InvalidCursor(
+        string message = "Schedule list cursorCreatedAt and cursorScheduleId must be supplied together.")
         => Results.BadRequest(new
         {
             Messages = new[]
             {
                 WorkMessage.Error(
                     "workable.schedule.cursor_invalid",
-                    "Schedule list cursorCreatedAt and cursorScheduleId must be supplied together.",
+                    message,
                     "cursor"),
             },
         });

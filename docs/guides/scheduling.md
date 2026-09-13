@@ -194,11 +194,11 @@ The equivalent HTTP management routes are:
 
 - `GET /workable/schedules?definitionName={name}&status={status}&take={count}`
 - `GET /workable/schedules/upcoming?take={count}&cursorNextRunAt={instant}&cursorScheduleId={scheduleId}`
-- `GET /workable/schedules/overview?selectedScheduleId={scheduleId}&recentTake={count}&upcomingTake={count}&occurrenceTake={count}`
+- `GET /workable/schedules/overview?selectedScheduleId={scheduleId}&recentTake={count}&upcomingTake={count}&occurrenceTake={count}&recentCursorCreatedAt={instant}&recentCursorScheduleId={scheduleId}&upcomingCursorNextRunAt={instant}&upcomingCursorScheduleId={scheduleId}`
 - `GET /workable/schedules/{scheduleId}`
 - `GET /workable/schedules/{scheduleId}/occurrences?take={count}`
 - `POST /workable/schedules/{scheduleId}/cancel`
 
-Named systems use the same paths under `/workable/systems/{systemName}`. Schedule queries are paged. Continue a recent-schedule page with its `createdAt` and schedule-id cursor, or an upcoming page with its `nextRunAt` and schedule-id cursor. Both cursor fields must be supplied together. Occurrence-history queries return up to 100 entries. List and overview results contain schedule summaries; use the schedule-detail route when retained input or worker options are needed. Read authorization is applied to each target definition, and unknown or non-visible schedules return `404`. Cancellation uses the target definition's current cancel authorization.
+Named systems use the same paths under `/workable/systems/{systemName}`. Schedule queries are paged. Continue a recent-schedule page with its `createdAt` and schedule-id cursor, or an upcoming page with its `nextRunAt` and schedule-id cursor. `WorkScheduleOverviewCriteria` and the overview route accept both cursors so a management client can refresh its current bounded windows together with the selected schedule and history. Each cursor's timestamp and schedule-id fields must be supplied together. Occurrence-history queries return up to 100 entries. List and overview results contain schedule summaries; use the schedule-detail route when retained input or worker options are needed. Read authorization is applied to each target definition, and unknown or non-visible schedules return `404`. Cancellation uses the target definition's current cancel authorization.
 
 Only an active schedule can be canceled. Canceling a completed or already canceled schedule returns `Conflict`; an unknown or non-visible schedule returns `NotFound`. Once dispatch begins, cancellation returns `Conflict` and does not cancel the worker being created or already queued; control that worker through the normal worker-action surface.

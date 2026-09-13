@@ -3,8 +3,8 @@ import test from "node:test";
 import { act } from "react";
 import {
   SchedulesView,
+  appendProviderOrderedSchedulePage,
   calculateSchedulePollDelay,
-  compareSqlServerUniqueIdentifiers,
   createScheduleOverviewPath,
   createSchedulePagePath,
   createUpcomingSchedulePagePath,
@@ -12,7 +12,6 @@ import {
   formatScheduleTiming,
   getUpcomingSchedules,
   loadScheduleOverview,
-  mergeSchedulePages,
   schedulePageSize,
   schedulePollMaximumIntervalMs,
 } from "@/components/workable/console/schedules-screen";
@@ -94,7 +93,7 @@ function scheduleOverview(
   };
 }
 
-test("schedule helpers format timing and select active upcoming work in due order", () => {
+test("schedule helpers format timing and preserve provider-ordered upcoming work", () => {
   const later = schedule({
     id: { value: "later" },
     nextRunAt: "2099-01-02T10:00:00Z",
@@ -112,7 +111,7 @@ test("schedule helpers format timing and select active upcoming work in due orde
   });
   const canceled = schedule({ id: { value: "canceled" }, status: "Canceled" });
 
-  assert.deepEqual(getUpcomingSchedules([later, canceled, earlier]).map((item) => item.id.value), [
+  assert.deepEqual(getUpcomingSchedules([earlier, canceled, later]).map((item) => item.id.value), [
     "earlier",
     "later",
   ]);
@@ -131,7 +130,7 @@ test("schedule helpers format timing and select active upcoming work in due orde
   assert.notEqual(formatScheduleDateTime("2099-01-01T10:00:00Z"), "-");
 });
 
-test("schedule page merging caps both traversal edges", () => {
+test("schedule page appending preserves provider order and reports the trimmed boundary", () => {
   const newest = schedule({
     createdAt: "2098-12-03T10:00:00Z",
     id: { value: "newest" },
@@ -144,30 +143,13 @@ test("schedule page merging caps both traversal edges", () => {
     createdAt: "2098-12-01T10:00:00Z",
     id: { value: "oldest" },
   });
-  const compare = (left: WorkScheduleSummary, right: WorkScheduleSummary) =>
-    Date.parse(right.createdAt) - Date.parse(left.createdAt);
+  const trimmed = appendProviderOrderedSchedulePage([newest], [middle, oldest, newest], 2);
+  const untrimmed = appendProviderOrderedSchedulePage([newest], [middle], 2);
 
-  const start = mergeSchedulePages([middle], [oldest, newest], compare, 2, "start");
-  const end = mergeSchedulePages([middle], [oldest, newest], compare, 2, "end");
-  const untrimmed = mergeSchedulePages([newest], [middle], compare, 2);
-
-  assert.equal(start.trimmed, true);
-  assert.deepEqual(start.schedules.map((item) => item.id.value), ["newest", "middle"]);
-  assert.equal(end.trimmed, true);
-  assert.deepEqual(end.schedules.map((item) => item.id.value), ["middle", "oldest"]);
-  assert.equal(untrimmed.trimmed, false);
+  assert.equal(trimmed.trimmedThrough?.id.value, "newest");
+  assert.deepEqual(trimmed.schedules.map((item) => item.id.value), ["middle", "oldest"]);
+  assert.equal(untrimmed.trimmedThrough, null);
   assert.deepEqual(untrimmed.schedules.map((item) => item.id.value), ["newest", "middle"]);
-});
-
-test("schedule tie ordering matches SQL Server uniqueidentifier ordering", () => {
-  const lexicallyFirst = "00000000-0000-0000-0000-000000000002";
-  const sqlServerFirst = "ffffffff-ffff-ffff-ffff-000000000001";
-
-  assert.equal(lexicallyFirst.localeCompare(sqlServerFirst) < 0, true);
-  assert.equal(compareSqlServerUniqueIdentifiers(lexicallyFirst, sqlServerFirst) > 0, true);
-  assert.equal(compareSqlServerUniqueIdentifiers(sqlServerFirst, lexicallyFirst) < 0, true);
-  assert.equal(compareSqlServerUniqueIdentifiers(sqlServerFirst, sqlServerFirst), 0);
-  assert.equal(compareSqlServerUniqueIdentifiers("first", "second") < 0, true);
 });
 
 test("schedule overview uses one request for the index, selection, and occurrences", async () => {
@@ -230,6 +212,25 @@ test("schedule overview path omits an empty selection", () => {
     "schedules/overview?occurrenceTake=50&recentTake=25&upcomingTake=25"
   );
   assert.equal(schedulePageSize, 25);
+  assert.equal(
+    createScheduleOverviewPath(undefined, {
+      recentCursor: {
+        createdAt: "2099-01-01T00:00:00.0000001Z",
+        scheduleId: { value: activeScheduleId },
+      },
+      recentTake: 75,
+      upcomingCursor: {
+        nextRunAt: "2099-01-02T00:00:00.0000009Z",
+        scheduleId: { value: activeScheduleId },
+      },
+      upcomingTake: 50,
+    }),
+    "schedules/overview?occurrenceTake=50&recentTake=75&upcomingTake=50" +
+      "&recentCursorCreatedAt=2099-01-01T00%3A00%3A00.0000001Z" +
+      `&recentCursorScheduleId=${activeScheduleId}` +
+      "&upcomingCursorNextRunAt=2099-01-02T00%3A00%3A00.0000009Z" +
+      `&upcomingCursorScheduleId=${activeScheduleId}`
+  );
   assert.equal(
     createSchedulePagePath({
       createdAt: "2099-01-01T00:00:00Z",
@@ -426,7 +427,7 @@ test("schedules screen stays idle while its target is inactive", async () => {
   }
 });
 
-test("schedules screen pages recent and upcoming schedules with independent cursors", async () => {
+test("schedules screen pages independently and authoritatively refreshes expanded windows", async () => {
   let overviewCalls = 0;
   let upcomingPageCalls = 0;
   const recentPage = deferredResponse();
@@ -522,8 +523,11 @@ test("schedules screen pages recent and upcoming schedules with independent curs
     );
     await result.waitFor(() => result.getByText("RefreshedSchedule"));
     result.getByText("NewSchedule");
-    result.getByText("OlderSchedule");
-    result.getByText("LaterSchedule");
+    assert.equal(result.queryByText("OlderSchedule"), null);
+    assert.equal(result.queryByText("LaterSchedule"), null);
+    const refreshUrl = new URL(fetchMock.calls.at(-1)!.input, "https://admin.example");
+    assert.equal(refreshUrl.searchParams.get("recentTake"), "2");
+    assert.equal(refreshUrl.searchParams.get("upcomingTake"), "2");
   } finally {
     fetchMock.restore();
     await result.restore();
@@ -573,14 +577,25 @@ test("schedules screen bounds retained page windows and can return to their firs
   const recentCursor = { createdAt: newest.createdAt, scheduleId: newest.id };
   const upcomingCursor = { nextRunAt: soonest.nextRunAt!, scheduleId: soonest.id };
   let overviewCalls = 0;
+  let emptyAnchoredWindows = false;
   const fetchMock = installFetch((call) => {
     if (call.input.includes("/schedules/overview?")) {
       overviewCalls += 1;
-      return Response.json(scheduleOverview([newest], newest, [], {
-        recentCursor,
-        upcomingCursor,
-        upcomingSchedules: [soonest],
-      }));
+      const url = new URL(call.input, "https://admin.example");
+      const recentAnchored = url.searchParams.has("recentCursorCreatedAt");
+      const upcomingAnchored = url.searchParams.has("upcomingCursorNextRunAt");
+      return Response.json(scheduleOverview(
+        recentAnchored ? (emptyAnchoredWindows ? [] : [middle, oldest]) : [newest],
+        recentAnchored ? (emptyAnchoredWindows ? null : middle) : newest,
+        [],
+        {
+          recentCursor: recentAnchored ? undefined : recentCursor,
+          upcomingCursor: upcomingAnchored ? undefined : upcomingCursor,
+          upcomingSchedules: upcomingAnchored
+            ? (emptyAnchoredWindows ? [] : [later, latest])
+            : [soonest],
+        }
+      ));
     }
     if (call.input.includes("/schedules?cursorCreatedAt=")) {
       return Response.json({ cursor: null, schedules: [middle, oldest] });
@@ -632,12 +647,35 @@ test("schedules screen bounds retained page windows and can return to their firs
     await result.waitFor(() => assert.equal(overviewCalls, 2));
     assert.deepEqual(listedDefinitions(0), ["LaterSchedule", "LatestSchedule"]);
     assert.deepEqual(listedDefinitions(1), ["MiddleSchedule", "OldestSchedule"]);
+    const anchoredRefresh = new URL(fetchMock.calls.at(-1)!.input, "https://admin.example");
+    assert.equal(anchoredRefresh.searchParams.get("recentCursorCreatedAt"), newest.createdAt);
+    assert.equal(anchoredRefresh.searchParams.get("recentCursorScheduleId"), newest.id.value);
+    assert.equal(anchoredRefresh.searchParams.get("upcomingCursorNextRunAt"), soonest.nextRunAt);
+    assert.equal(anchoredRefresh.searchParams.get("upcomingCursorScheduleId"), soonest.id.value);
 
-    await result.click(result.getByRole("button", { name: "Return to soonest" }));
+    emptyAnchoredWindows = true;
+    await result.rerender(
+      <SchedulesView
+        connection={connection}
+        isLoadingTarget
+        loadedWindowSize={2}
+        onOpenWorker={() => undefined}
+        onReady={() => undefined}
+        refreshToken={2}
+      />
+    );
     await result.waitFor(() => assert.equal(overviewCalls, 3));
+    result.getByText("No scheduled work is currently pending in this window.");
+    result.getByText("No schedules remain in this window.");
+    result.getByRole("button", { name: "Return to soonest" });
+    result.getByRole("button", { name: "Return to newest" });
+
+    emptyAnchoredWindows = false;
+    await result.click(result.getByRole("button", { name: "Return to soonest" }));
+    await result.waitFor(() => assert.equal(overviewCalls, 4));
     await result.waitFor(() => assert.deepEqual(listedDefinitions(0), ["SoonestSchedule"]));
     await result.click(result.getByRole("button", { name: "Return to newest" }));
-    await result.waitFor(() => assert.equal(overviewCalls, 4));
+    await result.waitFor(() => assert.equal(overviewCalls, 5));
     await result.waitFor(() => assert.deepEqual(listedDefinitions(1), ["NewestSchedule"]));
     const buttonLabels = Array.from(result.dom.window.document.querySelectorAll("button"))
       .map((button) => button.textContent?.trim());

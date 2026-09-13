@@ -165,7 +165,9 @@ public sealed record WorkScheduleOverviewCriteria(
     WorkScheduleId? SelectedScheduleId = null,
     int RecentScheduleTake = 100,
     int UpcomingScheduleTake = 100,
-    int OccurrenceTake = 50);
+    int OccurrenceTake = 50,
+    WorkScheduleCursor? RecentCursor = null,
+    WorkScheduleUpcomingCursor? UpcomingCursor = null);
 
 /// <summary>
 /// Returns bounded recent and upcoming pages, visible schedule totals, and the selected schedule's dispatch history.

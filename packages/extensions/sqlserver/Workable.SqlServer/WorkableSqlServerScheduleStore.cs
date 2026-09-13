@@ -361,29 +361,39 @@ ORDER BY NextRunAt, ScheduleId;
         Add(command, "@DefinitionNamesJson", request.DefinitionNames is null
             ? null
             : Serialize(request.DefinitionNames));
-        var schedules = new List<WorkScheduleSummary>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var activeScheduleCount = 0;
-        var upcomingScheduleCount = 0;
-        var recurringScheduleCount = 0;
-        if (await reader.ReadAsync(cancellationToken))
+        try
         {
-            activeScheduleCount = reader.GetInt32(0);
-            upcomingScheduleCount = reader.GetInt32(1);
-            recurringScheduleCount = reader.GetInt32(2);
-        }
+            var schedules = new List<WorkScheduleSummary>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            var activeScheduleCount = 0;
+            var upcomingScheduleCount = 0;
+            var recurringScheduleCount = 0;
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                activeScheduleCount = reader.GetInt32(0);
+                upcomingScheduleCount = reader.GetInt32(1);
+                recurringScheduleCount = reader.GetInt32(2);
+            }
 
-        await reader.NextResultAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+            await reader.NextResultAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                schedules.Add(ReadScheduleSummary(reader));
+            }
+
+            return new(
+                schedules,
+                activeScheduleCount,
+                upcomingScheduleCount,
+                recurringScheduleCount);
+        }
+        catch (SqlException exception) when (cancellationToken.IsCancellationRequested)
         {
-            schedules.Add(ReadScheduleSummary(reader));
+            throw new OperationCanceledException(
+                "The SQL Server upcoming-schedule query was canceled.",
+                exception,
+                cancellationToken);
         }
-
-        return new(
-            schedules,
-            activeScheduleCount,
-            upcomingScheduleCount,
-            recurringScheduleCount);
     }
 
     public async Task<WorkScheduleStoreOverviewResult> GetOverview(
@@ -412,6 +422,8 @@ WHERE PersistenceScope = @PersistenceScope
   AND WorkSystemName = @WorkSystemName
   AND (@DefinitionNamesJson IS NULL OR DefinitionName IN (
       SELECT [value] FROM OPENJSON(@DefinitionNamesJson)))
+  AND (@RecentCursorCreatedAt IS NULL OR CreatedAt < @RecentCursorCreatedAt OR
+      (CreatedAt = @RecentCursorCreatedAt AND ScheduleId > @RecentCursorScheduleId))
 ORDER BY CreatedAt DESC, ScheduleId;
 
 INSERT INTO @UpcomingScheduleIds (ScheduleId, NextRunAt)
@@ -423,6 +435,8 @@ WHERE schedules.PersistenceScope = @PersistenceScope
   AND schedules.NextRunAt IS NOT NULL
   AND (@DefinitionNamesJson IS NULL OR schedules.DefinitionName IN (
       SELECT [value] FROM OPENJSON(@DefinitionNamesJson)))
+  AND (@UpcomingCursorNextRunAt IS NULL OR NextRunAt > @UpcomingCursorNextRunAt OR
+      (NextRunAt = @UpcomingCursorNextRunAt AND ScheduleId > @UpcomingCursorScheduleId))
 ORDER BY schedules.NextRunAt, schedules.ScheduleId;
 
 DECLARE @ResolvedScheduleId uniqueidentifier =
@@ -499,9 +513,19 @@ ORDER BY AttemptedAt DESC, OccurrenceId;
         object? selectedScheduleIdParameter = request.SelectedScheduleId is { } selectedScheduleIdValue
             ? selectedScheduleIdValue.Value
             : null;
+        object? recentCursorScheduleIdParameter = request.RecentCursor is { } recentCursor
+            ? recentCursor.ScheduleId.Value
+            : null;
+        object? upcomingCursorScheduleIdParameter = request.UpcomingCursor is { } upcomingCursor
+            ? upcomingCursor.ScheduleId.Value
+            : null;
         Add(command, "@SelectedScheduleId", selectedScheduleIdParameter);
         Add(command, "@RecentScheduleTake", request.RecentScheduleTake);
         Add(command, "@UpcomingScheduleTake", request.UpcomingScheduleTake);
+        Add(command, "@RecentCursorCreatedAt", request.RecentCursor?.CreatedAt);
+        Add(command, "@RecentCursorScheduleId", recentCursorScheduleIdParameter);
+        Add(command, "@UpcomingCursorNextRunAt", request.UpcomingCursor?.NextRunAt);
+        Add(command, "@UpcomingCursorScheduleId", upcomingCursorScheduleIdParameter);
         Add(command, "@OccurrenceTake", request.OccurrenceTake);
         Add(command, "@MaximumOccurrencePayloadBytes", request.MaximumOccurrencePayloadBytes);
         Add(command, "@DefinitionNamesJson", request.DefinitionNames is null

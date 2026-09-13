@@ -1017,6 +1017,13 @@ public sealed class WorkableHttpApiTests
         var defaultOccurrences = await client.GetAsync($"/workable/schedules/{scheduleId:D}/occurrences");
         var overview = await client.GetAsync(
             $"/workable/schedules/overview?selectedScheduleId={scheduleId:D}&recentTake=10&upcomingTake=10&occurrenceTake=10");
+        var overviewCursorTimestamp = DateTimeOffset.UtcNow;
+        var overviewWithCursors = await client.GetAsync(
+            "/workable/schedules/overview?recentTake=10&upcomingTake=10" +
+            $"&recentCursorCreatedAt={Uri.EscapeDataString(overviewCursorTimestamp.ToString("O"))}" +
+            $"&recentCursorScheduleId={scheduleId:D}" +
+            $"&upcomingCursorNextRunAt={Uri.EscapeDataString(overviewCursorTimestamp.ToString("O"))}" +
+            $"&upcomingCursorScheduleId={scheduleId:D}");
         var upcoming = await client.GetAsync("/workable/schedules/upcoming?take=10");
         var invalidId = await client.GetAsync("/workable/schedules/not-a-guid");
         var invalidOverviewId = await client.GetAsync(
@@ -1024,6 +1031,10 @@ public sealed class WorkableHttpApiTests
         var invalidOverviewRecentTake = await client.GetAsync("/workable/schedules/overview?recentTake=0");
         var invalidOverviewUpcomingTake = await client.GetAsync("/workable/schedules/overview?upcomingTake=0");
         var invalidOverviewOccurrenceTake = await client.GetAsync("/workable/schedules/overview?occurrenceTake=101");
+        var incompleteOverviewRecentCursor = await client.GetAsync(
+            "/workable/schedules/overview?recentCursorCreatedAt=2026-09-11T12%3A00%3A00Z");
+        var incompleteOverviewUpcomingCursor = await client.GetAsync(
+            "/workable/schedules/overview?upcomingCursorNextRunAt=2026-09-11T12%3A00%3A00Z");
         var invalidUpcomingTake = await client.GetAsync("/workable/schedules/upcoming?take=1001");
         var incompleteUpcomingCursor = await client.GetAsync(
             "/workable/schedules/upcoming?cursorNextRunAt=2026-09-11T12%3A00%3A00Z");
@@ -1066,6 +1077,7 @@ public sealed class WorkableHttpApiTests
             ?? throw new InvalidOperationException("Expected default occurrence JSON.");
         Assert.Single(defaultOccurrenceJson["occurrences"]!.AsArray());
         overview.EnsureSuccessStatusCode();
+        overviewWithCursors.EnsureSuccessStatusCode();
         var overviewJson = JsonNode.Parse(await overview.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected schedule overview JSON.");
         Assert.Single(overviewJson["recent"]!["schedules"]!.AsArray());
@@ -1088,6 +1100,8 @@ public sealed class WorkableHttpApiTests
         Assert.Equal(HttpStatusCode.BadRequest, invalidOverviewRecentTake.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, invalidOverviewUpcomingTake.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, invalidOverviewOccurrenceTake.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, incompleteOverviewRecentCursor.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, incompleteOverviewUpcomingCursor.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, invalidUpcomingTake.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, incompleteUpcomingCursor.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, invalidListTake.StatusCode);

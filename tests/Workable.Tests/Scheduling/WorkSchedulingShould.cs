@@ -785,6 +785,22 @@ public sealed class WorkSchedulingShould
         Assert.Equal(101, overview.Upcoming.ActiveScheduleCount);
         Assert.Equal(101, overview.Upcoming.UpcomingScheduleCount);
         Assert.NotNull(overview.Upcoming.Cursor);
+        Assert.NotNull(overview.Recent.Cursor);
+        var anchoredOverview = await ((IWorkScheduleStore)store).GetOverview(new(
+            WorkSystemName: null,
+            RecentScheduleTake: 100,
+            UpcomingScheduleTake: 100,
+            OccurrenceTake: 1,
+            RecentCursor: overview.Recent.Cursor,
+            UpcomingCursor: overview.Upcoming.Cursor));
+        Assert.Equal(100, anchoredOverview.Recent.Schedules.Count);
+        Assert.Single(anchoredOverview.Upcoming.Schedules);
+        Assert.DoesNotContain(
+            anchoredOverview.Recent.Schedules,
+            schedule => overview.Recent.Schedules.Any(first => first.Id == schedule.Id));
+        Assert.DoesNotContain(
+            anchoredOverview.Upcoming.Schedules,
+            schedule => overview.Upcoming.Schedules.Any(first => first.Id == schedule.Id));
         var next = await ((IWorkScheduleStore)store).ListUpcoming(new(
             WorkSystemName: null,
             Take: 100,
