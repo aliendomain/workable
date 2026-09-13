@@ -379,7 +379,7 @@ export function WorkableConsole() {
   const [iterationKeyValueFilter, setIterationKeyValueFilter] = useState("");
   const [iterationStatusFilter, setIterationStatusFilter] = useState<WorkCompletionStatus[]>([]);
   const [iterationsFilterOpen, setIterationsFilterOpen] = useState(false);
-  const usesPanelOwnedScroll = visibleView === "workers" || visibleView === "iterations" || visibleView === "schedules";
+  const usesPanelOwnedScroll = visibleView === "workers" || visibleView === "iterations";
   const [catalogScopeBySystemId, setCatalogScopeBySystemId] = useState<
     Record<string, OverviewScope | undefined>
   >({});
@@ -2474,11 +2474,7 @@ export function WorkableConsole() {
                           </ConsoleViewMount>
                         )}
                         {mountedViews.has("schedules") && (
-                          <ConsoleViewMount
-                            active={visibleView === "schedules"}
-                            fill
-                            scrollMode="panel"
-                          >
+                          <ConsoleViewMount active={visibleView === "schedules"}>
                             <SchedulesView
                               connection={hydratedConnection}
                               isLoadingTarget={visibleView === "schedules" || pendingView === "schedules"}

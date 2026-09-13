@@ -97,6 +97,13 @@ test("workable console restores an authenticated host, loads overview data, and 
 
     await result.click(result.getByRole("button", { name: "Schedules" }));
     await result.waitFor(() => result.getByText("No scheduled work is currently pending."));
+    const scheduleScrollShell = result.container.querySelector<HTMLElement>(
+      '[data-slot="sidebar-wrapper"]'
+    );
+    assert.ok(scheduleScrollShell);
+    assert.equal(scheduleScrollShell.classList.contains("min-h-svh"), true);
+    assert.equal(scheduleScrollShell.classList.contains("h-svh"), false);
+    assert.equal(scheduleScrollShell.classList.contains("overflow-hidden"), false);
 
     assert.equal(
       fetchMock.calls.some((call) => call.input === "/api/workable/host"),
@@ -115,7 +122,7 @@ test("workable console restores an authenticated host, loads overview data, and 
       true
     );
     assert.equal(
-      fetchMock.calls.some((call) => call.input === "/api/workable/systems/Ops/schedules?take=1000"),
+      fetchMock.calls.some((call) => call.input.startsWith("/api/workable/systems/Ops/schedules/overview?")),
       true
     );
     assert.deepEqual(
@@ -373,8 +380,19 @@ function installConsoleFetch(
       }));
     }
 
-    if (call.input === "/api/workable/systems/Ops/schedules?take=1000") {
-      return Response.json({ schedules: [] });
+    if (call.input.startsWith("/api/workable/systems/Ops/schedules/overview?")) {
+      return Response.json({
+        occurrences: [],
+        recent: { cursor: null, schedules: [] },
+        selectedSchedule: null,
+        upcoming: {
+          activeScheduleCount: 0,
+          cursor: null,
+          recurringScheduleCount: 0,
+          schedules: [],
+          upcomingScheduleCount: 0,
+        },
+      });
     }
 
     return Response.json(

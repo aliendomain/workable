@@ -220,6 +220,7 @@ public class BaselineSqlScheduleQueryBenchmarks
     private const string Scope = "schedule-query-benchmark";
     private SqlScheduleBenchmarkStore fixture = null!;
     private WorkScheduleCursor activePageCursor = null!;
+    private WorkScheduleId selectedScheduleId;
 
     [Params(1_000, 10_000)]
     public int RetainedScheduleCount { get; set; }
@@ -232,11 +233,12 @@ public class BaselineSqlScheduleQueryBenchmarks
     public void IterationSetup()
     {
         this.fixture.Reset().GetAwaiter().GetResult();
-        this.fixture.SeedSchedules(
+        var scheduleIds = this.fixture.SeedSchedules(
                 this.RetainedScheduleCount,
                 SqlScheduleSeedShape.Mixed)
             .GetAwaiter()
             .GetResult();
+        this.selectedScheduleId = scheduleIds[0];
         var cursorPage = this.fixture.Store.List(new(
                 SqlScheduleBenchmarkStore.SystemName,
                 Status: WorkScheduleStatus.Active,
@@ -267,6 +269,15 @@ public class BaselineSqlScheduleQueryBenchmarks
             Status: WorkScheduleStatus.Active,
             Take: WorkScheduleCriteria.MaximumTake,
             Cursor: this.activePageCursor));
+
+    [Benchmark]
+    public Task<WorkScheduleStoreOverviewResult> GetScheduleOverview()
+        => this.fixture.Store.GetOverview(new(
+            SqlScheduleBenchmarkStore.SystemName,
+            this.selectedScheduleId,
+            RecentScheduleTake: 100,
+            UpcomingScheduleTake: 100,
+            OccurrenceTake: 50));
 
     [GlobalCleanup]
     public void GlobalCleanup()

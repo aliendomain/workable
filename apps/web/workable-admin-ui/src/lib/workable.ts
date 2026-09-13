@@ -74,6 +74,26 @@ export type WorkScheduleQueryResult = {
   cursor?: WorkScheduleCursor | null;
 };
 
+export type WorkScheduleUpcomingCursor = {
+  nextRunAt: string;
+  scheduleId: { value: string };
+};
+
+export type WorkScheduleUpcomingQueryResult = {
+  schedules: WorkScheduleSummary[];
+  cursor?: WorkScheduleUpcomingCursor | null;
+  activeScheduleCount: number;
+  upcomingScheduleCount: number;
+  recurringScheduleCount: number;
+};
+
+export type WorkScheduleOverviewResult = {
+  recent: WorkScheduleQueryResult;
+  upcoming: WorkScheduleUpcomingQueryResult;
+  selectedSchedule?: WorkScheduleSummary | null;
+  occurrences: WorkScheduleOccurrence[];
+};
+
 export type WorkScheduleOccurrence = {
   occurrenceId: string;
   scheduleId: { value: string };

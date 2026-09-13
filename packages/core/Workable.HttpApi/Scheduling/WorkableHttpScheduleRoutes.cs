@@ -50,6 +50,102 @@ internal static class WorkableHttpScheduleRoutes
                 cancellationToken));
         });
 
+        group.MapGet("/schedules/upcoming", async (
+            int? take,
+            DateTimeOffset? cursorNextRunAt,
+            Guid? cursorScheduleId,
+            HttpContext httpContext,
+            WorkableHttpTopologyResolver topology,
+            IWorkRequestContextFactory requestContexts,
+            CancellationToken cancellationToken) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var resolvedTake = take ?? 100;
+            if (resolvedTake is < 1 or > WorkScheduleCriteria.MaximumTake)
+            {
+                return InvalidTake("Upcoming schedule take must be between one and 1000.");
+            }
+
+            if (cursorNextRunAt.HasValue != cursorScheduleId.HasValue)
+            {
+                return InvalidCursor();
+            }
+
+            var cursor = cursorNextRunAt is { } nextRunAt && cursorScheduleId is { } scheduleId
+                ? new WorkScheduleUpcomingCursor(nextRunAt, new(scheduleId))
+                : null;
+            var session = await WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                description: null,
+                cancellationToken);
+            return Results.Ok(await session.Schedules.ListUpcoming(
+                resolvedTake,
+                cursor,
+                cancellationToken));
+        });
+
+        group.MapGet("/schedules/overview", async (
+            string? selectedScheduleId,
+            int? recentTake,
+            int? upcomingTake,
+            int? occurrenceTake,
+            HttpContext httpContext,
+            WorkableHttpTopologyResolver topology,
+            IWorkRequestContextFactory requestContexts,
+            CancellationToken cancellationToken) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            WorkScheduleId? selected = null;
+            if (selectedScheduleId is not null)
+            {
+                if (!TryParseScheduleId(selectedScheduleId, out var parsed, out var invalid))
+                {
+                    return invalid;
+                }
+
+                selected = parsed;
+            }
+
+            var resolvedRecentTake = recentTake ?? 100;
+            if (resolvedRecentTake is < 1 or > WorkScheduleCriteria.MaximumTake)
+            {
+                return InvalidTake("Schedule overview recent take must be between one and 1000.");
+            }
+
+            var resolvedUpcomingTake = upcomingTake ?? 100;
+            if (resolvedUpcomingTake is < 1 or > WorkScheduleCriteria.MaximumTake)
+            {
+                return InvalidTake("Schedule overview upcoming take must be between one and 1000.");
+            }
+
+            var resolvedOccurrenceTake = occurrenceTake ?? 50;
+            if (resolvedOccurrenceTake is < 1 or > WorkScheduleOccurrenceReadRequest.MaximumTake)
+            {
+                return InvalidTake(
+                    $"Schedule overview occurrence take must be between one and {WorkScheduleOccurrenceReadRequest.MaximumTake}.");
+            }
+
+            var session = await WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                description: null,
+                cancellationToken);
+            return Results.Ok(await session.Schedules.GetOverview(
+                new(selected, resolvedRecentTake, resolvedUpcomingTake, resolvedOccurrenceTake),
+                cancellationToken));
+        });
+
         group.MapGet("/schedules/{scheduleId}", async (
             string scheduleId,
             HttpContext httpContext,

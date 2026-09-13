@@ -741,6 +741,98 @@ public sealed class WorkSchedulingShould
         Assert.Single(second.Schedules);
         Assert.Null(second.Cursor);
         Assert.Equal(ids.OrderBy(id => id.Value), first.Schedules.Concat(second.Schedules).Select(schedule => schedule.Id).OrderBy(id => id.Value));
+
+        Assert.NotNull(await store.Cancel(new(null, ids[2], DateTimeOffset.UtcNow, new WorkActor("canceler"))));
+        var overview = await system.Schedules.GetOverview(new(ids[2], RecentScheduleTake: 1, OccurrenceTake: 10));
+        Assert.Single(overview.Recent.Schedules);
+        Assert.Equal(2, overview.Upcoming.Schedules.Count);
+        Assert.Equal(ids[2], overview.SelectedSchedule!.Id);
+        Assert.Equal(WorkScheduleStatus.Canceled, overview.SelectedSchedule.Status);
+        Assert.Empty(overview.Occurrences);
+    }
+
+    [Fact]
+    public async Task PageTheUpcomingScheduleOverview()
+    {
+        var store = new InMemoryScheduleStore();
+        var createdAt = DateTimeOffset.UtcNow;
+        for (var index = 0; index <= 100; index++)
+        {
+            var record = ScheduleRecord(
+                "scheduled.overview-limit",
+                WorkScheduleTiming.Once(createdAt + TimeSpan.FromHours(1)),
+                new WorkActor("scheduler"),
+                WorkScheduleExecutionGrant.Unrestricted);
+            record = record with
+            {
+                Schedule = record.Schedule with
+                {
+                    CreatedAt = createdAt - TimeSpan.FromTicks(index),
+                },
+            };
+            Assert.Equal(
+                WorkScheduleStoreCreationStatus.Accepted,
+                await store.Create(LargeStoreRequest(record)));
+        }
+
+        var overview = await ((IWorkScheduleStore)store).GetOverview(new(
+            WorkSystemName: null,
+            RecentScheduleTake: 1,
+            UpcomingScheduleTake: 100,
+            OccurrenceTake: 1));
+
+        Assert.Equal(100, overview.Upcoming.Schedules.Count);
+        Assert.Equal(101, overview.Upcoming.ActiveScheduleCount);
+        Assert.Equal(101, overview.Upcoming.UpcomingScheduleCount);
+        Assert.NotNull(overview.Upcoming.Cursor);
+        var next = await ((IWorkScheduleStore)store).ListUpcoming(new(
+            WorkSystemName: null,
+            Take: 100,
+            Cursor: overview.Upcoming.Cursor));
+        Assert.Single(next.Schedules);
+        Assert.Equal(101, next.ActiveScheduleCount);
+    }
+
+    [Fact]
+    public async Task BoundTheDefaultUpcomingProviderFallback()
+    {
+        var store = new InMemoryScheduleStore();
+        var firstRunAt = DateTimeOffset.UtcNow + TimeSpan.FromDays(1);
+        for (var index = 0; index < WorkScheduleStoreUpcomingRequest.MaximumDefaultScanCount; index++)
+        {
+            var record = ScheduleRecord(
+                "scheduled.default-management-bound",
+                WorkScheduleTiming.Once(firstRunAt),
+                new WorkActor($"scheduler-{index}"),
+                WorkScheduleExecutionGrant.Unrestricted);
+            Assert.Equal(
+                WorkScheduleStoreCreationStatus.Accepted,
+                await store.Create(LargeStoreRequest(record)));
+        }
+
+        var maximumResult = await ((IWorkScheduleStore)store).ListUpcoming(new(
+            WorkSystemName: null,
+            Take: WorkScheduleStoreUpcomingRequest.MaximumDefaultScanCount));
+        Assert.Equal(WorkScheduleStoreUpcomingRequest.MaximumDefaultScanCount, maximumResult.Schedules.Count);
+        Assert.Equal(WorkScheduleStoreUpcomingRequest.MaximumDefaultScanCount, maximumResult.ActiveScheduleCount);
+
+        var overflowRecord = ScheduleRecord(
+            "scheduled.default-management-bound",
+            WorkScheduleTiming.Once(firstRunAt),
+            new WorkActor("overflow-scheduler"),
+            WorkScheduleExecutionGrant.Unrestricted);
+        Assert.Equal(
+            WorkScheduleStoreCreationStatus.Accepted,
+            await store.Create(LargeStoreRequest(overflowRecord)));
+
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            ((IWorkScheduleStore)store).ListUpcoming(new(WorkSystemName: null)));
+
+        Assert.Contains(
+            $"at most {WorkScheduleStoreUpcomingRequest.MaximumDefaultScanCount}",
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.Contains("Override IWorkScheduleStore.ListUpcoming", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -886,6 +978,11 @@ public sealed class WorkSchedulingShould
                 "plain",
                 WorkScheduleTiming.Once(DateTimeOffset.UtcNow)));
             Assert.Equal(WorkScheduleCreationStatus.Unavailable, unavailable.Status);
+            var overview = await unavailableSystem.Schedules.GetOverview();
+            Assert.Empty(overview.Recent.Schedules);
+            Assert.Empty(overview.Upcoming.Schedules);
+            Assert.Null(overview.SelectedSchedule);
+            Assert.Empty(overview.Occurrences);
         }
 
         var store = new InMemoryScheduleStore();
@@ -905,6 +1002,14 @@ public sealed class WorkSchedulingShould
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => system.Schedules.GetOverview(
+            new(RecentScheduleTake: 0)));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => system.Schedules.GetOverview(
+            new(UpcomingScheduleTake: 0)));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => system.Schedules.ListUpcoming(0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => system.Schedules.GetOverview(
+            new(OccurrenceTake: WorkScheduleOccurrenceReadRequest.MaximumTake + 1)));
 
         var blank = await system.Schedules.Create(new WorkScheduleRequest(
             " ",
@@ -1148,6 +1253,10 @@ public sealed class WorkSchedulingShould
             isAuthenticated: true));
         var schedules = await reader.Schedules.List();
         var hiddenByName = await reader.Schedules.List(new(DefinitionName: "scheduled.hidden"));
+        var overview = await reader.Schedules.GetOverview(new(
+            hidden.Schedule.Id,
+            RecentScheduleTake: 1,
+            OccurrenceTake: 10));
 
         Assert.Equal("scheduled.visible", Assert.Single(schedules.Schedules).DefinitionName);
         Assert.Empty(hiddenByName.Schedules);
@@ -1155,6 +1264,24 @@ public sealed class WorkSchedulingShould
         Assert.Null(await reader.Schedules.Get(hidden.Schedule.Id));
         Assert.Single((await reader.Schedules.ListOccurrences(visible.Schedule.Id)).Occurrences);
         Assert.Empty((await reader.Schedules.ListOccurrences(hidden.Schedule.Id)).Occurrences);
+        Assert.Equal("scheduled.visible", Assert.Single(overview.Recent.Schedules).DefinitionName);
+        Assert.Empty(overview.Upcoming.Schedules);
+        Assert.Equal(visible.Schedule.Id, overview.SelectedSchedule!.Id);
+        Assert.Single(overview.Occurrences);
+
+        groups.Groups = new HashSet<string>();
+        var noAccessReader = await system.CreateSession(WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("no-access-reader"),
+            isAuthenticated: true));
+        var hiddenOverview = await noAccessReader.Schedules.GetOverview();
+        var hiddenUpcoming = await noAccessReader.Schedules.ListUpcoming();
+        Assert.Empty(hiddenOverview.Recent.Schedules);
+        Assert.Empty(hiddenOverview.Upcoming.Schedules);
+        Assert.Null(hiddenOverview.SelectedSchedule);
+        Assert.Empty(hiddenOverview.Occurrences);
+        Assert.Empty(hiddenUpcoming.Schedules);
+        Assert.Equal(0, hiddenUpcoming.ActiveScheduleCount);
     }
 
     [Fact]
@@ -1214,11 +1341,158 @@ public sealed class WorkSchedulingShould
 
         var result = await reader.Schedules.List(new(Take: 1));
         var continued = await reader.Schedules.List(new(Take: 1, Cursor: result.Cursor));
+        var upcoming = await reader.Schedules.ListUpcoming(take: 1);
+        var continuedUpcoming = await reader.Schedules.ListUpcoming(1, upcoming.Cursor);
 
         Assert.Equal("scheduled.visible-window", Assert.Single(result.Schedules).DefinitionName);
         Assert.NotNull(result.Cursor);
         Assert.Equal("scheduled.visible-window", Assert.Single(continued.Schedules).DefinitionName);
         Assert.Null(continued.Cursor);
+        Assert.Equal("scheduled.visible-window", Assert.Single(upcoming.Schedules).DefinitionName);
+        Assert.Equal(2, upcoming.ActiveScheduleCount);
+        Assert.NotNull(upcoming.Cursor);
+        Assert.Equal("scheduled.visible-window", Assert.Single(continuedUpcoming.Schedules).DefinitionName);
+        Assert.Null(continuedUpcoming.Cursor);
+    }
+
+    [Fact]
+    public async Task BindOverviewOccurrencesToTheAuthorizedSelectedSchedule()
+    {
+        var inner = new InMemoryScheduleStore();
+        var store = new FaultInjectingScheduleStore(inner);
+        var groups = new MutableGroupProvider(new HashSet<string> { "visible-readers" });
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddSingleton<IWorkAuthorizationGroupProvider>(groups)
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization()
+                .EnableScheduling()
+                .AddWork(
+                    WorkDefinition.Create("scheduled.visible-overview"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configure: null,
+                    authorize: authorization => authorization.AllowReadToGroups("visible-readers"))
+                .AddWork(
+                    WorkDefinition.Create("scheduled.hidden-overview"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configure: null,
+                    authorize: authorization => authorization.AllowReadToGroups("hidden-readers")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var firstRunAt = DateTimeOffset.UtcNow + TimeSpan.FromDays(1);
+        var visible = ScheduleRecord(
+            "scheduled.visible-overview",
+            WorkScheduleTiming.Once(firstRunAt),
+            new WorkActor("visible-creator"),
+            WorkScheduleExecutionGrant.Unrestricted);
+        var hidden = ScheduleRecord(
+            "scheduled.hidden-overview",
+            WorkScheduleTiming.Once(firstRunAt),
+            new WorkActor("hidden-creator"),
+            WorkScheduleExecutionGrant.Unrestricted);
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await inner.Create(LargeStoreRequest(visible)));
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await inner.Create(LargeStoreRequest(hidden)));
+        var summaries = await inner.List(new(WorkSystemName: null, Take: 10));
+        var visibleSummary = Assert.Single(summaries, schedule => schedule.Id == visible.Schedule.Id);
+        var attemptedAt = DateTimeOffset.UtcNow;
+        var hiddenOccurrence = new WorkScheduleOccurrence(
+            Guid.NewGuid(),
+            hidden.Schedule.Id,
+            firstRunAt,
+            attemptedAt,
+            WorkScheduleOccurrenceStatus.Accepted,
+            QueueStatus: null,
+            WorkerId: null,
+            Messages: [],
+            ExpiresAt: attemptedAt + TimeSpan.FromDays(1));
+        var visibleOccurrence = hiddenOccurrence with
+        {
+            OccurrenceId = Guid.NewGuid(),
+            ScheduleId = visible.Schedule.Id,
+        };
+        store.OverviewResultOverride = new(
+            new([visibleSummary]),
+            new([visibleSummary], null, 1, 1, 0),
+            visibleSummary,
+            [hiddenOccurrence, visibleOccurrence]);
+        var reader = await system.CreateSession(WorkRequestContext.Create(
+            WorkInvocationChannel.InProcess,
+            new WorkActor("visible-reader"),
+            isAuthenticated: true));
+
+        var overview = await reader.Schedules.GetOverview(new(
+            visible.Schedule.Id,
+            OccurrenceTake: 1));
+
+        Assert.Equal(visible.Schedule.Id, overview.SelectedSchedule!.Id);
+        Assert.Equal(visibleOccurrence, Assert.Single(overview.Occurrences));
+    }
+
+    [Fact]
+    public async Task BoundOverviewCollectionsReturnedByCustomProviders()
+    {
+        var inner = new InMemoryScheduleStore();
+        var store = new FaultInjectingScheduleStore(inner);
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddWorkableSystem(builder => builder
+                .RequireAuthorization(false)
+                .EnableScheduling()
+                .AddWork(
+                    WorkDefinition.Create("scheduled.overview-provider-bound"),
+                    (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var firstRunAt = DateTimeOffset.UtcNow + TimeSpan.FromDays(1);
+        var first = ScheduleRecord(
+            "scheduled.overview-provider-bound",
+            WorkScheduleTiming.Once(firstRunAt),
+            new WorkActor("first-creator"),
+            WorkScheduleExecutionGrant.Unrestricted);
+        var second = ScheduleRecord(
+            "scheduled.overview-provider-bound",
+            WorkScheduleTiming.Once(firstRunAt),
+            new WorkActor("second-creator"),
+            WorkScheduleExecutionGrant.Unrestricted);
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await inner.Create(LargeStoreRequest(first)));
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await inner.Create(LargeStoreRequest(second)));
+        var summaries = await inner.List(new(WorkSystemName: null, Take: 10));
+        Assert.Equal(2, summaries.Count);
+        var selected = summaries[0];
+        var attemptedAt = DateTimeOffset.UtcNow;
+        var firstOccurrence = new WorkScheduleOccurrence(
+            Guid.NewGuid(),
+            selected.Id,
+            firstRunAt,
+            attemptedAt,
+            WorkScheduleOccurrenceStatus.Accepted,
+            QueueStatus: null,
+            WorkerId: null,
+            Messages: [],
+            ExpiresAt: attemptedAt + TimeSpan.FromDays(1));
+        var secondOccurrence = firstOccurrence with { OccurrenceId = Guid.NewGuid() };
+        var unrelatedOccurrence = firstOccurrence with
+        {
+            OccurrenceId = Guid.NewGuid(),
+            ScheduleId = summaries[1].Id,
+        };
+        store.OverviewResultOverride = new(
+            new(summaries),
+            new(summaries, null, 2, 2, 0),
+            selected,
+            [unrelatedOccurrence, firstOccurrence, secondOccurrence]);
+
+        var overview = await system.Schedules.GetOverview(new(
+            selected.Id,
+            RecentScheduleTake: 1,
+            UpcomingScheduleTake: 1,
+            OccurrenceTake: 1));
+
+        Assert.Equal(summaries[0], Assert.Single(overview.Recent.Schedules));
+        Assert.Equal(summaries[0], Assert.Single(overview.Upcoming.Schedules));
+        Assert.Equal(firstOccurrence, Assert.Single(overview.Occurrences));
     }
 
     [Fact]
@@ -2960,6 +3234,8 @@ public sealed class WorkSchedulingShould
 
         public int CleanupCalls => Volatile.Read(ref this.cleanupCalls);
 
+        public WorkScheduleStoreOverviewResult? OverviewResultOverride { get; set; }
+
         public Task Initialize(WorkScheduleStoreInitializationContext context, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref this.initializeCalls);
@@ -2985,6 +3261,13 @@ public sealed class WorkSchedulingShould
             WorkScheduleStoreListRequest request,
             CancellationToken cancellationToken = default)
             => this.Inner.List(request, cancellationToken);
+
+        public Task<WorkScheduleStoreOverviewResult> GetOverview(
+            WorkScheduleStoreOverviewRequest request,
+            CancellationToken cancellationToken = default)
+            => this.OverviewResultOverride is { } result
+                ? Task.FromResult(result)
+                : ((IWorkScheduleStore)this.Inner).GetOverview(request, cancellationToken);
 
         public Task<WorkSchedulePersistenceRecord?> Cancel(
             WorkScheduleStoreCancelRequest request,

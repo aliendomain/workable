@@ -320,6 +320,99 @@ internal sealed class WorkScheduler : IWorkScheduler, IDisposable
         return new(page, new WorkScheduleCursor(last.CreatedAt, last.Id));
     }
 
+    public Task<WorkScheduleUpcomingQueryResult> ListUpcoming(
+        int take = 100,
+        WorkScheduleUpcomingCursor? cursor = null,
+        CancellationToken cancellationToken = default)
+        => this.ListUpcoming(take, cursor, definitionNames: null, cancellationToken);
+
+    internal async Task<WorkScheduleUpcomingQueryResult> ListUpcoming(
+        int take,
+        WorkScheduleUpcomingCursor? cursor,
+        IReadOnlySet<string>? definitionNames,
+        CancellationToken cancellationToken)
+    {
+        ValidateTake(take, nameof(take));
+        if (!this.IsAvailable)
+        {
+            return new([], null, 0, 0, 0);
+        }
+
+        var result = await this.store!.ListUpcoming(
+            new(this.systemName, take + 1, cursor, definitionNames),
+            cancellationToken);
+        if (result.Schedules.Count <= take)
+        {
+            return new(
+                result.Schedules,
+                null,
+                result.ActiveScheduleCount,
+                result.UpcomingScheduleCount,
+                result.RecurringScheduleCount);
+        }
+
+        var page = result.Schedules.Take(take).ToArray();
+        var last = page[^1];
+        return new(
+            page,
+            new(last.NextRunAt!.Value, last.Id),
+            result.ActiveScheduleCount,
+            result.UpcomingScheduleCount,
+            result.RecurringScheduleCount);
+    }
+
+    public Task<WorkScheduleOverviewResult> GetOverview(
+        WorkScheduleOverviewCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+        => this.GetOverview(criteria, definitionNames: null, cancellationToken);
+
+    internal async Task<WorkScheduleOverviewResult> GetOverview(
+        WorkScheduleOverviewCriteria? criteria,
+        IReadOnlySet<string>? definitionNames,
+        CancellationToken cancellationToken)
+    {
+        criteria ??= new WorkScheduleOverviewCriteria();
+        ValidateTake(criteria.RecentScheduleTake, nameof(criteria.RecentScheduleTake));
+        ValidateTake(criteria.UpcomingScheduleTake, nameof(criteria.UpcomingScheduleTake));
+        ValidateTake(
+            criteria.OccurrenceTake,
+            nameof(criteria.OccurrenceTake),
+            WorkScheduleOccurrenceReadRequest.MaximumTake);
+        if (!this.IsAvailable)
+        {
+            return new(new([]), new([], null, 0, 0, 0), null, []);
+        }
+
+        var result = await this.store!.GetOverview(
+            new(
+                this.systemName,
+                criteria.SelectedScheduleId,
+                criteria.RecentScheduleTake,
+                criteria.UpcomingScheduleTake,
+                criteria.OccurrenceTake,
+                this.configuration.MaximumOccurrenceQueryPayloadBytes,
+                definitionNames),
+            cancellationToken);
+        var selected = result.SelectedSchedule;
+        var occurrences = selected is null
+            ? []
+            : result.Occurrences
+                .Where(occurrence => occurrence.ScheduleId == selected.Id)
+                .Take(criteria.OccurrenceTake)
+                .ToArray();
+        return new(
+            result.Recent with
+            {
+                Schedules = result.Recent.Schedules.Take(criteria.RecentScheduleTake).ToArray(),
+            },
+            result.Upcoming with
+            {
+                Schedules = result.Upcoming.Schedules.Take(criteria.UpcomingScheduleTake).ToArray(),
+            },
+            selected,
+            occurrences);
+    }
+
     public async Task<WorkScheduleOccurrenceQueryResult> ListOccurrences(
         WorkScheduleId scheduleId,
         int take = 100,

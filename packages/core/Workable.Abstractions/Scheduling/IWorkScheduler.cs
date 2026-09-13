@@ -37,6 +37,21 @@ public interface IWorkScheduler
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Lists readable active schedules with a next execution, ordered by due time.
+    /// </summary>
+    Task<WorkScheduleUpcomingQueryResult> ListUpcoming(
+        int take = 100,
+        WorkScheduleUpcomingCursor? cursor = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the bounded schedule-management page in one store operation.
+    /// </summary>
+    Task<WorkScheduleOverviewResult> GetOverview(
+        WorkScheduleOverviewCriteria? criteria = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists retained dispatch occurrences for a readable schedule.
     /// </summary>
     Task<WorkScheduleOccurrenceQueryResult> ListOccurrences(

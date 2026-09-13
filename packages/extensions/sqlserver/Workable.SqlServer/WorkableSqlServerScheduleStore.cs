@@ -323,6 +323,256 @@ ORDER BY CreatedAt DESC, ScheduleId;
         return schedules;
     }
 
+    public async Task<WorkScheduleStoreUpcomingResult> ListUpcoming(
+        WorkScheduleStoreUpcomingRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        await using var connection = await this.Open(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = RequiredDmlSetOptions + $"""
+SELECT COUNT(1),
+       COUNT(CASE WHEN NextRunAt IS NOT NULL THEN 1 END),
+       COUNT(CASE WHEN JSON_VALUE(TimingJson, '$.interval') IS NOT NULL OR
+           JSON_VALUE(TimingJson, '$.cronExpression') IS NOT NULL THEN 1 END)
+FROM {this.schedulesTable}
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName
+  AND Status = N'Active'
+  AND (@DefinitionNamesJson IS NULL OR DefinitionName IN (
+      SELECT [value] FROM OPENJSON(@DefinitionNamesJson)));
+
+SELECT TOP (@Take) {ScheduleSummaryColumnList}
+FROM {this.schedulesTable}
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName
+  AND Status = N'Active'
+  AND NextRunAt IS NOT NULL
+  AND (@DefinitionNamesJson IS NULL OR DefinitionName IN (
+      SELECT [value] FROM OPENJSON(@DefinitionNamesJson)))
+  AND (@CursorNextRunAt IS NULL OR NextRunAt > @CursorNextRunAt OR
+      (NextRunAt = @CursorNextRunAt AND ScheduleId > @CursorScheduleId))
+ORDER BY NextRunAt, ScheduleId;
+""";
+        AddScope(command, request.WorkSystemName);
+        Add(command, "@Take", request.Take);
+        Add(command, "@CursorNextRunAt", request.Cursor?.NextRunAt);
+        Add(command, "@CursorScheduleId", request.Cursor?.ScheduleId.Value);
+        Add(command, "@DefinitionNamesJson", request.DefinitionNames is null
+            ? null
+            : Serialize(request.DefinitionNames));
+        var schedules = new List<WorkScheduleSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var activeScheduleCount = 0;
+        var upcomingScheduleCount = 0;
+        var recurringScheduleCount = 0;
+        if (await reader.ReadAsync(cancellationToken))
+        {
+            activeScheduleCount = reader.GetInt32(0);
+            upcomingScheduleCount = reader.GetInt32(1);
+            recurringScheduleCount = reader.GetInt32(2);
+        }
+
+        await reader.NextResultAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            schedules.Add(ReadScheduleSummary(reader));
+        }
+
+        return new(
+            schedules,
+            activeScheduleCount,
+            upcomingScheduleCount,
+            recurringScheduleCount);
+    }
+
+    public async Task<WorkScheduleStoreOverviewResult> GetOverview(
+        WorkScheduleStoreOverviewRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        await using var connection = await this.Open(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = RequiredDmlSetOptions + $"""
+DECLARE @RecentScheduleIds TABLE
+(
+    ScheduleId uniqueidentifier NOT NULL PRIMARY KEY,
+    CreatedAt datetimeoffset NOT NULL
+);
+DECLARE @UpcomingScheduleIds TABLE
+(
+    ScheduleId uniqueidentifier NOT NULL PRIMARY KEY,
+    NextRunAt datetimeoffset NOT NULL
+);
+
+INSERT INTO @RecentScheduleIds (ScheduleId, CreatedAt)
+SELECT TOP (@RecentScheduleTake + 1) ScheduleId, CreatedAt
+FROM {this.schedulesTable}
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName
+  AND (@DefinitionNamesJson IS NULL OR DefinitionName IN (
+      SELECT [value] FROM OPENJSON(@DefinitionNamesJson)))
+ORDER BY CreatedAt DESC, ScheduleId;
+
+INSERT INTO @UpcomingScheduleIds (ScheduleId, NextRunAt)
+SELECT TOP (@UpcomingScheduleTake + 1) ScheduleId, NextRunAt
+FROM {this.schedulesTable} schedules
+WHERE schedules.PersistenceScope = @PersistenceScope
+  AND schedules.WorkSystemName = @WorkSystemName
+  AND schedules.Status = N'Active'
+  AND schedules.NextRunAt IS NOT NULL
+  AND (@DefinitionNamesJson IS NULL OR schedules.DefinitionName IN (
+      SELECT [value] FROM OPENJSON(@DefinitionNamesJson)))
+ORDER BY schedules.NextRunAt, schedules.ScheduleId;
+
+DECLARE @ResolvedScheduleId uniqueidentifier =
+(
+    SELECT TOP (1) schedules.ScheduleId
+    FROM {this.schedulesTable} schedules
+    WHERE @SelectedScheduleId IS NOT NULL
+      AND schedules.PersistenceScope = @PersistenceScope
+      AND schedules.WorkSystemName = @WorkSystemName
+      AND schedules.ScheduleId = @SelectedScheduleId
+      AND (@DefinitionNamesJson IS NULL OR schedules.DefinitionName IN (
+          SELECT [value] FROM OPENJSON(@DefinitionNamesJson)))
+);
+IF @ResolvedScheduleId IS NULL
+BEGIN
+    SELECT TOP (1) @ResolvedScheduleId = ScheduleId
+    FROM @RecentScheduleIds
+    ORDER BY CreatedAt DESC, ScheduleId;
+END;
+
+SELECT @ResolvedScheduleId,
+       COUNT(1),
+       COUNT(CASE WHEN NextRunAt IS NOT NULL THEN 1 END),
+       COUNT(CASE WHEN JSON_VALUE(TimingJson, '$.interval') IS NOT NULL OR
+           JSON_VALUE(TimingJson, '$.cronExpression') IS NOT NULL THEN 1 END)
+FROM {this.schedulesTable}
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = @WorkSystemName
+  AND Status = N'Active'
+  AND (@DefinitionNamesJson IS NULL OR DefinitionName IN (
+      SELECT [value] FROM OPENJSON(@DefinitionNamesJson)));
+
+SELECT {ScheduleSummaryColumnListWithAlias}
+FROM {this.schedulesTable} schedules
+INNER JOIN @RecentScheduleIds recent ON recent.ScheduleId = schedules.ScheduleId
+ORDER BY schedules.CreatedAt DESC, schedules.ScheduleId;
+
+SELECT {ScheduleSummaryColumnListWithAlias}
+FROM {this.schedulesTable} schedules
+INNER JOIN @UpcomingScheduleIds upcoming ON upcoming.ScheduleId = schedules.ScheduleId
+ORDER BY schedules.NextRunAt, schedules.ScheduleId;
+
+SELECT {ScheduleSummaryColumnListWithAlias}
+FROM {this.schedulesTable} schedules
+WHERE schedules.ScheduleId = @ResolvedScheduleId;
+
+;WITH OrderedOccurrences AS
+(
+    SELECT TOP (@OccurrenceTake)
+           occurrences.OccurrenceId, occurrences.ScheduleId, occurrences.ScheduledAt,
+           occurrences.AttemptedAt, occurrences.Status, occurrences.QueueStatus,
+           occurrences.WorkerId, occurrences.MessagesJson, occurrences.ExpiresAt,
+           ROW_NUMBER() OVER (
+               ORDER BY occurrences.AttemptedAt DESC, occurrences.OccurrenceId) AS ResultSequence,
+           SUM(occurrences.PayloadSizeBytes) OVER (
+               ORDER BY occurrences.AttemptedAt DESC, occurrences.OccurrenceId
+               ROWS UNBOUNDED PRECEDING) AS RunningPayloadBytes
+    FROM {this.occurrencesTable} occurrences
+    INNER JOIN {this.schedulesTable} schedules ON schedules.ScheduleId = occurrences.ScheduleId
+    WHERE schedules.PersistenceScope = @PersistenceScope
+      AND schedules.WorkSystemName = @WorkSystemName
+      AND occurrences.ScheduleId = @ResolvedScheduleId
+      AND occurrences.ExpiresAt > @Now
+    ORDER BY occurrences.AttemptedAt DESC, occurrences.OccurrenceId
+)
+SELECT OccurrenceId, ScheduleId, ScheduledAt, AttemptedAt, Status, QueueStatus,
+       WorkerId, MessagesJson, ExpiresAt
+FROM OrderedOccurrences
+WHERE RunningPayloadBytes <= @MaximumOccurrencePayloadBytes
+   OR ResultSequence = 1
+ORDER BY AttemptedAt DESC, OccurrenceId;
+""";
+        AddScope(command, request.WorkSystemName);
+        Add(command, "@SelectedScheduleId", request.SelectedScheduleId?.Value);
+        Add(command, "@RecentScheduleTake", request.RecentScheduleTake);
+        Add(command, "@UpcomingScheduleTake", request.UpcomingScheduleTake);
+        Add(command, "@OccurrenceTake", request.OccurrenceTake);
+        Add(command, "@MaximumOccurrencePayloadBytes", request.MaximumOccurrencePayloadBytes);
+        Add(command, "@DefinitionNamesJson", request.DefinitionNames is null
+            ? null
+            : Serialize(request.DefinitionNames));
+        Add(command, "@Now", DateTimeOffset.UtcNow);
+
+        WorkScheduleId? selectedScheduleId = null;
+        var activeScheduleCount = 0;
+        var upcomingScheduleCount = 0;
+        var recurringScheduleCount = 0;
+        var recentSchedules = new List<WorkScheduleSummary>();
+        var upcomingSchedules = new List<WorkScheduleSummary>();
+        WorkScheduleSummary? selectedSchedule = null;
+        var occurrences = new List<WorkScheduleOccurrence>();
+        try
+        {
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    selectedScheduleId = new(reader.GetGuid(0));
+                }
+
+                activeScheduleCount = reader.GetInt32(1);
+                upcomingScheduleCount = reader.GetInt32(2);
+                recurringScheduleCount = reader.GetInt32(3);
+            }
+
+            await reader.NextResultAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                recentSchedules.Add(ReadScheduleSummary(reader));
+            }
+
+            await reader.NextResultAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                upcomingSchedules.Add(ReadScheduleSummary(reader));
+            }
+
+            await reader.NextResultAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                selectedSchedule = ReadScheduleSummary(reader);
+            }
+
+            await reader.NextResultAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                occurrences.Add(ReadOccurrence(reader));
+            }
+
+            return new(
+                CreateRecentPage(recentSchedules, request.RecentScheduleTake),
+                CreateUpcomingPage(
+                    upcomingSchedules,
+                    request.UpcomingScheduleTake,
+                    activeScheduleCount,
+                    upcomingScheduleCount,
+                    recurringScheduleCount),
+                selectedScheduleId is null ? null : selectedSchedule,
+                occurrences);
+        }
+        catch (SqlException exception) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(
+                "The SQL Server schedule overview query was canceled.",
+                exception,
+                cancellationToken);
+        }
+    }
+
     public async Task<WorkSchedulePersistenceRecord?> Cancel(
         WorkScheduleStoreCancelRequest request,
         CancellationToken cancellationToken = default)
@@ -907,6 +1157,47 @@ SELECT @DeletedScheduleCount;
             DeserializeOptional<WorkActor>(reader, 10));
     }
 
+    private static WorkScheduleQueryResult CreateRecentPage(
+        IReadOnlyList<WorkScheduleSummary> schedules,
+        int take)
+    {
+        if (schedules.Count <= take)
+        {
+            return new(schedules);
+        }
+
+        var page = schedules.Take(take).ToArray();
+        var last = page[^1];
+        return new(page, new(last.CreatedAt, last.Id));
+    }
+
+    private static WorkScheduleUpcomingQueryResult CreateUpcomingPage(
+        IReadOnlyList<WorkScheduleSummary> schedules,
+        int take,
+        int activeScheduleCount,
+        int upcomingScheduleCount,
+        int recurringScheduleCount)
+    {
+        if (schedules.Count <= take)
+        {
+            return new(
+                schedules,
+                null,
+                activeScheduleCount,
+                upcomingScheduleCount,
+                recurringScheduleCount);
+        }
+
+        var page = schedules.Take(take).ToArray();
+        var last = page[^1];
+        return new(
+            page,
+            new(last.NextRunAt!.Value, last.Id),
+            activeScheduleCount,
+            upcomingScheduleCount,
+            recurringScheduleCount);
+    }
+
     private static WorkScheduleOccurrence ReadOccurrence(DbDataReader reader)
         => new(
             reader.GetGuid(0),
@@ -964,6 +1255,12 @@ CanceledAt, CanceledByJson, ExecutionGrantJson, PayloadSizeBytes
     private const string ScheduleSummaryColumnList = """
 ScheduleId, WorkSystemName, DefinitionName, TimingJson, Status, CreatedAt, NextRunAt,
 LastRunAt, CanceledAt, CreatedByJson, CanceledByJson
+""";
+
+    private const string ScheduleSummaryColumnListWithAlias = """
+schedules.ScheduleId, schedules.WorkSystemName, schedules.DefinitionName, schedules.TimingJson,
+schedules.Status, schedules.CreatedAt, schedules.NextRunAt, schedules.LastRunAt,
+schedules.CanceledAt, schedules.CreatedByJson, schedules.CanceledByJson
 """;
 
     private const string OutputScheduleColumnList = """

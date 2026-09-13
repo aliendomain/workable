@@ -326,18 +326,6 @@ IF NOT EXISTS (
     INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
     WHERE schemas.name = N'workable'
       AND tables.name = N'WorkSchedules'
-      AND indexes.name = N'IX_WorkableWorkSchedules_ActiveList')
-BEGIN
-    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_ActiveList ON [workable].[WorkSchedules] (PersistenceScope, WorkSystemName, Status, CreatedAt DESC, ScheduleId);');
-END
-GO
-
-IF NOT EXISTS (
-    SELECT 1 FROM sys.indexes indexes
-    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
-    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
-    WHERE schemas.name = N'workable'
-      AND tables.name = N'WorkSchedules'
       AND indexes.name = N'IX_WorkableWorkSchedules_RetainedCreator')
 BEGIN
     EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_RetainedCreator ON [workable].[WorkSchedules] (PersistenceScope, WorkSystemName, CreatedByKey, ScheduleId) INCLUDE (PayloadSizeBytes);');
@@ -377,6 +365,18 @@ IF NOT EXISTS (
       AND indexes.name = N'IX_WorkableWorkScheduleOccurrences_Expiration')
 BEGIN
     EXEC(N'CREATE INDEX IX_WorkableWorkScheduleOccurrences_Expiration ON [workable].[WorkScheduleOccurrences] (OccurrenceUsageId, ExpiresAt, OccurrenceId) INCLUDE (PayloadSizeBytes);');
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'workable'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_ActiveList')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_ActiveList ON [workable].[WorkSchedules] (PersistenceScope, WorkSystemName, Status, CreatedAt DESC, ScheduleId);');
 END
 GO
 
@@ -765,7 +765,7 @@ WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Comp
 GO
 
 MERGE [workable].[SchemaVersion] WITH (HOLDLOCK) AS target
-USING (SELECT N'Scheduling' AS Component, 1 AS Version) AS source
+USING (SELECT N'Scheduling' AS Component, 2 AS Version) AS source
 ON target.Component = source.Component
 WHEN MATCHED THEN UPDATE SET Version = source.Version, UpdatedAt = SYSDATETIMEOFFSET()
 WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Component, source.Version, SYSDATETIMEOFFSET());
