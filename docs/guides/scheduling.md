@@ -25,7 +25,7 @@ services.AddWorkableSystem(builder => builder
 
 `HistoryRetention` controls retained schedule-dispatch occurrences and terminal schedule records, defaults to one day, and must be between one minute and seven days. Active schedules are retained until they complete or are canceled. Scheduling accepts at most 1,000 active schedules per work system, 100 per definition, and 250 per creator id by default.
 
-`UseScheduling(...)` also configures denial-of-service bounds for active and terminal records. The defaults are 10,000 retained schedules per system, 2,000 per creator id, 1 MiB for one serialized schedule, 256 MiB retained per system, and 64 MiB retained per creator id. Schedule admission reserves a small, fixed part of each record's byte budget for the bounded cancellation identity; successful cancellation replaces that reserve, while another terminal transition releases it. Cancellation therefore cannot grow retained storage beyond the quota accepted at creation. Occurrence history is independently bounded to 100,000 records, 64 KiB of messages per occurrence, and 64 MiB of occurrence messages per system. Each scheduler host claims and concurrently dispatches at most 25 schedules and 8 MiB of serialized schedule payload in one batch, then immediately claims another batch while due work remains. The one-second fallback poll is used only while idle so schedules committed by another process are discovered even without an in-process notification. An occurrence-history query returns at most 100 rows and 4 MiB of retained messages. When an occurrence would cross its rolling count or byte budget, the oldest occurrences are removed atomically before the new one is inserted. Canceled and completed schedules continue counting until `HistoryRetention` cleanup removes them, so repeated create/cancel operations cannot bypass admission limits. Cleanup drains as many as ten 1,000-row batches per minute. Limits must be positive, the per-occurrence payload limit must be at least two bytes for an empty JSON array when larger messages must be omitted, the claim budget cannot be smaller than one schedule, and the occurrence-query budget cannot be smaller than one occurrence. Admission and occurrence trimming are atomic in the SQL store even when several hosts act concurrently:
+`UseScheduling(...)` provides additional limits for retained schedules, serialized schedule data, occurrence history, dispatch batches, and occurrence queries. The defaults retain at most 10,000 schedules and 100,000 occurrences per system, with lower per-creator and payload-size limits. Completed and canceled schedules continue to count toward retained limits until `HistoryRetention` expires. When occurrence-history limits are reached, the oldest occurrences are removed first. All configured limits must be positive and large enough to accept at least one valid item:
 
 ```csharp
 builder.UseScheduling(new WorkSystemSchedulingConfiguration
@@ -89,7 +89,7 @@ var weekdays = await session.Schedules.Create(
     cancellationToken);
 ```
 
-The built-in HTTP adapter exposes `POST /workable/work/{definitionName}/schedules`, and the admin UI surfaces it through **Schedule** in the queue dialog whenever host discovery reports `schedulingAvailable`. The dialog supports a local first-run date and time, intervals in minutes, hours, or days, and five-field cron expressions with an explicit IANA time zone. Cron input is checked by the server and the dialog previews the next five occurrences before creation. It reuses the same input and worker-option form as immediate queueing. The system tree's **Schedules** screen lists upcoming active work plus the 1,000 most recently created retained schedules, displays recent dispatch history, links accepted dispatches to their workers, and supports creating or canceling schedules. When retained history fills that recent window, the screen follows the active query's continuation cursor through bounded pages so every active schedule remains visible and cancelable even when the configured active limit exceeds 1,000.
+The built-in HTTP adapter exposes `POST /workable/work/{definitionName}/schedules`. The admin UI provides the same capability through **Schedule** in the queue dialog and lets authorized users inspect upcoming and retained schedules, review dispatch history, and cancel active schedules.
 
 Use intervals for elapsed-time requirements such as “every 90 minutes from the first run.” Interval schedules must recur no more frequently than once per minute. Use cron for calendar requirements such as “09:00 every weekday.” `FirstRunAt` is the actual first due instant for one-time and interval schedules. For cron schedules it is the earliest eligible instant; the first matching calendar occurrence on or after that instant becomes `NextRunAt`. An interval and cron expression are mutually exclusive.
 
@@ -133,7 +133,7 @@ A recurring runtime schedule cannot be created for work whose definition already
 
 ## Downtime And Failures
 
-When `RunMissedExecution` is `true`, startup dispatches one overdue occurrence and advances a recurring schedule directly to its next future interval or cron occurrence. It does not emit a burst for every elapsed occurrence. When the option is `false`, an occurrence that became due while no scheduler host was available is recorded as `Skipped` and the same advancement rule applies. Availability is tracked per host and per logical work system, so a newly started host does not skip valid overdue work merely because another host created it or remained healthy during a rolling deployment. Host observation is piggybacked on the existing claim poll rather than adding another database round trip; a short availability lease covers abrupt process loss, and graceful shutdown ends the host interval immediately. The startup boundary is captured only after the work system has finished initializing and is ready to begin scheduler polling, so work that becomes due during a true full-system startup remains missed.
+When `RunMissedExecution` is `true`, startup dispatches one overdue occurrence and advances a recurring schedule directly to its next future interval or cron occurrence. It does not emit a burst for every elapsed occurrence. When the option is `false`, an occurrence that became due while the logical work system was unavailable is recorded as `Skipped`, and the schedule advances in the same way. In multi-host deployments, Workable considers availability across the logical system rather than treating one host joining or leaving as system downtime.
 
 Schedule occurrence status describes dispatch, not eventual execution:
 
@@ -146,7 +146,7 @@ After queue acceptance, the worker follows its current retry, failed-worker hand
 
 Scheduled dispatch always normalizes the worker start policy to `StartAndReturnAfterAccepted`. Background scheduling therefore starts work even if the definition or retained override specified `DoNotStart`, and it never blocks the scheduling loop waiting for a worker to start or finish. Other current definition settings and retained schedule overrides still apply normally.
 
-The SQL store leases due schedules so multiple hosts sharing the same persistence scope and Workable system do not normally dispatch the same occurrence concurrently. Immediately before queueing, the scheduler atomically validates its unexpired lease and marks dispatch as begun. Cancellation can commit only before this marker; after it, cancellation returns `Conflict`, so an accepted cancellation cannot be followed by queueing from an already claimed occurrence. An expired or superseded claimant does not dispatch. Delivery remains at least once across a narrow failure window: if queueing succeeds but saving the occurrence fails, another host can claim it after lease expiry. Use Workable idempotency or application-level idempotency for work where duplicate execution is unsafe.
+The SQL store coordinates due schedules across hosts that share a persistence scope and logical work system. Delivery is at least once: a failure after queueing but before recording the occurrence can cause another host to dispatch it again. Use Workable idempotency or application-level idempotency when duplicate execution is unsafe. Cancellation succeeds only before dispatch begins; after that boundary it returns `Conflict`.
 
 ## Query And Cancel
 
@@ -172,6 +172,19 @@ WorkScheduleOccurrenceQueryResult history = await session.Schedules.ListOccurren
     take: 100,
     cancellationToken);
 
+WorkScheduleOverviewResult overview = await session.Schedules.GetOverview(
+    new WorkScheduleOverviewCriteria(
+        SelectedScheduleId: scheduleId,
+        RecentScheduleTake: 100,
+        UpcomingScheduleTake: 100,
+        OccurrenceTake: 50),
+    cancellationToken);
+
+WorkScheduleUpcomingQueryResult upcoming = await session.Schedules.ListUpcoming(
+    take: 100,
+    cursor: overview.Upcoming.Cursor,
+    cancellationToken);
+
 WorkScheduleCancellationOutcome canceled = await session.Schedules.Cancel(
     scheduleId,
     cancellationToken);
@@ -180,10 +193,12 @@ WorkScheduleCancellationOutcome canceled = await session.Schedules.Cancel(
 The equivalent HTTP management routes are:
 
 - `GET /workable/schedules?definitionName={name}&status={status}&take={count}`
+- `GET /workable/schedules/upcoming?take={count}&cursorNextRunAt={instant}&cursorScheduleId={scheduleId}`
+- `GET /workable/schedules/overview?selectedScheduleId={scheduleId}&recentTake={count}&upcomingTake={count}&occurrenceTake={count}&recentCursorCreatedAt={instant}&recentCursorScheduleId={scheduleId}&upcomingCursorNextRunAt={instant}&upcomingCursorScheduleId={scheduleId}`
 - `GET /workable/schedules/{scheduleId}`
 - `GET /workable/schedules/{scheduleId}/occurrences?take={count}`
 - `POST /workable/schedules/{scheduleId}/cancel`
 
-Named systems use the same paths under `/workable/systems/{systemName}`. Schedule queries accept between one and 1,000 rows. A full page includes a `cursor`; pass its `createdAt` and `scheduleId.value` back as `cursorCreatedAt` and `cursorScheduleId` to fetch the next page. Both cursor query parameters are required together. Occurrence-history queries accept between one and 100 rows and are also constrained by `MaximumOccurrenceQueryPayloadBytes`. Schedule lists return bounded summaries and omit retained input and worker options; fetch one schedule by id when those details are needed. The list applies read authorization per target definition before paging; detail and history return `404` for unknown or non-visible schedules. Cancellation applies the target definition's current cancel authorization. Creator and canceler actor id, name, and email fields are each limited to 512 characters; Workable rejects an oversized actor instead of truncating security identity data before durable audit or per-actor quota enforcement. The SQL schedule store also rejects definition names longer than its 450-character column bound with a structured invalid-creation outcome instead of allowing a truncation exception to escape.
+Named systems use the same paths under `/workable/systems/{systemName}`. Schedule queries are paged. Continue a recent-schedule page with its `createdAt` and schedule-id cursor, or an upcoming page with its `nextRunAt` and schedule-id cursor. `WorkScheduleOverviewCriteria` and the overview route accept both cursors so a management client can refresh its current bounded windows together with the selected schedule and history. Each cursor's timestamp and schedule-id fields must be supplied together. Occurrence-history queries return up to 100 entries. List and overview results contain schedule summaries; use the schedule-detail route when retained input or worker options are needed. Read authorization is applied to each target definition, and unknown or non-visible schedules return `404`. Cancellation uses the target definition's current cancel authorization.
 
-Only an active schedule can be canceled. Canceling a completed or already canceled schedule returns `Conflict`; an unknown or non-visible schedule returns `NotFound`. A due row is revalidated immediately before dispatch, so cancellation accepted after claiming but before the atomic dispatch-start marker suppresses that stale claim. Once dispatch is marked as begun, cancellation returns `Conflict` and does not retroactively cancel a worker being created or already queued; control that worker through the normal worker-action surface.
+Only an active schedule can be canceled. Canceling a completed or already canceled schedule returns `Conflict`; an unknown or non-visible schedule returns `NotFound`. Once dispatch begins, cancellation returns `Conflict` and does not cancel the worker being created or already queued; control that worker through the normal worker-action surface.

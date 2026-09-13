@@ -1,16 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { act } from "react";
 import {
   SchedulesView,
+  appendProviderOrderedSchedulePage,
+  calculateSchedulePollDelay,
+  createScheduleOverviewPath,
+  createSchedulePagePath,
+  createUpcomingSchedulePagePath,
   formatScheduleDateTime,
   formatScheduleTiming,
   getUpcomingSchedules,
-  loadScheduleIndex,
+  loadScheduleOverview,
+  schedulePageSize,
+  schedulePollMaximumIntervalMs,
 } from "@/components/workable/console/schedules-screen";
 import { clearDefinitionCatalogLevelCache } from "@/components/workable/console/catalog-browser-data";
 import { renderDom } from "@/test/dom";
 import type {
+  WorkScheduleOccurrence,
+  WorkScheduleOverviewResult,
   WorkScheduleSnapshot,
+  WorkScheduleSummary,
   WorkableConnection,
 } from "@/lib/workable";
 
@@ -22,7 +33,67 @@ const connection: WorkableConnection = {
 const activeScheduleId = "11111111-2222-3333-4444-555555555555";
 const workerId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
-test("schedule helpers format timing and select active upcoming work in due order", () => {
+function getScheduleViewport(
+  result: Awaited<ReturnType<typeof renderDom>>,
+  kind: "recent" | "upcoming"
+) {
+  const viewport = result.container.querySelector<HTMLElement>(`.schedule-${kind}-viewport`);
+  assert.ok(viewport);
+  return viewport;
+}
+
+function scrollToScheduleViewportEnd(
+  result: Awaited<ReturnType<typeof renderDom>>,
+  kind: "recent" | "upcoming"
+) {
+  return result.scroll(getScheduleViewport(result, kind), {
+    clientHeight: 200,
+    scrollHeight: 1_000,
+    scrollTop: 800,
+  });
+}
+
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<Response>((complete, fail) => {
+    resolve = complete;
+    reject = fail;
+  });
+  return { promise, reject, resolve };
+}
+
+function scheduleOverview(
+  schedules: WorkScheduleSummary[],
+  selectedSchedule: WorkScheduleSummary | null = schedules[0] ?? null,
+  occurrences: WorkScheduleOccurrence[] = [],
+  options: {
+    recentCursor?: WorkScheduleOverviewResult["recent"]["cursor"];
+    upcomingCursor?: WorkScheduleOverviewResult["upcoming"]["cursor"];
+    upcomingSchedules?: WorkScheduleSummary[];
+  } = {}
+): WorkScheduleOverviewResult {
+  const upcoming = options.upcomingSchedules ?? getUpcomingSchedules(schedules);
+  return {
+    occurrences,
+    recent: {
+      cursor: options.recentCursor ?? null,
+      schedules,
+    },
+    selectedSchedule,
+    upcoming: {
+      activeScheduleCount: schedules.filter((item) => item.status === "Active").length,
+      cursor: options.upcomingCursor ?? null,
+      recurringScheduleCount: schedules.filter((item) =>
+        item.status === "Active" && Boolean(item.timing.interval || item.timing.cronExpression)
+      ).length,
+      schedules: upcoming,
+      upcomingScheduleCount: upcoming.length,
+    },
+  };
+}
+
+test("schedule helpers format timing and preserve provider-ordered upcoming work", () => {
   const later = schedule({
     id: { value: "later" },
     nextRunAt: "2099-01-02T10:00:00Z",
@@ -40,7 +111,7 @@ test("schedule helpers format timing and select active upcoming work in due orde
   });
   const canceled = schedule({ id: { value: "canceled" }, status: "Canceled" });
 
-  assert.deepEqual(getUpcomingSchedules([later, canceled, earlier]).map((item) => item.id.value), [
+  assert.deepEqual(getUpcomingSchedules([earlier, canceled, later]).map((item) => item.id.value), [
     "earlier",
     "later",
   ]);
@@ -59,184 +130,835 @@ test("schedule helpers format timing and select active upcoming work in due orde
   assert.notEqual(formatScheduleDateTime("2099-01-01T10:00:00Z"), "-");
 });
 
-test("schedule index retains active schedules hidden behind the recent-history cap", async () => {
+test("schedule page appending preserves provider order and reports the trimmed boundary", () => {
+  const newest = schedule({
+    createdAt: "2098-12-03T10:00:00Z",
+    id: { value: "newest" },
+  });
+  const middle = schedule({
+    createdAt: "2098-12-02T10:00:00Z",
+    id: { value: "middle" },
+  });
+  const oldest = schedule({
+    createdAt: "2098-12-01T10:00:00Z",
+    id: { value: "oldest" },
+  });
+  const trimmed = appendProviderOrderedSchedulePage([newest], [middle, oldest, newest], 2);
+  const untrimmed = appendProviderOrderedSchedulePage([newest], [middle], 2);
+
+  assert.equal(trimmed.trimmedThrough?.id.value, "newest");
+  assert.deepEqual(trimmed.schedules.map((item) => item.id.value), ["middle", "oldest"]);
+  assert.equal(untrimmed.trimmedThrough, null);
+  assert.deepEqual(untrimmed.schedules.map((item) => item.id.value), ["newest", "middle"]);
+});
+
+test("schedule overview uses one request for the index, selection, and occurrences", async () => {
   const hiddenActive = schedule({
     definitionName: "LongRunningSchedule",
     id: { value: "hidden-active" },
     nextRunAt: "2099-01-01T10:00:00Z",
   });
-  const recent = Array.from({ length: 1000 }, (_, index) => schedule({
-    definitionName: `Completed${index}`,
-    id: { value: `completed-${index}` },
-    status: "Completed",
-  }));
-  const firstActivePage = Array.from({ length: 1000 }, (_, index) => schedule({
-    definitionName: `Active${index}`,
-    id: { value: `active-${index}` },
-  }));
-  const cursor = {
-    createdAt: "2098-12-01T10:00:00Z",
-    scheduleId: { value: "active-999" },
-  };
   const fetchMock = installFetch((call) => {
-    if (call.input.endsWith("/schedules?take=1000")) {
-      return Response.json({ schedules: recent });
-    }
-    if (call.input.endsWith("/schedules?status=Active&take=1000")) {
-      return Response.json({ schedules: firstActivePage, cursor });
-    }
-    if (call.input.endsWith(
-      "/schedules?status=Active&take=1000" +
-        "&cursorCreatedAt=2098-12-01T10%3A00%3A00Z&cursorScheduleId=active-999"
-    )) {
-      return Response.json({ schedules: [hiddenActive], cursor: null });
-    }
-    return Response.json({ error: "Unhandled" }, { status: 500 });
+    return Response.json(scheduleOverview([hiddenActive], hiddenActive));
   });
+  const controller = new AbortController();
 
   try {
-    const loaded = await loadScheduleIndex(connection);
+    const loaded = await loadScheduleOverview(
+      connection,
+      hiddenActive.id.value,
+      controller.signal
+    );
 
-    assert.equal(loaded.length, 2001);
-    assert.equal(loaded.some((item) => item.id.value === hiddenActive.id.value), true);
-    assert.equal(fetchMock.calls.length, 3);
+    assert.equal(loaded.selectedSchedule?.id.value, hiddenActive.id.value);
+    assert.equal(fetchMock.calls.length, 1);
+    assert.equal(fetchMock.calls[0]?.init?.signal, controller.signal);
+    assert.equal(
+      fetchMock.calls[0]?.input,
+      `/api/workable/systems/Ops/${createScheduleOverviewPath(hiddenActive.id.value)}`
+    );
   } finally {
     fetchMock.restore();
   }
 });
 
-test("schedule index stops when the server repeats an active cursor", async () => {
-  const recent = Array.from({ length: 1000 }, (_, index) => schedule({
-    id: { value: `completed-${index}` },
-    status: "Completed",
-  }));
-  const cursor = {
-    createdAt: "2098-12-01T10:00:00Z",
-    scheduleId: { value: "active-999" },
-  };
-  const fetchMock = installFetch((call) => {
-    if (call.input.endsWith("/schedules?take=1000")) {
-      return Response.json({ schedules: recent });
-    }
-    return Response.json({ schedules: [schedule()], cursor });
-  });
+test("concurrent abortable overview loads do not share an in-flight GET", async () => {
+  const firstResponse = deferredResponse();
+  const secondResponse = deferredResponse();
+  const responses = [firstResponse, secondResponse];
+  const fetchMock = installFetch(() => responses.shift()!.promise);
+  const firstController = new AbortController();
+  const secondController = new AbortController();
 
   try {
-    await assert.rejects(
-      () => loadScheduleIndex(connection),
-      /repeated continuation cursor/
-    );
-    assert.equal(fetchMock.calls.length, 3);
+    const firstLoad = loadScheduleOverview(connection, null, firstController.signal);
+    const secondLoad = loadScheduleOverview(connection, null, secondController.signal);
+
+    assert.equal(fetchMock.calls.length, 2);
+    assert.equal(fetchMock.calls[0]?.init?.signal, firstController.signal);
+    assert.equal(fetchMock.calls[1]?.init?.signal, secondController.signal);
+
+    firstResponse.resolve(Response.json(scheduleOverview([])));
+    secondResponse.resolve(Response.json(scheduleOverview([])));
+    await Promise.all([firstLoad, secondLoad]);
   } finally {
     fetchMock.restore();
+  }
+});
+
+test("schedule overview path omits an empty selection", () => {
+  assert.equal(
+    createScheduleOverviewPath(),
+    "schedules/overview?occurrenceTake=50&recentTake=25&upcomingTake=25"
+  );
+  assert.equal(schedulePageSize, 25);
+  assert.equal(
+    createScheduleOverviewPath(undefined, {
+      recentCursor: {
+        createdAt: "2099-01-01T00:00:00.0000001Z",
+        scheduleId: { value: activeScheduleId },
+      },
+      recentTake: 75,
+      upcomingCursor: {
+        nextRunAt: "2099-01-02T00:00:00.0000009Z",
+        scheduleId: { value: activeScheduleId },
+      },
+      upcomingTake: 50,
+    }),
+    "schedules/overview?occurrenceTake=50&recentTake=75&upcomingTake=50" +
+      "&recentCursorCreatedAt=2099-01-01T00%3A00%3A00.0000001Z" +
+      `&recentCursorScheduleId=${activeScheduleId}` +
+      "&upcomingCursorNextRunAt=2099-01-02T00%3A00%3A00.0000009Z" +
+      `&upcomingCursorScheduleId=${activeScheduleId}`
+  );
+  assert.equal(
+    createSchedulePagePath({
+      createdAt: "2099-01-01T00:00:00Z",
+      scheduleId: { value: activeScheduleId },
+    }),
+    `schedules?cursorCreatedAt=2099-01-01T00%3A00%3A00Z&cursorScheduleId=${activeScheduleId}&take=25`
+  );
+  assert.equal(
+    createUpcomingSchedulePagePath({
+      nextRunAt: "2099-01-02T00:00:00Z",
+      scheduleId: { value: activeScheduleId },
+    }),
+    `schedules/upcoming?cursorNextRunAt=2099-01-02T00%3A00%3A00Z&cursorScheduleId=${activeScheduleId}&take=25`
+  );
+});
+
+test("an upcoming-only row can be selected when it is outside the recent page", async () => {
+  const recent = schedule({
+    definitionName: "RecentOnly",
+    id: { value: "12121212-2323-3434-4545-565656565656" },
+    nextRunAt: null,
+    status: "Completed",
+  });
+  const upcoming = schedule({
+    definitionName: "UpcomingOnly",
+    id: { value: "67676767-7878-8989-9090-aaaaaaaaaaaa" },
+  });
+  const fetchMock = installFetch((call) => Response.json(
+    scheduleOverview(
+      [recent],
+      call.input.includes(`selectedScheduleId=${upcoming.id.value}`) ? upcoming : recent,
+      [],
+      { upcomingSchedules: [upcoming] }
+    )
+  ));
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("UpcomingOnly"));
+    await result.click(result.getByText("UpcomingOnly"));
+    await result.waitFor(() => assert.equal(
+      fetchMock.calls.some((call) =>
+        call.input.includes(`selectedScheduleId=${upcoming.id.value}`)),
+      true
+    ));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("schedule polling jitters its cadence and exponentially backs off failures", () => {
+  assert.equal(calculateSchedulePollDelay(10_000, 0, 0), 8_000);
+  assert.equal(calculateSchedulePollDelay(10_000, 0, 0.5), 10_000);
+  assert.equal(calculateSchedulePollDelay(10_000, 1, 0.5), 20_000);
+  assert.equal(calculateSchedulePollDelay(10_000, 2, 1), 48_000);
+  assert.equal(calculateSchedulePollDelay(10_000, 20, 1), schedulePollMaximumIntervalMs);
+  assert.equal(calculateSchedulePollDelay(0, -1, -1), 1);
+});
+
+test("schedule lists use fixed internal infinite-scroll viewports with sticky headings", async () => {
+  const currentSchedule = schedule();
+  const fetchMock = installFetch(() => Response.json(scheduleOverview([currentSchedule])));
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("ImportOrders"));
+    for (const kind of ["upcoming", "recent"] as const) {
+      const viewport = getScheduleViewport(result, kind);
+      assert.equal(viewport.classList.contains("overflow-auto"), true);
+      assert.equal(viewport.classList.contains("h-[28rem]"), true);
+      assert.equal(viewport.classList.contains("workable-grid-scrollbar"), true);
+      assert.equal(viewport.classList.contains("[&_[data-slot=table-container]]:overflow-visible"), true);
+      const header = viewport.querySelector<HTMLElement>("[data-slot='table-header']");
+      assert.ok(header);
+      assert.equal(header.classList.contains("sticky"), true);
+      assert.equal(header.classList.contains("top-0"), true);
+    }
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("schedule paging observes the footer inside its internal viewport", async () => {
+  const first = schedule();
+  const older = schedule({
+    definitionName: "OlderSchedule",
+    id: { value: "22222222-3333-4444-5555-666666666666" },
+    nextRunAt: null,
+    status: "Completed",
+  });
+  const recentCursor = { createdAt: first.createdAt, scheduleId: first.id };
+  let pageCalls = 0;
+  const observerRoots: Array<Element | Document | null> = [];
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/schedules/overview?")) {
+      return Response.json(scheduleOverview([first], first, [], { recentCursor }));
+    }
+    if (call.input.includes("/schedules?cursorCreatedAt=")) {
+      pageCalls += 1;
+      return Response.json({ cursor: null, schedules: [older] });
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />,
+    {
+      setupWindow(window) {
+        class PageIntersectionObserver {
+          constructor(
+            private readonly callback: IntersectionObserverCallback,
+            options?: IntersectionObserverInit
+          ) {
+            observerRoots.push(options?.root ?? null);
+          }
+          disconnect() {}
+          observe(target: Element) {
+            this.callback([], this as unknown as IntersectionObserver);
+            this.callback([{ isIntersecting: false, target } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+            this.callback([{ isIntersecting: true, target } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+          }
+          takeRecords(): IntersectionObserverEntry[] {
+            return [];
+          }
+          unobserve() {}
+        }
+        Object.defineProperty(window, "IntersectionObserver", {
+          configurable: true,
+          value: PageIntersectionObserver,
+        });
+        Object.defineProperty(globalThis, "IntersectionObserver", {
+          configurable: true,
+          value: PageIntersectionObserver,
+        });
+      },
+    }
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("OlderSchedule"));
+    assert.equal(pageCalls, 1);
+    assert.equal(observerRoots.includes(getScheduleViewport(result, "recent")), true);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("schedules screen stays idle while its target is inactive", async () => {
+  const fetchMock = installFetch(() => {
+    throw new Error("Inactive schedules should not request data.");
+  });
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget={false}
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+
+  try {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    assert.equal(fetchMock.calls.length, 0);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("schedules screen pages independently and authoritatively refreshes expanded windows", async () => {
+  let overviewCalls = 0;
+  let upcomingPageCalls = 0;
+  const recentPage = deferredResponse();
+  const first = schedule();
+  const older = schedule({
+    definitionName: "OlderSchedule",
+    id: { value: "22222222-3333-4444-5555-666666666666" },
+    nextRunAt: null,
+    status: "Completed",
+  });
+  const later = schedule({
+    definitionName: "LaterSchedule",
+    id: { value: "33333333-4444-5555-6666-777777777777" },
+    nextRunAt: "2099-01-02T10:00:00Z",
+  });
+  const recentCursor = {
+    createdAt: first.createdAt,
+    scheduleId: first.id,
+  };
+  const upcomingCursor = {
+    nextRunAt: first.nextRunAt!,
+    scheduleId: first.id,
+  };
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/schedules/overview?")) {
+      overviewCalls += 1;
+      if (overviewCalls > 1) {
+        return Response.json(scheduleOverview([
+          { ...first, definitionName: "RefreshedSchedule" },
+          schedule({
+            definitionName: "NewSchedule",
+            id: { value: "55555555-6666-7777-8888-999999999999" },
+            nextRunAt: "2098-12-31T10:00:00Z",
+          }),
+        ]));
+      }
+      return Response.json(scheduleOverview([first], first, [], { recentCursor, upcomingCursor }));
+    }
+    if (call.input.includes("/schedules?cursorCreatedAt=")) {
+      return recentPage.promise;
+    }
+    if (call.input.includes("/schedules/upcoming?cursorNextRunAt=")) {
+      upcomingPageCalls += 1;
+      return Response.json({
+        activeScheduleCount: 2,
+        cursor: null,
+        recurringScheduleCount: 0,
+        schedules: [later],
+        upcomingScheduleCount: 2,
+      });
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+
+  try {
+    await result.waitFor(() => getScheduleViewport(result, "recent"));
+    await scrollToScheduleViewportEnd(result, "recent");
+    await scrollToScheduleViewportEnd(result, "upcoming");
+    assert.equal(upcomingPageCalls, 0);
+    await act(async () => {
+      recentPage.resolve(Response.json({ cursor: null, schedules: [older] }));
+      await Promise.resolve();
+    });
+    await result.waitFor(() => result.getByText("OlderSchedule"));
+    result.getByText("Showing 2 schedules");
+
+    await scrollToScheduleViewportEnd(result, "upcoming");
+    await result.waitFor(() => result.getByText("LaterSchedule"));
+    result.getByText("Showing 2 upcoming schedules");
+    assert.equal(upcomingPageCalls, 1);
+    assert.equal(fetchMock.calls.some((call) => call.input.endsWith(createSchedulePagePath(recentCursor))), true);
+    assert.equal(
+      fetchMock.calls.some((call) => call.input.endsWith(createUpcomingSchedulePagePath(upcomingCursor))),
+      true
+    );
+    await result.rerender(
+      <SchedulesView
+        connection={connection}
+        isLoadingTarget
+        onOpenWorker={() => undefined}
+        onReady={() => undefined}
+        refreshToken={1}
+      />
+    );
+    await result.waitFor(() => result.getByText("RefreshedSchedule"));
+    result.getByText("NewSchedule");
+    assert.equal(result.queryByText("OlderSchedule"), null);
+    assert.equal(result.queryByText("LaterSchedule"), null);
+    const refreshUrl = new URL(fetchMock.calls.at(-1)!.input, "https://admin.example");
+    assert.equal(refreshUrl.searchParams.get("recentTake"), "2");
+    assert.equal(refreshUrl.searchParams.get("upcomingTake"), "2");
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("schedules screen bounds retained page windows and can return to their first pages", async () => {
+  const newest = schedule({
+    createdAt: "2098-12-03T10:00:00Z",
+    definitionName: "NewestSchedule",
+    id: { value: "11111111-1111-1111-1111-111111111111" },
+    nextRunAt: null,
+    status: "Completed",
+  });
+  const middle = schedule({
+    createdAt: "2098-12-02T10:00:00Z",
+    definitionName: "MiddleSchedule",
+    id: { value: "22222222-2222-2222-2222-222222222222" },
+    nextRunAt: null,
+    status: "Completed",
+  });
+  const oldest = schedule({
+    createdAt: "2098-12-01T10:00:00Z",
+    definitionName: "OldestSchedule",
+    id: { value: "33333333-3333-3333-3333-333333333333" },
+    nextRunAt: null,
+    status: "Completed",
+  });
+  const soonest = schedule({
+    createdAt: "2098-12-04T10:00:00Z",
+    definitionName: "SoonestSchedule",
+    id: { value: "44444444-4444-4444-4444-444444444444" },
+    nextRunAt: "2099-01-01T10:00:00Z",
+  });
+  const later = schedule({
+    createdAt: "2098-12-05T10:00:00Z",
+    definitionName: "LaterSchedule",
+    id: { value: "55555555-5555-5555-5555-555555555555" },
+    nextRunAt: "2099-01-02T10:00:00Z",
+  });
+  const latest = schedule({
+    createdAt: "2098-12-06T10:00:00Z",
+    definitionName: "LatestSchedule",
+    id: { value: "66666666-6666-6666-6666-666666666666" },
+    nextRunAt: "2099-01-03T10:00:00Z",
+  });
+  const recentCursor = { createdAt: newest.createdAt, scheduleId: newest.id };
+  const upcomingCursor = { nextRunAt: soonest.nextRunAt!, scheduleId: soonest.id };
+  let overviewCalls = 0;
+  let emptyAnchoredWindows = false;
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/schedules/overview?")) {
+      overviewCalls += 1;
+      const url = new URL(call.input, "https://admin.example");
+      const recentAnchored = url.searchParams.has("recentCursorCreatedAt");
+      const upcomingAnchored = url.searchParams.has("upcomingCursorNextRunAt");
+      return Response.json(scheduleOverview(
+        recentAnchored ? (emptyAnchoredWindows ? [] : [middle, oldest]) : [newest],
+        recentAnchored ? (emptyAnchoredWindows ? null : middle) : newest,
+        [],
+        {
+          recentCursor: recentAnchored ? undefined : recentCursor,
+          upcomingCursor: upcomingAnchored ? undefined : upcomingCursor,
+          upcomingSchedules: upcomingAnchored
+            ? (emptyAnchoredWindows ? [] : [later, latest])
+            : [soonest],
+        }
+      ));
+    }
+    if (call.input.includes("/schedules?cursorCreatedAt=")) {
+      return Response.json({ cursor: null, schedules: [middle, oldest] });
+    }
+    if (call.input.includes("/schedules/upcoming?cursorNextRunAt=")) {
+      return Response.json({
+        activeScheduleCount: 3,
+        cursor: null,
+        recurringScheduleCount: 0,
+        schedules: [later, latest],
+        upcomingScheduleCount: 3,
+      });
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget
+      loadedWindowSize={2}
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+
+  try {
+    const listedDefinitions = (tableIndex: number) => Array.from(
+      result.dom.window.document.querySelectorAll("tbody")[tableIndex]?.querySelectorAll("tr") ?? []
+    ).map((row) => row.querySelector("td")?.textContent?.trim());
+    await result.waitFor(() => getScheduleViewport(result, "recent"));
+    await scrollToScheduleViewportEnd(result, "recent");
+    await result.waitFor(() => result.getByRole("button", { name: "Return to newest" }));
+    await scrollToScheduleViewportEnd(result, "upcoming");
+    await result.waitFor(() => result.getByRole("button", { name: "Return to soonest" }));
+    assert.deepEqual(listedDefinitions(0), ["LaterSchedule", "LatestSchedule"]);
+    assert.deepEqual(listedDefinitions(1), ["MiddleSchedule", "OldestSchedule"]);
+
+    await result.rerender(
+      <SchedulesView
+        connection={connection}
+        isLoadingTarget
+        loadedWindowSize={2}
+        onOpenWorker={() => undefined}
+        onReady={() => undefined}
+        refreshToken={1}
+      />
+    );
+    await result.waitFor(() => assert.equal(overviewCalls, 2));
+    assert.deepEqual(listedDefinitions(0), ["LaterSchedule", "LatestSchedule"]);
+    assert.deepEqual(listedDefinitions(1), ["MiddleSchedule", "OldestSchedule"]);
+    const anchoredRefresh = new URL(fetchMock.calls.at(-1)!.input, "https://admin.example");
+    assert.equal(anchoredRefresh.searchParams.get("recentCursorCreatedAt"), newest.createdAt);
+    assert.equal(anchoredRefresh.searchParams.get("recentCursorScheduleId"), newest.id.value);
+    assert.equal(anchoredRefresh.searchParams.get("upcomingCursorNextRunAt"), soonest.nextRunAt);
+    assert.equal(anchoredRefresh.searchParams.get("upcomingCursorScheduleId"), soonest.id.value);
+
+    emptyAnchoredWindows = true;
+    await result.rerender(
+      <SchedulesView
+        connection={connection}
+        isLoadingTarget
+        loadedWindowSize={2}
+        onOpenWorker={() => undefined}
+        onReady={() => undefined}
+        refreshToken={2}
+      />
+    );
+    await result.waitFor(() => assert.equal(overviewCalls, 3));
+    result.getByText("No scheduled work is currently pending in this window.");
+    result.getByText("No schedules remain in this window.");
+    result.getByRole("button", { name: "Return to soonest" });
+    result.getByRole("button", { name: "Return to newest" });
+
+    emptyAnchoredWindows = false;
+    await result.click(result.getByRole("button", { name: "Return to soonest" }));
+    await result.waitFor(() => assert.equal(overviewCalls, 4));
+    await result.waitFor(() => assert.deepEqual(listedDefinitions(0), ["SoonestSchedule"]));
+    await result.click(result.getByRole("button", { name: "Return to newest" }));
+    await result.waitFor(() => assert.equal(overviewCalls, 5));
+    await result.waitFor(() => assert.deepEqual(listedDefinitions(1), ["NewestSchedule"]));
+    const buttonLabels = Array.from(result.dom.window.document.querySelectorAll("button"))
+      .map((button) => button.textContent?.trim());
+    assert.equal(buttonLabels.includes("Return to soonest"), false);
+    assert.equal(buttonLabels.includes("Return to newest"), false);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("schedule page failures remain retryable and preserve specific errors", async () => {
+  const first = schedule();
+  const recentCursor = { createdAt: first.createdAt, scheduleId: first.id };
+  const upcomingCursor = { nextRunAt: first.nextRunAt!, scheduleId: first.id };
+  let recentAttempts = 0;
+  let upcomingAttempts = 0;
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/schedules/overview?")) {
+      return Response.json(scheduleOverview([first], first, [], { recentCursor, upcomingCursor }));
+    }
+    if (call.input.includes("/schedules?cursorCreatedAt=")) {
+      recentAttempts += 1;
+      if (recentAttempts === 1) {
+        throw new Error("Recent page failed.");
+      }
+      return Response.json({ cursor: null, schedules: [] });
+    }
+    if (call.input.includes("/schedules/upcoming?cursorNextRunAt=")) {
+      upcomingAttempts += 1;
+      if (upcomingAttempts === 1) {
+        throw "upcoming offline";
+      }
+      throw new Error("Upcoming page failed.");
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      refreshToken={0}
+    />
+  );
+
+  try {
+    await result.waitFor(() => getScheduleViewport(result, "recent"));
+    await scrollToScheduleViewportEnd(result, "recent");
+    await result.waitFor(() => result.getByText("Recent page failed."));
+    await scrollToScheduleViewportEnd(result, "recent");
+    await result.waitFor(() => assert.equal(recentAttempts, 2));
+
+    await scrollToScheduleViewportEnd(result, "upcoming");
+    await result.waitFor(() => result.getByText("More upcoming schedules could not be loaded."));
+    await scrollToScheduleViewportEnd(result, "upcoming");
+    await result.waitFor(() => result.getByText("Upcoming page failed."));
+    result.getByText("Scroll to load more");
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("a late schedule page cannot leak rows across a connection change", async () => {
+  const first = schedule();
+  const oldPage = deferredResponse();
+  let overviewCalls = 0;
+  const recentCursor = { createdAt: first.createdAt, scheduleId: first.id };
+  const replacement = schedule({
+    definitionName: "ReplacementSchedule",
+    id: { value: "44444444-5555-6666-7777-888888888888" },
+  });
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/systems/Ops/schedules/overview?")) {
+      overviewCalls += 1;
+      return Response.json(scheduleOverview([first], first, [], { recentCursor }));
+    }
+    if (call.input.includes("/systems/Ops/schedules?cursorCreatedAt=")) {
+      return oldPage.promise;
+    }
+    if (call.input.includes("/systems/Ops2/schedules/overview?")) {
+      return Response.json(scheduleOverview([replacement], replacement));
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const callbacks = {
+    onOpenWorker: () => undefined,
+    onReady: () => undefined,
+  };
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget
+      {...callbacks}
+      pollIntervalMs={1}
+      refreshToken={0}
+    />
+  );
+
+  try {
+    await result.waitFor(() => getScheduleViewport(result, "recent"));
+    await scrollToScheduleViewportEnd(result, "recent");
+    const overviewCallsAfterPagingStarted = overviewCalls;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.equal(overviewCalls, overviewCallsAfterPagingStarted);
+    await result.rerender(
+      <SchedulesView
+        connection={{ ...connection, systemName: "Ops2" }}
+        isLoadingTarget
+        {...callbacks}
+        refreshToken={0}
+      />
+    );
+    await result.waitFor(() => result.getByText("ReplacementSchedule"));
+    oldPage.resolve(Response.json({
+      cursor: null,
+      schedules: [schedule({ definitionName: "LeakedSchedule" })],
+    }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    assert.equal(result.queryByText("LeakedSchedule"), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("a late upcoming page cannot leak rows across a connection change", async () => {
+  const first = schedule();
+  const oldPage = deferredResponse();
+  const upcomingCursor = { nextRunAt: first.nextRunAt!, scheduleId: first.id };
+  const replacement = schedule({
+    definitionName: "ReplacementUpcoming",
+    id: { value: "66666666-7777-8888-9999-aaaaaaaaaaaa" },
+  });
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/systems/Ops/schedules/overview?")) {
+      return Response.json(scheduleOverview([first], first, [], { upcomingCursor }));
+    }
+    if (call.input.includes("/systems/Ops/schedules/upcoming?")) {
+      return oldPage.promise;
+    }
+    if (call.input.includes("/systems/Ops2/schedules/overview?")) {
+      return Response.json(scheduleOverview([replacement], replacement));
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const callbacks = {
+    onOpenWorker: () => undefined,
+    onReady: () => undefined,
+  };
+  const result = await renderDom(
+    <SchedulesView connection={connection} isLoadingTarget {...callbacks} refreshToken={0} />
+  );
+
+  try {
+    await result.waitFor(() => getScheduleViewport(result, "upcoming"));
+    await scrollToScheduleViewportEnd(result, "upcoming");
+    await result.rerender(
+      <SchedulesView
+        connection={{ ...connection, systemName: "Ops2" }}
+        isLoadingTarget
+        {...callbacks}
+        refreshToken={0}
+      />
+    );
+    await result.waitFor(() => result.getByText("ReplacementUpcoming"));
+    oldPage.resolve(Response.json({
+      activeScheduleCount: 2,
+      cursor: null,
+      recurringScheduleCount: 0,
+      schedules: [schedule({ definitionName: "LeakedUpcoming" })],
+      upcomingScheduleCount: 2,
+    }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    assert.equal(result.queryByText("LeakedUpcoming"), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
   }
 });
 
 test("schedules screen shows upcoming work and history and cancels an active schedule", async () => {
   let isCanceled = false;
   const openedWorkers: string[] = [];
+  let overviewCalls = 0;
+  const cancellation = deferredResponse();
   const fetchMock = installFetch((call) => {
-    if (call.input === "/api/workable/systems/Ops/schedules?take=1000") {
-      return Response.json({
-        schedules: [
-          schedule({
-            status: isCanceled ? "Canceled" : "Active",
-            nextRunAt: isCanceled ? null : "2099-01-01T10:00:00Z",
-            canceledAt: isCanceled ? "2098-12-01T12:00:00Z" : null,
-            timing: { firstRunAt: "2099-01-01T10:00:00Z", interval: "01:00:00", runMissedExecution: true },
-          }),
-          schedule({
-            definitionName: "Cleanup",
-            id: { value: "99999999-8888-7777-6666-555555555555" },
-            status: "Completed",
-          }),
-          schedule({
-            createdBy: { id: "operator-2" },
-            definitionName: "OperatorTask",
-            id: { value: "88888888-9999-aaaa-bbbb-cccccccccccc" },
-            nextRunAt: "2099-01-01T11:00:00Z",
-          }),
-          schedule({
-            createdBy: { email: "nightly@example.test" },
-            definitionName: "NightlyReport",
-            id: { value: "77777777-8888-9999-aaaa-bbbbbbbbbbbb" },
-            nextRunAt: "2099-01-01T09:00:00Z",
-            timing: {
-              cronExpression: "0 9 * * *",
-              firstRunAt: "2099-01-01T00:00:00Z",
-              runMissedExecution: false,
-              timeZoneId: "UTC",
-            },
-          }),
-          schedule({
-            createdBy: {},
-            definitionName: "ArchivedTask",
-            id: { value: "66666666-7777-8888-9999-aaaaaaaaaaaa" },
-            nextRunAt: null,
-            status: "Canceled",
-          }),
-          schedule({
-            createdBy: {},
-            definitionName: "UnknownActorTask",
-            id: { value: "55555555-6666-7777-8888-999999999999" },
-            nextRunAt: "2099-01-01T12:00:00Z",
-          }),
-        ],
-      });
-    }
-
-    if (call.input === `/api/workable/systems/Ops/schedules/${activeScheduleId}/occurrences?take=50`) {
-      return Response.json({
-        occurrences: [
-          {
-            attemptedAt: "2098-12-01T11:00:01Z",
-            expiresAt: "2098-12-08T11:00:01Z",
-            messages: [],
-            occurrenceId: "12121212-3434-5656-7878-909090909090",
-            queueStatus: "Accepted",
-            scheduledAt: "2098-12-01T11:00:00Z",
-            scheduleId: { value: activeScheduleId },
-            status: "Accepted",
-            workerId: { value: workerId },
+    if (call.input.includes("/api/workable/systems/Ops/schedules/overview?")) {
+      overviewCalls += 1;
+      const schedules = [
+        schedule({
+          status: isCanceled ? "Canceled" : "Active",
+          nextRunAt: isCanceled ? null : "2099-01-01T10:00:00Z",
+          canceledAt: isCanceled ? "2098-12-01T12:00:00Z" : null,
+          timing: { firstRunAt: "2099-01-01T10:00:00Z", interval: "01:00:00", runMissedExecution: true },
+        }),
+        schedule({
+          definitionName: "Cleanup",
+          id: { value: "99999999-8888-7777-6666-555555555555" },
+          status: "Completed",
+        }),
+        schedule({
+          createdBy: { id: "operator-2" },
+          definitionName: "OperatorTask",
+          id: { value: "88888888-9999-aaaa-bbbb-cccccccccccc" },
+          nextRunAt: "2099-01-01T11:00:00Z",
+        }),
+        schedule({
+          createdBy: { email: "nightly@example.test" },
+          definitionName: "NightlyReport",
+          id: { value: "77777777-8888-9999-aaaa-bbbbbbbbbbbb" },
+          nextRunAt: "2099-01-01T09:00:00Z",
+          timing: {
+            cronExpression: "0 9 * * *",
+            firstRunAt: "2099-01-01T00:00:00Z",
+            runMissedExecution: false,
+            timeZoneId: "UTC",
           },
-          {
-            attemptedAt: "2098-12-01T10:00:01Z",
-            expiresAt: "2098-12-08T10:00:01Z",
-            messages: [],
-            occurrenceId: "13131313-3434-5656-7878-909090909090",
-            queueStatus: null,
-            scheduledAt: "2098-12-01T10:00:00Z",
-            scheduleId: { value: activeScheduleId },
-            status: "Skipped",
-            workerId: null,
-          },
-          {
-            attemptedAt: "2098-12-01T09:00:01Z",
-            expiresAt: "2098-12-08T09:00:01Z",
-            messages: [],
-            occurrenceId: "14141414-3434-5656-7878-909090909090",
-            queueStatus: "Rejected",
-            scheduledAt: "2098-12-01T09:00:00Z",
-            scheduleId: { value: activeScheduleId },
-            status: "Rejected",
-            workerId: null,
-          },
-        ],
-      });
-    }
-
-    if (call.input.includes("/schedules/77777777-8888-9999-aaaa-bbbbbbbbbbbb/occurrences")) {
-      return Response.json({ occurrences: [] });
+        }),
+        schedule({
+          createdBy: {},
+          definitionName: "ArchivedTask",
+          id: { value: "66666666-7777-8888-9999-aaaaaaaaaaaa" },
+          nextRunAt: null,
+          status: "Canceled",
+        }),
+        schedule({
+          createdBy: {},
+          definitionName: "UnknownActorTask",
+          id: { value: "55555555-6666-7777-8888-999999999999" },
+          nextRunAt: "2099-01-01T12:00:00Z",
+        }),
+      ];
+      const selectedScheduleId = new URL(call.input, "https://admin.example").searchParams.get("selectedScheduleId");
+      const selectedSchedule = schedules.find((item) => item.id.value === selectedScheduleId) ?? schedules[0];
+      const occurrences: WorkScheduleOccurrence[] = selectedSchedule?.id.value === activeScheduleId ? [
+        {
+          attemptedAt: "2098-12-01T11:00:01Z",
+          expiresAt: "2098-12-08T11:00:01Z",
+          messages: [],
+          occurrenceId: "12121212-3434-5656-7878-909090909090",
+          queueStatus: "Accepted",
+          scheduledAt: "2098-12-01T11:00:00Z",
+          scheduleId: { value: activeScheduleId },
+          status: "Accepted",
+          workerId: { value: workerId },
+        },
+        {
+          attemptedAt: "2098-12-01T10:00:01Z",
+          expiresAt: "2098-12-08T10:00:01Z",
+          messages: [],
+          occurrenceId: "13131313-3434-5656-7878-909090909090",
+          queueStatus: null,
+          scheduledAt: "2098-12-01T10:00:00Z",
+          scheduleId: { value: activeScheduleId },
+          status: "Skipped",
+          workerId: null,
+        },
+        {
+          attemptedAt: "2098-12-01T09:00:01Z",
+          expiresAt: "2098-12-08T09:00:01Z",
+          messages: [],
+          occurrenceId: "14141414-3434-5656-7878-909090909090",
+          queueStatus: "Rejected",
+          scheduledAt: "2098-12-01T09:00:00Z",
+          scheduleId: { value: activeScheduleId },
+          status: "Rejected",
+          workerId: null,
+        },
+      ] : [];
+      return Response.json(scheduleOverview(schedules, selectedSchedule, occurrences));
     }
 
     if (call.input === `/api/workable/systems/Ops/schedules/${activeScheduleId}/cancel`) {
-      isCanceled = true;
-      return Response.json({
-        messages: [],
-        schedule: schedule({ status: "Canceled", nextRunAt: null }),
-        scheduleId: { value: activeScheduleId },
-        status: "Accepted",
-      });
+      return cancellation.promise;
     }
 
     return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
@@ -257,6 +979,7 @@ test("schedules screen shows upcoming work and history and cancels an active sch
     result.getByText("Recurring schedules");
     result.getByText("Recent dispatches");
     await result.waitFor(() => result.getByRole("button", { name: workerId }));
+    assert.equal(overviewCalls, 1);
     await result.click(result.getByRole("button", { name: workerId }));
     assert.deepEqual(openedWorkers, [workerId]);
     result.getByText("nightly@example.test");
@@ -267,18 +990,34 @@ test("schedules screen shows upcoming work and history and cancels an active sch
     await result.waitFor(() => result.getByText("This schedule has no retained dispatches yet."));
     result.getByText("No");
 
-    await result.click(result.getByRole("button", { name: "Cancel schedule for ImportOrders" }));
+    assert.equal(
+      result.dom.window.document.querySelector('[aria-label="Cancel schedule for ImportOrders"]'),
+      null
+    );
+    await result.click(result.getByText("ImportOrders"));
+    await result.click(result.getByRole("button", { name: "Cancel schedule" }));
     result.getByText("Cancel this schedule?");
     const cancelActions = Array.from(result.dom.window.document.querySelectorAll("button"))
       .filter((button) => button.textContent?.trim() === "Cancel schedule");
     assert.ok(cancelActions.length > 0);
-    await result.click(cancelActions.at(-1)!);
+    const cancelAction = cancelActions.at(-1)!;
+    assert.match(cancelAction.className, /bg-\[var\(--status-danger-solid\)\]/);
+    assert.match(cancelAction.className, /text-\[var\(--status-danger-contrast\)\]/);
+    act(() => cancelAction.click());
+    await result.waitFor(() => assert.equal(cancelAction.disabled, true));
+    await act(async () => {
+      isCanceled = true;
+      cancellation.resolve(Response.json({
+        messages: [],
+        schedule: schedule({ status: "Canceled", nextRunAt: null }),
+        scheduleId: { value: activeScheduleId },
+        status: "Accepted",
+      }));
+      await Promise.resolve();
+    });
 
     await result.waitFor(() => assert.equal(isCanceled, true));
-    await result.waitFor(() => assert.equal(
-      fetchMock.calls.filter((call) => call.input.endsWith("/schedules?take=1000")).length,
-      2
-    ));
+    await result.waitFor(() => assert.equal(overviewCalls, 4));
     assert.equal(
       fetchMock.calls.some((call) =>
         call.input.endsWith(`/${activeScheduleId}/cancel`) && call.init?.method === "POST"
@@ -291,13 +1030,133 @@ test("schedules screen shows upcoming work and history and cancels an active sch
   }
 });
 
-test("schedules screen fails closed for unavailable lists and occurrence history", async () => {
+test("a late cancellation result cannot leak schedule state across a connection change", async () => {
+  const cancellation = deferredResponse();
+  const original = schedule({ definitionName: "OriginalSchedule" });
+  const replacement = schedule({
+    definitionName: "ReplacementSchedule",
+    id: { value: "abababab-cdcd-efef-1212-343434343434" },
+  });
+  let replacementOverviewCalls = 0;
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/systems/Ops/schedules/overview?")) {
+      return Response.json(scheduleOverview([original], original));
+    }
+    if (call.input.endsWith(`/systems/Ops/schedules/${original.id.value}/cancel`)) {
+      return cancellation.promise;
+    }
+    if (call.input.includes("/systems/Ops2/schedules/overview?")) {
+      replacementOverviewCalls += 1;
+      return Response.json(scheduleOverview([replacement], replacement));
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const callbacks = {
+    onOpenWorker: () => undefined,
+    onReady: () => undefined,
+  };
+  const result = await renderDom(
+    <SchedulesView connection={connection} isLoadingTarget {...callbacks} refreshToken={0} />
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("OriginalSchedule"));
+    await result.click(result.getByRole("button", { name: "Cancel schedule" }));
+    const cancelAction = Array.from(result.dom.window.document.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Cancel schedule")
+      .at(-1)!;
+    act(() => cancelAction.click());
+    await result.rerender(
+      <SchedulesView
+        connection={{ ...connection, systemName: "Ops2" }}
+        isLoadingTarget
+        {...callbacks}
+        refreshToken={0}
+      />
+    );
+    await result.waitFor(() => result.getByText("ReplacementSchedule"));
+    assert.equal(result.queryByText("Cancel this schedule?"), null);
+
+    await act(async () => {
+      cancellation.resolve(Response.json({
+        messages: [],
+        schedule: schedule({ definitionName: "LeakedCanceledSchedule", status: "Canceled" }),
+        scheduleId: original.id,
+        status: "Accepted",
+      }));
+      await Promise.resolve();
+    });
+    assert.equal(result.queryByText("LeakedCanceledSchedule"), null);
+    assert.equal(replacementOverviewCalls, 1);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("a late cancellation failure cannot overwrite the new connection error state", async () => {
+  const cancellation = deferredResponse();
+  const original = schedule({ definitionName: "OriginalFailureSchedule" });
+  const replacement = schedule({
+    definitionName: "ReplacementAfterFailure",
+    id: { value: "bcbcbcbc-dede-fafa-2323-454545454545" },
+  });
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/systems/Ops/schedules/overview?")) {
+      return Response.json(scheduleOverview([original], original));
+    }
+    if (call.input.endsWith(`/systems/Ops/schedules/${original.id.value}/cancel`)) {
+      return cancellation.promise;
+    }
+    if (call.input.includes("/systems/Ops2/schedules/overview?")) {
+      return Response.json(scheduleOverview([replacement], replacement));
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const callbacks = {
+    onOpenWorker: () => undefined,
+    onReady: () => undefined,
+  };
+  const result = await renderDom(
+    <SchedulesView connection={connection} isLoadingTarget {...callbacks} refreshToken={0} />
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("OriginalFailureSchedule"));
+    await result.click(result.getByRole("button", { name: "Cancel schedule" }));
+    const cancelAction = Array.from(result.dom.window.document.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Cancel schedule")
+      .at(-1)!;
+    act(() => cancelAction.click());
+    await result.rerender(
+      <SchedulesView
+        connection={{ ...connection, systemName: "Ops2" }}
+        isLoadingTarget
+        {...callbacks}
+        refreshToken={0}
+      />
+    );
+    await result.waitFor(() => result.getByText("ReplacementAfterFailure"));
+
+    await act(async () => {
+      cancellation.reject(new Error("Late cancellation failed."));
+      await Promise.resolve();
+    });
+    assert.equal(result.queryByText("Late cancellation failed."), null);
+    result.getByText("ReplacementAfterFailure");
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
+test("schedules screen fails closed when the consolidated overview is unavailable", async () => {
   let rejectList: ((reason: unknown) => void) | undefined;
   const listPromise = new Promise<Response>((_resolve, reject) => {
     rejectList = reject;
   });
   const fetchMock = installFetch((call) => {
-    if (call.input.endsWith("/schedules?take=1000")) {
+    if (call.input.includes("/schedules/overview?")) {
       return listPromise;
     }
     return Response.json({ error: "Unhandled" }, { status: 500 });
@@ -333,41 +1192,12 @@ test("schedules screen fails closed for unavailable lists and occurrence history
     fetchMock.restore();
     await result.restore();
   }
-
-  const historyFetch = installFetch((call) => {
-    if (call.input.endsWith("/schedules?take=1000")) {
-      return Response.json({ schedules: [schedule()] });
-    }
-    if (call.input.includes("/occurrences?take=50")) {
-      throw "history offline";
-    }
-    return Response.json({ error: "Unhandled" }, { status: 500 });
-  });
-  const historyResult = await renderDom(
-    <SchedulesView
-      connection={connection}
-      isLoadingTarget
-      onOpenWorker={() => undefined}
-      onReady={() => undefined}
-      refreshToken={0}
-    />
-  );
-
-  try {
-    await historyResult.waitFor(() => historyResult.getByText("Schedule history could not be loaded."));
-  } finally {
-    historyFetch.restore();
-    await historyResult.restore();
-  }
 });
 
 test("schedules screen surfaces a rejected cancellation", async () => {
   const fetchMock = installFetch((call) => {
-    if (call.input.endsWith("/schedules?take=1000")) {
-      return Response.json({ schedules: [schedule()] });
-    }
-    if (call.input.includes("/occurrences?take=50")) {
-      return Response.json({ occurrences: [] });
+    if (call.input.includes("/schedules/overview?")) {
+      return Response.json(scheduleOverview([schedule()], schedule()));
     }
     if (call.input.endsWith(`/${activeScheduleId}/cancel`)) {
       return Response.json({
@@ -390,7 +1220,7 @@ test("schedules screen surfaces a rejected cancellation", async () => {
 
   try {
     await result.waitFor(() => result.getByText("ImportOrders"));
-    await result.click(result.getByRole("button", { name: "Cancel schedule for ImportOrders" }));
+    await result.click(result.getByRole("button", { name: "Cancel schedule" }));
     const cancelActions = Array.from(result.dom.window.document.querySelectorAll("button"))
       .filter((button) => button.textContent?.trim() === "Cancel schedule");
     await result.click(cancelActions.at(-1)!);
@@ -405,12 +1235,9 @@ test("schedules screen handles empty, failed, and snapshot-free cancellation out
   let cancelCalls = 0;
   let listCalls = 0;
   const fetchMock = installFetch((call) => {
-    if (call.input.endsWith("/schedules?take=1000")) {
+    if (call.input.includes("/schedules/overview?")) {
       listCalls += 1;
-      return Response.json({ schedules: [schedule()] });
-    }
-    if (call.input.includes("/occurrences?take=50")) {
-      return Response.json({ occurrences: [] });
+      return Response.json(scheduleOverview([schedule()], schedule()));
     }
     if (call.input.endsWith(`/${activeScheduleId}/cancel`)) {
       cancelCalls += 1;
@@ -447,7 +1274,7 @@ test("schedules screen handles empty, failed, and snapshot-free cancellation out
 
   try {
     await result.waitFor(() => result.getByText("ImportOrders"));
-    await result.click(result.getByRole("button", { name: "Cancel schedule for ImportOrders" }));
+    await result.click(result.getByRole("button", { name: "Cancel schedule" }));
     const cancelAction = () => Array.from(result.dom.window.document.querySelectorAll("button"))
       .filter((button) => button.textContent?.trim() === "Cancel schedule")
       .at(-1)!;
@@ -468,17 +1295,12 @@ test("schedules screen handles empty, failed, and snapshot-free cancellation out
   }
 });
 
-test("schedules screen keeps rows during refresh and ignores history from the prior selection", async () => {
+test("schedules screen keeps rows during refresh and includes selection in the consolidated request", async () => {
   const secondScheduleId = "22222222-3333-4444-5555-666666666666";
-  const staleWorkerId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
-  let listCalls = 0;
-  let resolveRefreshList: ((response: Response) => void) | undefined;
-  let resolveStaleHistory: ((response: Response) => void) | undefined;
-  const refreshList = new Promise<Response>((resolve) => {
-    resolveRefreshList = resolve;
-  });
-  const staleHistory = new Promise<Response>((resolve) => {
-    resolveStaleHistory = resolve;
+  let overviewCalls = 0;
+  let resolveRefresh: ((response: Response) => void) | undefined;
+  const refresh = new Promise<Response>((resolve) => {
+    resolveRefresh = resolve;
   });
   const schedules = [
     schedule(),
@@ -489,15 +1311,15 @@ test("schedules screen keeps rows during refresh and ignores history from the pr
     }),
   ];
   const fetchMock = installFetch((call) => {
-    if (call.input.endsWith("/schedules?take=1000")) {
-      listCalls += 1;
-      return listCalls === 1 ? Response.json({ schedules }) : refreshList;
-    }
-    if (call.input.endsWith(`/${activeScheduleId}/occurrences?take=50`)) {
-      return staleHistory;
-    }
-    if (call.input.endsWith(`/${secondScheduleId}/occurrences?take=50`)) {
-      return Response.json({ occurrences: [] });
+    if (call.input.includes("/schedules/overview?")) {
+      overviewCalls += 1;
+      if (overviewCalls === 3) {
+        return refresh;
+      }
+
+      const selectedId = new URL(call.input, "https://admin.example").searchParams.get("selectedScheduleId");
+      const selectedSchedule = schedules.find((item) => item.id.value === selectedId) ?? schedules[0];
+      return Response.json(scheduleOverview(schedules, selectedSchedule));
     }
     return Response.json({ error: "Unhandled" }, { status: 500 });
   });
@@ -513,26 +1335,13 @@ test("schedules screen keeps rows during refresh and ignores history from the pr
   );
 
   try {
-    await result.waitFor(() => assert.equal(
-      fetchMock.calls.some((call) => call.input.endsWith(`/${activeScheduleId}/occurrences?take=50`)),
-      true
-    ));
+    await result.waitFor(() => assert.equal(overviewCalls, 1));
     await result.click(result.getByText("SecondTask"));
     await result.waitFor(() => result.getByText("This schedule has no retained dispatches yet."));
-
-    resolveStaleHistory?.(Response.json({
-      occurrences: [{
-        attemptedAt: "2098-12-01T11:00:01Z",
-        expiresAt: "2098-12-08T11:00:01Z",
-        messages: [],
-        occurrenceId: "stale-occurrence",
-        queueStatus: "Accepted",
-        scheduledAt: "2098-12-01T11:00:00Z",
-        scheduleId: { value: activeScheduleId },
-        status: "Accepted",
-        workerId: { value: staleWorkerId },
-      }],
-    }));
+    assert.equal(
+      fetchMock.calls.some((call) => call.input.includes(`selectedScheduleId=${secondScheduleId}`)),
+      true
+    );
     await result.rerender(
       <SchedulesView
         connection={connection}
@@ -542,11 +1351,10 @@ test("schedules screen keeps rows during refresh and ignores history from the pr
         refreshToken={1}
       />
     );
-    await result.waitFor(() => assert.equal(listCalls, 2));
+    await result.waitFor(() => assert.equal(overviewCalls, 3));
     result.getByText("SecondTask");
-    assert.equal(result.queryByText(staleWorkerId), null);
 
-    resolveRefreshList?.(Response.json({ schedules }));
+    resolveRefresh?.(Response.json(scheduleOverview(schedules, schedules[1])));
     await result.rerender(
       <SchedulesView
         connection={connection}
@@ -563,11 +1371,76 @@ test("schedules screen keeps rows during refresh and ignores history from the pr
   }
 });
 
+test("schedules screen polls only while visible and does not overlap overview requests", async () => {
+  let visibilityState: DocumentVisibilityState = "visible";
+  let overviewCalls = 0;
+  let resolvePoll: ((response: Response) => void) | undefined;
+  const pendingPoll = new Promise<Response>((resolve) => {
+    resolvePoll = resolve;
+  });
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/schedules/overview?")) {
+      overviewCalls += 1;
+      if (overviewCalls === 2) {
+        return pendingPoll;
+      }
+      if (overviewCalls === 3) {
+        visibilityState = "hidden";
+      }
+      return Response.json(scheduleOverview([schedule()], schedule()));
+    }
+    return Response.json({ error: "Unhandled" }, { status: 500 });
+  });
+  const result = await renderDom(
+    <SchedulesView
+      connection={connection}
+      isLoadingTarget
+      onOpenWorker={() => undefined}
+      onReady={() => undefined}
+      pollIntervalMs={20}
+      refreshToken={0}
+    />,
+    {
+      setupWindow(window) {
+        Object.defineProperty(window.document, "visibilityState", {
+          configurable: true,
+          get: () => visibilityState,
+        });
+      },
+    }
+  );
+
+  try {
+    await result.waitFor(() => assert.equal(overviewCalls, 2));
+    await act(async () => {
+      result.dom.window.document.dispatchEvent(new result.dom.window.Event("visibilitychange"));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    assert.equal(overviewCalls, 2);
+
+    visibilityState = "hidden";
+    await act(async () => {
+      resolvePoll?.(Response.json(scheduleOverview([schedule()], schedule())));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    assert.equal(overviewCalls, 2);
+
+    visibilityState = "visible";
+    await act(async () => {
+      result.dom.window.document.dispatchEvent(new result.dom.window.Event("visibilitychange"));
+    });
+    await result.waitFor(() => assert.equal(overviewCalls, 3));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+  }
+});
+
 test("new schedule surfaces definition loading failures", async () => {
   clearDefinitionCatalogLevelCache();
   const fetchMock = installFetch((call) => {
-    if (call.input.endsWith("/schedules?take=1000")) {
-      return Response.json({ schedules: [] });
+    if (call.input.includes("/schedules/overview?")) {
+      return Response.json(scheduleOverview([], null));
     }
     if (call.input.endsWith("/definitions?level=true")) {
       return Response.json({ categories: [], definitions: [{ category: "Operations", name: "ImportOrders" }] });
@@ -600,14 +1473,113 @@ test("new schedule surfaces definition loading failures", async () => {
   }
 });
 
+test("a late definition response cannot open a schedule dialog across a connection change", async () => {
+  clearDefinitionCatalogLevelCache();
+  const definitionInfo = deferredResponse();
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/systems/Ops/schedules/overview?")) {
+      return Response.json(scheduleOverview([], null));
+    }
+    if (call.input === "/api/workable/systems/Ops/definitions?level=true") {
+      return Response.json({ categories: [], definitions: [{ category: "Operations", name: "ImportOrders" }] });
+    }
+    if (call.input === "/api/workable/systems/Ops/definitions/ImportOrders/info") {
+      return definitionInfo.promise;
+    }
+    if (call.input.includes("/systems/Ops2/schedules/overview?")) {
+      return Response.json(scheduleOverview([], null));
+    }
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const callbacks = {
+    onOpenWorker: () => undefined,
+    onReady: () => undefined,
+  };
+  const result = await renderDom(
+    <SchedulesView connection={connection} isLoadingTarget {...callbacks} refreshToken={0} />
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("No schedules have been created for this work system."));
+    await result.click(result.getByRole("button", { name: "New schedule" }));
+    await result.waitFor(() => result.getByRole("button", { name: "ImportOrders" }));
+    await result.click(result.getByRole("button", { name: "ImportOrders" }));
+    await result.rerender(
+      <SchedulesView
+        connection={{ ...connection, systemName: "Ops2" }}
+        isLoadingTarget
+        {...callbacks}
+        refreshToken={0}
+      />
+    );
+    await result.waitFor(() => assert.equal(result.queryByText("Choose work to schedule"), null));
+
+    await act(async () => {
+      definitionInfo.resolve(Response.json(definitionInfoResponse()));
+      await Promise.resolve();
+    });
+    assert.equal(result.queryByText("Schedule this work"), null);
+    assert.equal(result.queryByText("Definition could not be loaded."), null);
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+    clearDefinitionCatalogLevelCache();
+  }
+});
+
+test("a connection change closes an open schedule creation dialog", async () => {
+  clearDefinitionCatalogLevelCache();
+  const fetchMock = installFetch((call) => {
+    if (call.input.includes("/systems/Ops/schedules/overview?") ||
+        call.input.includes("/systems/Ops2/schedules/overview?")) {
+      return Response.json(scheduleOverview([], null));
+    }
+    if (call.input === "/api/workable/systems/Ops/definitions?level=true") {
+      return Response.json({ categories: [], definitions: [{ category: "Operations", name: "ImportOrders" }] });
+    }
+    if (call.input === "/api/workable/systems/Ops/definitions/ImportOrders/info") {
+      return Response.json(definitionInfoResponse());
+    }
+    return Response.json({ error: `Unhandled request: ${call.input}` }, { status: 500 });
+  });
+  const callbacks = {
+    onOpenWorker: () => undefined,
+    onReady: () => undefined,
+  };
+  const result = await renderDom(
+    <SchedulesView connection={connection} isLoadingTarget {...callbacks} refreshToken={0} />
+  );
+
+  try {
+    await result.waitFor(() => result.getByText("No schedules have been created for this work system."));
+    await result.click(result.getByRole("button", { name: "New schedule" }));
+    await result.waitFor(() => result.getByRole("button", { name: "ImportOrders" }));
+    await result.click(result.getByRole("button", { name: "ImportOrders" }));
+    await result.waitFor(() => result.getByText("Schedule this work"));
+    await result.rerender(
+      <SchedulesView
+        connection={{ ...connection, systemName: "Ops2" }}
+        isLoadingTarget
+        {...callbacks}
+        refreshToken={0}
+      />
+    );
+    await result.waitFor(() => assert.equal(result.queryByText("Schedule this work"), null));
+  } finally {
+    fetchMock.restore();
+    await result.restore();
+    clearDefinitionCatalogLevelCache();
+  }
+});
+
 test("new schedule chooses a definition and opens the queue dialog in schedule mode", async () => {
   clearDefinitionCatalogLevelCache();
   let scheduleCreated = false;
   let listCalls = 0;
   const fetchMock = installFetch((call) => {
-    if (call.input === "/api/workable/systems/Ops/schedules?take=1000") {
+    if (call.input.includes("/api/workable/systems/Ops/schedules/overview?")) {
       listCalls += 1;
-      return Response.json({ schedules: [] });
+      return Response.json(scheduleOverview([], null));
     }
 
     if (call.input === "/api/workable/systems/Ops/definitions?level=true") {
@@ -674,6 +1646,30 @@ test("new schedule chooses a definition and opens the queue dialog in schedule m
     clearDefinitionCatalogLevelCache();
   }
 });
+
+function definitionInfoResponse() {
+  return {
+    definition: {
+      category: "Operations",
+      id: { value: "definition-1" },
+      name: "ImportOrders",
+      revision: 1,
+    },
+    queueRequestSchema: { schema: { jsonSchema: "{}" }, tabs: [] },
+    status: "Registered",
+    workers: {
+      active: 0,
+      canceled: 0,
+      completed: 0,
+      failed: 0,
+      paused: 0,
+      queued: 0,
+      running: 0,
+      total: 0,
+      waiting: 0,
+    },
+  };
+}
 
 function schedule(overrides: Partial<WorkScheduleSnapshot> = {}): WorkScheduleSnapshot {
   return {

@@ -8,7 +8,7 @@ public static class WorkableSqlServerSchema
     private const int SchemaVersion = 4;
     private const int WorkflowSchemaVersion = 4;
     private const int ExecutionDiagnosticsSchemaVersion = 7;
-    private const int SchedulingSchemaVersion = 1;
+    private const int SchedulingSchemaVersion = 2;
     private const string QueueDurabilityComponent = "QueueDurability";
     private const string WorkflowPersistenceComponent = "WorkflowPersistence";
     private const string ExecutionDiagnosticsComponent = "ExecutionDiagnostics";
@@ -241,7 +241,7 @@ BEGIN
     );
 END
 """,
-            ..CreateSchedulingBatches(
+            ..CreateSchedulingVersion1Batches(
                 escapedSchemaName,
                 schedulesTable,
                 scheduleHostsTable,
@@ -251,6 +251,7 @@ END
                 dynamicScheduleHostsTable,
                 dynamicScheduleOccurrenceUsageTable,
                 dynamicScheduleOccurrencesTable),
+            ..CreateSchedulingVersion2Batches(escapedSchemaName, dynamicSchedulesTable),
             $"""
 IF OBJECT_ID(N'{escapedSchemaName}.WorkflowRuns', N'U') IS NOT NULL
    AND COL_LENGTH(N'{escapedSchemaName}.WorkflowRuns', N'DefinitionFingerprint') IS NULL
@@ -510,7 +511,7 @@ END
         ];
     }
 
-    private static IReadOnlyList<string> CreateSchedulingBatches(
+    private static IReadOnlyList<string> CreateSchedulingVersion1Batches(
         string escapedSchemaName,
         string schedulesTable,
         string hostsTable,
@@ -659,18 +660,6 @@ IF NOT EXISTS (
     INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
     WHERE schemas.name = N'{escapedSchemaName}'
       AND tables.name = N'WorkSchedules'
-      AND indexes.name = N'IX_WorkableWorkSchedules_ActiveList')
-BEGIN
-    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_ActiveList ON {dynamicSchedulesTable} (PersistenceScope, WorkSystemName, Status, CreatedAt DESC, ScheduleId);');
-END
-""",
-            $"""
-IF NOT EXISTS (
-    SELECT 1 FROM sys.indexes indexes
-    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
-    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
-    WHERE schemas.name = N'{escapedSchemaName}'
-      AND tables.name = N'WorkSchedules'
       AND indexes.name = N'IX_WorkableWorkSchedules_RetainedCreator')
 BEGIN
     EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_RetainedCreator ON {dynamicSchedulesTable} (PersistenceScope, WorkSystemName, CreatedByKey, ScheduleId) INCLUDE (PayloadSizeBytes);');
@@ -710,6 +699,25 @@ IF NOT EXISTS (
       AND indexes.name = N'IX_WorkableWorkScheduleOccurrences_Expiration')
 BEGIN
     EXEC(N'CREATE INDEX IX_WorkableWorkScheduleOccurrences_Expiration ON {dynamicOccurrencesTable} (OccurrenceUsageId, ExpiresAt, OccurrenceId) INCLUDE (PayloadSizeBytes);');
+END
+""",
+        ];
+
+    private static IReadOnlyList<string> CreateSchedulingVersion2Batches(
+        string escapedSchemaName,
+        string dynamicSchedulesTable)
+        =>
+        [
+            $"""
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes indexes
+    INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+    INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+    WHERE schemas.name = N'{escapedSchemaName}'
+      AND tables.name = N'WorkSchedules'
+      AND indexes.name = N'IX_WorkableWorkSchedules_ActiveList')
+BEGIN
+    EXEC(N'CREATE INDEX IX_WorkableWorkSchedules_ActiveList ON {dynamicSchedulesTable} (PersistenceScope, WorkSystemName, Status, CreatedAt DESC, ScheduleId);');
 END
 """,
         ];
@@ -1094,7 +1102,7 @@ WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Comp
                 SchedulingComponent,
                 FromVersion: 0,
                 ToVersion: 1,
-                CreateSchedulingBatches(
+                CreateSchedulingVersion1Batches(
                     escapedSchemaName,
                     $"{schema}.[WorkSchedules]",
                     $"{schema}.[WorkScheduleHosts]",
@@ -1104,6 +1112,13 @@ WHEN NOT MATCHED THEN INSERT (Component, Version, UpdatedAt) VALUES (source.Comp
                     EscapeLiteral($"{schema}.[WorkScheduleHosts]"),
                     EscapeLiteral($"{schema}.[WorkScheduleOccurrenceUsage]"),
                     EscapeLiteral($"{schema}.[WorkScheduleOccurrences]"))),
+            new SchemaMigration(
+                SchedulingComponent,
+                FromVersion: 1,
+                ToVersion: 2,
+                CreateSchedulingVersion2Batches(
+                    escapedSchemaName,
+                    EscapeLiteral($"{schema}.[WorkSchedules]"))),
         };
         var currentVersions = new[]
         {

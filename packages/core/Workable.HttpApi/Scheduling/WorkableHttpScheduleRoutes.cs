@@ -50,6 +50,133 @@ internal static class WorkableHttpScheduleRoutes
                 cancellationToken));
         });
 
+        group.MapGet("/schedules/upcoming", async (
+            int? take,
+            DateTimeOffset? cursorNextRunAt,
+            Guid? cursorScheduleId,
+            HttpContext httpContext,
+            WorkableHttpTopologyResolver topology,
+            IWorkRequestContextFactory requestContexts,
+            CancellationToken cancellationToken) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            var resolvedTake = take ?? 100;
+            if (resolvedTake is < 1 or > WorkScheduleCriteria.MaximumTake)
+            {
+                return InvalidTake("Upcoming schedule take must be between one and 1000.");
+            }
+
+            if (cursorNextRunAt.HasValue != cursorScheduleId.HasValue)
+            {
+                return InvalidCursor();
+            }
+
+            var cursor = cursorNextRunAt is { } nextRunAt && cursorScheduleId is { } scheduleId
+                ? new WorkScheduleUpcomingCursor(nextRunAt, new(scheduleId))
+                : null;
+            var session = await WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                description: null,
+                cancellationToken);
+            return Results.Ok(await session.Schedules.ListUpcoming(
+                resolvedTake,
+                cursor,
+                cancellationToken));
+        });
+
+        group.MapGet("/schedules/overview", async (
+            string? selectedScheduleId,
+            int? recentTake,
+            int? upcomingTake,
+            int? occurrenceTake,
+            DateTimeOffset? recentCursorCreatedAt,
+            Guid? recentCursorScheduleId,
+            DateTimeOffset? upcomingCursorNextRunAt,
+            Guid? upcomingCursorScheduleId,
+            HttpContext httpContext,
+            WorkableHttpTopologyResolver topology,
+            IWorkRequestContextFactory requestContexts,
+            CancellationToken cancellationToken) =>
+        {
+            if (!WorkableHttpRouteResults.TryResolveSystem(httpContext, topology, out var system, out var notFound))
+            {
+                return notFound;
+            }
+
+            WorkScheduleId? selected = null;
+            if (selectedScheduleId is not null)
+            {
+                if (!TryParseScheduleId(selectedScheduleId, out var parsed, out var invalid))
+                {
+                    return invalid;
+                }
+
+                selected = parsed;
+            }
+
+            var resolvedRecentTake = recentTake ?? 100;
+            if (resolvedRecentTake is < 1 or > WorkScheduleCriteria.MaximumTake)
+            {
+                return InvalidTake("Schedule overview recent take must be between one and 1000.");
+            }
+
+            var resolvedUpcomingTake = upcomingTake ?? 100;
+            if (resolvedUpcomingTake is < 1 or > WorkScheduleCriteria.MaximumTake)
+            {
+                return InvalidTake("Schedule overview upcoming take must be between one and 1000.");
+            }
+
+            var resolvedOccurrenceTake = occurrenceTake ?? 50;
+            if (resolvedOccurrenceTake is < 1 or > WorkScheduleOccurrenceReadRequest.MaximumTake)
+            {
+                return InvalidTake(
+                    $"Schedule overview occurrence take must be between one and {WorkScheduleOccurrenceReadRequest.MaximumTake}.");
+            }
+
+            if (recentCursorCreatedAt.HasValue != recentCursorScheduleId.HasValue)
+            {
+                return InvalidCursor(
+                    "Schedule overview recentCursorCreatedAt and recentCursorScheduleId must be supplied together.");
+            }
+
+            if (upcomingCursorNextRunAt.HasValue != upcomingCursorScheduleId.HasValue)
+            {
+                return InvalidCursor(
+                    "Schedule overview upcomingCursorNextRunAt and upcomingCursorScheduleId must be supplied together.");
+            }
+
+            var recentCursor = recentCursorCreatedAt is { } createdAt &&
+                recentCursorScheduleId is { } recentScheduleId
+                    ? new WorkScheduleCursor(createdAt, new(recentScheduleId))
+                    : null;
+            var upcomingCursor = upcomingCursorNextRunAt is { } nextRunAt &&
+                upcomingCursorScheduleId is { } upcomingScheduleId
+                    ? new WorkScheduleUpcomingCursor(nextRunAt, new(upcomingScheduleId))
+                    : null;
+
+            var session = await WorkableHttpRequestContext.CreateSession(
+                httpContext,
+                system,
+                requestContexts,
+                description: null,
+                cancellationToken);
+            return Results.Ok(await session.Schedules.GetOverview(
+                new(
+                    selected,
+                    resolvedRecentTake,
+                    resolvedUpcomingTake,
+                    resolvedOccurrenceTake,
+                    recentCursor,
+                    upcomingCursor),
+                cancellationToken));
+        });
+
         group.MapGet("/schedules/{scheduleId}", async (
             string scheduleId,
             HttpContext httpContext,
@@ -315,14 +442,15 @@ internal static class WorkableHttpScheduleRoutes
             },
         });
 
-    private static IResult InvalidCursor()
+    private static IResult InvalidCursor(
+        string message = "Schedule list cursorCreatedAt and cursorScheduleId must be supplied together.")
         => Results.BadRequest(new
         {
             Messages = new[]
             {
                 WorkMessage.Error(
                     "workable.schedule.cursor_invalid",
-                    "Schedule list cursorCreatedAt and cursorScheduleId must be supplied together.",
+                    message,
                     "cursor"),
             },
         });

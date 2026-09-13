@@ -160,6 +160,11 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
 
         var completed = await store.Get(new("operations", recurringId));
         var occurrences = await store.ListOccurrences(new("operations", recurringId));
+        var overview = await store.GetOverview(new(
+            "operations",
+            recurringId,
+            RecentScheduleTake: 10,
+            OccurrenceTake: 10));
 
         Assert.NotNull(persisted);
         Assert.Equal(context with { Authorization = null }, persisted.RequestContext);
@@ -175,6 +180,13 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
         var storedOccurrence = Assert.Single(occurrences);
         Assert.Equal(workerId, storedOccurrence.WorkerId);
         Assert.Equal("scheduled", Assert.Single(storedOccurrence.Messages).Code);
+        Assert.Equal(recurringId, Assert.Single(overview.Recent.Schedules).Id);
+        Assert.Equal(recurringId, Assert.Single(overview.Upcoming.Schedules).Id);
+        Assert.Equal(recurringId, overview.SelectedSchedule!.Id);
+        var overviewOccurrence = Assert.Single(overview.Occurrences);
+        Assert.Equal(storedOccurrence.OccurrenceId, overviewOccurrence.OccurrenceId);
+        Assert.Equal(storedOccurrence.Status, overviewOccurrence.Status);
+        Assert.Equal("scheduled", Assert.Single(overviewOccurrence.Messages).Code);
 
         var canceler = new WorkActor("sql-canceler");
         var canceled = await store.Cancel(new(
@@ -280,6 +292,296 @@ public sealed class WorkableSqlServerPersistenceTests : IAsyncLifetime
         Assert.False(unnamed.Schedule.WorkerOptions!.HasExplicitProfilingEnabled);
         Assert.True(unnamed.Schedule.WorkerOptions.HasExplicitProfilingCaptureMode);
         Assert.Equal(WorkProfileCaptureMode.Full, unnamed.Schedule.WorkerOptions.ProfilingCaptureMode);
+    }
+
+    [Fact]
+    public async Task ReadAFilteredScheduleOverviewWithActiveRecentAndExplicitlySelectedSchedules()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-overview-tests",
+        });
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var now = DateTimeOffset.UtcNow;
+        const string visibleDefinition = "sql.schedule.overview.visible";
+        var selected = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            visibleDefinition,
+            WorkScheduleTiming.Once(now + TimeSpan.FromHours(1)),
+            now - TimeSpan.FromMinutes(3));
+        var active = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            visibleDefinition,
+            WorkScheduleTiming.Once(now + TimeSpan.FromHours(2)),
+            now - TimeSpan.FromMinutes(2));
+        var recent = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            visibleDefinition,
+            WorkScheduleTiming.Once(now + TimeSpan.FromHours(3)),
+            now - TimeSpan.FromMinutes(1));
+        var hidden = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.overview.hidden",
+            WorkScheduleTiming.Once(now + TimeSpan.FromHours(4)),
+            now);
+        foreach (var record in new[] { selected, active, recent, hidden })
+        {
+            Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(record with
+            {
+                Schedule = record.Schedule with { WorkSystemName = "operations" },
+            })));
+        }
+
+        Assert.NotNull(await store.Cancel(new("operations", selected.Schedule.Id, now, new WorkActor("canceler"))));
+        Assert.NotNull(await store.Cancel(new("operations", recent.Schedule.Id, now, new WorkActor("canceler"))));
+        var visibleDefinitions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { visibleDefinition };
+
+        var overview = await store.GetOverview(new(
+            "operations",
+            selected.Schedule.Id,
+            RecentScheduleTake: 1,
+            OccurrenceTake: 10,
+            DefinitionNames: visibleDefinitions));
+        var defaultSelection = await store.GetOverview(new(
+            "operations",
+            RecentScheduleTake: 1,
+            OccurrenceTake: 10,
+            DefinitionNames: visibleDefinitions));
+        var empty = await store.GetOverview(new(
+            "operations",
+            RecentScheduleTake: 1,
+            OccurrenceTake: 10,
+            DefinitionNames: new HashSet<string>()));
+
+        Assert.Equal(recent.Schedule.Id, Assert.Single(overview.Recent.Schedules).Id);
+        Assert.Equal(active.Schedule.Id, Assert.Single(overview.Upcoming.Schedules).Id);
+        Assert.DoesNotContain(overview.Recent.Schedules, schedule => schedule.Id == hidden.Schedule.Id);
+        Assert.DoesNotContain(overview.Upcoming.Schedules, schedule => schedule.Id == hidden.Schedule.Id);
+        Assert.Equal(selected.Schedule.Id, overview.SelectedSchedule!.Id);
+        Assert.Empty(overview.Occurrences);
+        Assert.Equal(1, overview.Upcoming.ActiveScheduleCount);
+        Assert.Equal(1, overview.Upcoming.UpcomingScheduleCount);
+        Assert.Equal(0, overview.Upcoming.RecurringScheduleCount);
+        Assert.Equal(recent.Schedule.Id, defaultSelection.SelectedSchedule!.Id);
+        Assert.Empty(empty.Recent.Schedules);
+        Assert.Empty(empty.Upcoming.Schedules);
+        Assert.Null(empty.SelectedSchedule);
+        Assert.Empty(empty.Occurrences);
+    }
+
+    [Fact]
+    public async Task ReportACanceledSqlScheduleOverviewAsACanceledOperation()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        const string persistenceScope = "schedule-overview-cancellation-tests";
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = persistenceScope,
+        });
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var record = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.overview.cancel",
+            WorkScheduleTiming.Once(DateTimeOffset.UtcNow + TimeSpan.FromHours(1)),
+            DateTimeOffset.UtcNow);
+        Assert.Equal(
+            WorkScheduleStoreCreationStatus.Accepted,
+            await store.Create(CreateStoreRequest(record with
+            {
+                Schedule = record.Schedule with { WorkSystemName = "operations" },
+            })));
+
+        await using var blocker = new SqlConnection(this.ConnectionString);
+        await blocker.OpenAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await using (var command = blocker.CreateCommand())
+        {
+            command.Transaction = (SqlTransaction)transaction;
+            command.CommandText = """
+UPDATE workable.WorkSchedules
+SET LastRunAt = LastRunAt
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = N'operations'
+  AND ScheduleId = @ScheduleId;
+""";
+            command.Parameters.AddWithValue("@PersistenceScope", persistenceScope);
+            command.Parameters.AddWithValue("@ScheduleId", record.Schedule.Id.Value);
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        var overview = store.GetOverview(new("operations"), cancellation.Token);
+        await Task.Delay(100);
+        cancellation.Cancel();
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => overview);
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.IsType<SqlException>(exception.InnerException);
+        await transaction.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task ReportACanceledSqlUpcomingScheduleQueryAsACanceledOperation()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var persistenceScope = "schedule-upcoming-cancel-tests";
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = persistenceScope,
+        });
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var record = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.upcoming.cancel",
+            WorkScheduleTiming.Once(DateTimeOffset.UtcNow + TimeSpan.FromHours(1)),
+            DateTimeOffset.UtcNow);
+        Assert.Equal(
+            WorkScheduleStoreCreationStatus.Accepted,
+            await store.Create(CreateStoreRequest(record with
+            {
+                Schedule = record.Schedule with { WorkSystemName = "operations" },
+            })));
+
+        await using var blocker = new SqlConnection(this.ConnectionString);
+        await blocker.OpenAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await using (var command = blocker.CreateCommand())
+        {
+            command.Transaction = (SqlTransaction)transaction;
+            command.CommandText = """
+UPDATE workable.WorkSchedules
+SET LastRunAt = LastRunAt
+WHERE PersistenceScope = @PersistenceScope
+  AND WorkSystemName = N'operations'
+  AND ScheduleId = @ScheduleId;
+""";
+            command.Parameters.AddWithValue("@PersistenceScope", persistenceScope);
+            command.Parameters.AddWithValue("@ScheduleId", record.Schedule.Id.Value);
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        var upcoming = store.ListUpcoming(new("operations"), cancellation.Token);
+        await Task.Delay(100);
+        cancellation.Cancel();
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => upcoming);
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(cancellation.Token, exception.CancellationToken);
+        await transaction.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task PageTheSqlScheduleOverviewByNextRunTime()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-overview-limit-tests",
+        });
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var now = DateTimeOffset.UtcNow;
+        var template = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.overview.limit",
+            WorkScheduleTiming.Once(now + TimeSpan.FromHours(1)),
+            now);
+        template = template with
+        {
+            Schedule = template.Schedule with { WorkSystemName = "operations" },
+        };
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(template)));
+
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, $"""
+;WITH Numbers AS
+(
+    SELECT TOP (100)
+           ROW_NUMBER() OVER (ORDER BY first.object_id, second.object_id) AS Number
+    FROM sys.all_objects first
+    CROSS JOIN sys.all_objects second
+)
+INSERT INTO workable.WorkSchedules
+(
+    ScheduleId, PersistenceScope, WorkSystemName, DefinitionName, TimingJson, InputJson,
+    WorkerOptionsJson, RequestContextJson, Status, CreatedAt, NextRunAt, LastRunAt,
+    CanceledAt, CanceledByJson, LeaseId, LeaseExpiresAt, DispatchStarted,
+    ExecutionGrantJson, CreatedByJson, CreatedByKey, PayloadSizeBytes,
+    CancellationPayloadReserveBytes
+)
+SELECT NEWID(), template.PersistenceScope, template.WorkSystemName, template.DefinitionName,
+       template.TimingJson, template.InputJson, template.WorkerOptionsJson,
+       template.RequestContextJson, template.Status,
+       DATEADD(millisecond, -numbers.Number, template.CreatedAt), template.NextRunAt,
+       template.LastRunAt, template.CanceledAt, template.CanceledByJson, template.LeaseId,
+       template.LeaseExpiresAt, template.DispatchStarted, template.ExecutionGrantJson,
+       template.CreatedByJson, template.CreatedByKey, template.PayloadSizeBytes,
+       template.CancellationPayloadReserveBytes
+FROM workable.WorkSchedules template
+CROSS JOIN Numbers numbers
+WHERE template.ScheduleId = '{template.Schedule.Id.Value:D}';
+""");
+        }
+
+        var overview = await store.GetOverview(new(
+            "operations",
+            RecentScheduleTake: 1,
+            UpcomingScheduleTake: 100,
+            OccurrenceTake: 1));
+
+        Assert.Equal(100, overview.Upcoming.Schedules.Count);
+        Assert.Equal(101, overview.Upcoming.ActiveScheduleCount);
+        Assert.Equal(101, overview.Upcoming.UpcomingScheduleCount);
+        Assert.NotNull(overview.Upcoming.Cursor);
+        Assert.NotNull(overview.Recent.Cursor);
+        var anchoredOverview = await store.GetOverview(new(
+            "operations",
+            RecentScheduleTake: 100,
+            UpcomingScheduleTake: 100,
+            OccurrenceTake: 1,
+            RecentCursor: overview.Recent.Cursor,
+            UpcomingCursor: overview.Upcoming.Cursor));
+        Assert.Equal(100, anchoredOverview.Recent.Schedules.Count);
+        Assert.Single(anchoredOverview.Upcoming.Schedules);
+        Assert.DoesNotContain(
+            anchoredOverview.Recent.Schedules,
+            schedule => overview.Recent.Schedules.Any(first => first.Id == schedule.Id));
+        Assert.DoesNotContain(
+            anchoredOverview.Upcoming.Schedules,
+            schedule => overview.Upcoming.Schedules.Any(first => first.Id == schedule.Id));
+        var next = await store.ListUpcoming(new(
+            "operations",
+            Take: 100,
+            Cursor: overview.Upcoming.Cursor));
+        Assert.Single(next.Schedules);
+        Assert.DoesNotContain(next.Schedules, schedule =>
+            overview.Upcoming.Schedules.Any(first => first.Id == schedule.Id));
     }
 
     [Fact]
@@ -1503,7 +1805,7 @@ CREATE TABLE {WorkableSqlServerSchema.QuoteIdentifier(freshSchemaName)}.Unrelate
 SELECT COUNT(*)
 FROM {WorkableSqlServerSchema.QuoteIdentifier(freshSchemaName)}.SchemaVersion;
 """));
-        Assert.Equal(1, await Scalar<int>(verification, $"""
+        Assert.Equal(2, await Scalar<int>(verification, $"""
 SELECT Version
 FROM {WorkableSqlServerSchema.QuoteIdentifier(freshSchemaName)}.SchemaVersion
 WHERE Component = N'Scheduling';
@@ -1533,7 +1835,7 @@ DELETE FROM workable.SchemaVersion WHERE Component = N'Scheduling';
         await WorkableSqlServerSchema.ValidateSchedulingInstalled(this.ConnectionString, SchemaName);
 
         await using var verification = await this.OpenConnection();
-        Assert.Equal(1, await Scalar<int>(verification, """
+        Assert.Equal(2, await Scalar<int>(verification, """
 SELECT Version
 FROM workable.SchemaVersion
 WHERE Component = N'Scheduling';
@@ -1544,6 +1846,67 @@ SELECT
     (SELECT COUNT(1) FROM workable.WorkScheduleOccurrenceUsage) +
     (SELECT COUNT(1) FROM workable.WorkScheduleOccurrences);
 """));
+    }
+
+    [Fact]
+    public async Task SchemaApplyUpgradesSchedulingVersionOneWithoutLosingSchedules()
+    {
+        if (this.SkipIfUnavailable())
+        {
+            return;
+        }
+
+        var store = new WorkableSqlServerScheduleStore(new WorkableSqlServerPersistenceOptions
+        {
+            ConnectionString = this.ConnectionString,
+            SchemaName = SchemaName,
+            PersistenceScope = "schedule-schema-upgrade",
+        });
+        await store.Initialize(new WorkScheduleStoreInitializationContext("operations"));
+        var now = DateTimeOffset.UtcNow;
+        var record = CreateSqlScheduleRecord(
+            WorkScheduleId.New(),
+            "sql.schedule.schema-upgrade",
+            WorkScheduleTiming.Once(now + TimeSpan.FromHours(1)),
+            now);
+        record = record with
+        {
+            Schedule = record.Schedule with
+            {
+                WorkSystemName = "operations",
+            },
+        };
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(CreateStoreRequest(record)));
+
+        await using (var connection = await this.OpenConnection())
+        {
+            await Execute(connection, """
+DROP INDEX IX_WorkableWorkSchedules_ActiveList ON workable.WorkSchedules;
+UPDATE workable.SchemaVersion
+SET Version = 1
+WHERE Component = N'Scheduling';
+""");
+        }
+
+        await WorkableSqlServerSchema.Apply(this.ConnectionString, SchemaName);
+        await WorkableSqlServerSchema.ValidateSchedulingInstalled(this.ConnectionString, SchemaName);
+
+        await using var verification = await this.OpenConnection();
+        Assert.Equal(2, await Scalar<int>(verification, """
+SELECT Version
+FROM workable.SchemaVersion
+WHERE Component = N'Scheduling';
+"""));
+        Assert.Equal(1, await Scalar<int>(verification, """
+SELECT COUNT(*)
+FROM sys.indexes indexes
+INNER JOIN sys.tables tables ON tables.object_id = indexes.object_id
+INNER JOIN sys.schemas schemas ON schemas.schema_id = tables.schema_id
+WHERE schemas.name = N'workable'
+  AND tables.name = N'WorkSchedules'
+  AND indexes.name = N'IX_WorkableWorkSchedules_ActiveList';
+"""));
+        Assert.NotNull(await store.Get(new("operations", record.Schedule.Id)));
     }
 
     [Fact]

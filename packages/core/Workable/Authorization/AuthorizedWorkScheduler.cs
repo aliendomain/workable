@@ -104,6 +104,68 @@ internal sealed class AuthorizedWorkScheduler(
             result.Cursor);
     }
 
+    public async Task<WorkScheduleOverviewResult> GetOverview(
+        WorkScheduleOverviewCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+    {
+        criteria ??= new WorkScheduleOverviewCriteria();
+        WorkScheduler.ValidateTake(criteria.RecentScheduleTake, nameof(criteria.RecentScheduleTake));
+        WorkScheduler.ValidateTake(criteria.UpcomingScheduleTake, nameof(criteria.UpcomingScheduleTake));
+        WorkScheduler.ValidateTake(
+            criteria.OccurrenceTake,
+            nameof(criteria.OccurrenceTake),
+            WorkScheduleOccurrenceReadRequest.MaximumTake);
+        var readableDefinitionNames = this.GetReadableDefinitionNames();
+        if (readableDefinitionNames is { Count: 0 })
+        {
+            return new(new([]), new([], null, 0, 0, 0), null, []);
+        }
+
+        var result = await inner.GetOverview(criteria, readableDefinitionNames, cancellationToken);
+        var recentSchedules = result.Recent.Schedules
+            .Where(schedule => this.CanRead(schedule.DefinitionName))
+            .ToArray();
+        var upcomingSchedules = result.Upcoming.Schedules
+            .Where(schedule => this.CanRead(schedule.DefinitionName))
+            .ToArray();
+        var selected = result.SelectedSchedule is { } selectedSchedule && this.CanRead(selectedSchedule.DefinitionName)
+            ? selectedSchedule
+            : null;
+        var occurrences = selected is null
+            ? []
+            : result.Occurrences
+                .Where(occurrence => occurrence.ScheduleId == selected.Id)
+                .Take(criteria.OccurrenceTake)
+                .ToArray();
+        return new(
+            result.Recent with { Schedules = recentSchedules },
+            result.Upcoming with { Schedules = upcomingSchedules },
+            selected,
+            occurrences);
+    }
+
+    public async Task<WorkScheduleUpcomingQueryResult> ListUpcoming(
+        int take = 100,
+        WorkScheduleUpcomingCursor? cursor = null,
+        CancellationToken cancellationToken = default)
+    {
+        WorkScheduler.ValidateTake(take, nameof(take));
+        var readableDefinitionNames = this.GetReadableDefinitionNames();
+        if (readableDefinitionNames is { Count: 0 })
+        {
+            return new([], null, 0, 0, 0);
+        }
+
+        var result = await inner.ListUpcoming(take, cursor, readableDefinitionNames, cancellationToken);
+        return result with
+        {
+            Schedules = result.Schedules
+                .Where(schedule => this.CanRead(schedule.DefinitionName))
+                .Take(take)
+                .ToArray(),
+        };
+    }
+
     public async Task<WorkScheduleOccurrenceQueryResult> ListOccurrences(
         WorkScheduleId scheduleId,
         int take = 100,
@@ -120,6 +182,19 @@ internal sealed class AuthorizedWorkScheduler(
         }
 
         return await inner.ListOccurrences(scheduleId, take, cancellationToken);
+    }
+
+    private IReadOnlySet<string>? GetReadableDefinitionNames()
+    {
+        if (authorization.HasSystemReadAllWorkAccess())
+        {
+            return null;
+        }
+
+        return catalog.Definitions
+            .Where(authorization.CanRead)
+            .Select(static definition => definition.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task<WorkScheduleCancellationOutcome> Cancel(

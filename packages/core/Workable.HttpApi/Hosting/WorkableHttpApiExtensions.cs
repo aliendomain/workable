@@ -85,6 +85,7 @@ public static class WorkableHttpApiExtensions
         RequireOuterGate(group, endpoints.ServiceProvider);
         RequireAuthenticated(group);
         HandleAuthorizationDenied(group);
+        HandleClientDisconnect(group);
         return group;
     }
 
@@ -160,6 +161,31 @@ public static class WorkableHttpApiExtensions
                 return WorkableHttpRouteResults.AuthorizationDenied(denied);
             }
         });
+    }
+
+    private static void HandleClientDisconnect(RouteGroupBuilder group)
+    {
+        group.AddEndpointFilter((context, next) =>
+            ExecuteWithClientDisconnectHandling(
+                context.HttpContext,
+                () => next(context)));
+    }
+
+    internal static async ValueTask<object?> ExecuteWithClientDisconnectHandling(
+        HttpContext httpContext,
+        Func<ValueTask<object?>> next)
+    {
+        ArgumentNullException.ThrowIfNull(httpContext);
+        ArgumentNullException.ThrowIfNull(next);
+
+        try
+        {
+            return await next();
+        }
+        catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
+        {
+            return Results.Empty;
+        }
     }
 
     private static void RequireAuthenticated(RouteGroupBuilder group)

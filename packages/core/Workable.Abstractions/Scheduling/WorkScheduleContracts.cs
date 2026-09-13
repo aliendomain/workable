@@ -144,6 +144,41 @@ public sealed record WorkScheduleQueryResult(
     WorkScheduleCursor? Cursor = null);
 
 /// <summary>
+/// Continues an upcoming-schedule query after the last item in the preceding page.
+/// </summary>
+public sealed record WorkScheduleUpcomingCursor(DateTimeOffset NextRunAt, WorkScheduleId ScheduleId);
+
+/// <summary>
+/// Returns upcoming schedules in due-time order together with schedule totals visible to the caller.
+/// </summary>
+public sealed record WorkScheduleUpcomingQueryResult(
+    IReadOnlyList<WorkScheduleSummary> Schedules,
+    WorkScheduleUpcomingCursor? Cursor,
+    int ActiveScheduleCount,
+    int UpcomingScheduleCount,
+    int RecurringScheduleCount);
+
+/// <summary>
+/// Selects the bounded data needed to render and refresh the schedule-management page.
+/// </summary>
+public sealed record WorkScheduleOverviewCriteria(
+    WorkScheduleId? SelectedScheduleId = null,
+    int RecentScheduleTake = 100,
+    int UpcomingScheduleTake = 100,
+    int OccurrenceTake = 50,
+    WorkScheduleCursor? RecentCursor = null,
+    WorkScheduleUpcomingCursor? UpcomingCursor = null);
+
+/// <summary>
+/// Returns bounded recent and upcoming pages, visible schedule totals, and the selected schedule's dispatch history.
+/// </summary>
+public sealed record WorkScheduleOverviewResult(
+    WorkScheduleQueryResult Recent,
+    WorkScheduleUpcomingQueryResult Upcoming,
+    WorkScheduleSummary? SelectedSchedule,
+    IReadOnlyList<WorkScheduleOccurrence> Occurrences);
+
+/// <summary>
 /// Identifies the immediate result of schedule creation.
 /// </summary>
 public enum WorkScheduleCreationStatus

@@ -36,6 +36,17 @@ internal sealed class SessionWorkScheduler(
         CancellationToken cancellationToken = default)
         => inner.List(criteria, cancellationToken);
 
+    public Task<WorkScheduleUpcomingQueryResult> ListUpcoming(
+        int take = 100,
+        WorkScheduleUpcomingCursor? cursor = null,
+        CancellationToken cancellationToken = default)
+        => inner.ListUpcoming(take, cursor, cancellationToken);
+
+    public Task<WorkScheduleOverviewResult> GetOverview(
+        WorkScheduleOverviewCriteria? criteria = null,
+        CancellationToken cancellationToken = default)
+        => inner.GetOverview(criteria, cancellationToken);
+
     public Task<WorkScheduleOccurrenceQueryResult> ListOccurrences(
         WorkScheduleId scheduleId,
         int take = 100,

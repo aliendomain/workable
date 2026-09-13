@@ -9,10 +9,10 @@ import {
   Plus,
   XCircle,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ConsoleEmptyState } from "@/components/features/console/empty-state";
 import { ConsolePageLayout } from "@/components/features/console/console-primitives";
-import { PanelShell } from "@/components/features/console/panel-shell";
+import { PanelScrollViewport, PanelShell } from "@/components/features/console/panel-shell";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,10 +56,13 @@ import {
   type WorkDefinition,
   type WorkScheduleCancellationOutcome,
   type WorkScheduleOccurrence,
-  type WorkScheduleOccurrenceQueryResult,
+  type WorkScheduleOverviewResult,
   type WorkScheduleQueryResult,
   type WorkScheduleSnapshot,
   type WorkScheduleSummary,
+  type WorkScheduleCursor,
+  type WorkScheduleUpcomingCursor,
+  type WorkScheduleUpcomingQueryResult,
   type WorkableConnection,
 } from "@/lib/workable";
 
@@ -68,50 +71,107 @@ type QueueScheduleDialogState = {
   queueRequestSchema: QueueRequestSchemaDescriptor;
 };
 
-const schedulePageSize = 1000;
+export const schedulePageSize = 25;
+export const scheduleLoadedWindowSize = schedulePageSize * 5;
+export const schedulePollIntervalMs = 10_000;
+export const schedulePollMaximumIntervalMs = 60_000;
 
-export async function loadScheduleIndex(connection: WorkableConnection): Promise<WorkScheduleSummary[]> {
-  const recent = await workableFetch<WorkScheduleQueryResult>(
-    connection,
-    `schedules?take=${schedulePageSize}`
+type ScheduleOverviewWindow = {
+  recentCursor?: WorkScheduleCursor | null;
+  recentTake?: number;
+  upcomingCursor?: WorkScheduleUpcomingCursor | null;
+  upcomingTake?: number;
+};
+
+export function calculateSchedulePollDelay(
+  intervalMs: number,
+  consecutiveFailures: number,
+  randomValue = Math.random()
+) {
+  const boundedInterval = Math.max(1, intervalMs);
+  const exponentialDelay = Math.min(
+    schedulePollMaximumIntervalMs,
+    boundedInterval * (2 ** Math.min(Math.max(0, consecutiveFailures), 10))
   );
-  if (recent.schedules.length < schedulePageSize) {
-    return recent.schedules;
+  const boundedRandomValue = Math.min(1, Math.max(0, randomValue));
+  const jitteredDelay = exponentialDelay * (0.8 + (boundedRandomValue * 0.4));
+  return Math.max(1, Math.min(schedulePollMaximumIntervalMs, Math.round(jitteredDelay)));
+}
+
+export function createScheduleOverviewPath(
+  selectedScheduleId?: string | null,
+  window: ScheduleOverviewWindow = {}
+) {
+  const query = new URLSearchParams({
+    occurrenceTake: "50",
+    recentTake: String(window.recentTake ?? schedulePageSize),
+    upcomingTake: String(window.upcomingTake ?? schedulePageSize),
+  });
+  if (selectedScheduleId) {
+    query.set("selectedScheduleId", selectedScheduleId);
+  }
+  if (window.recentCursor) {
+    query.set("recentCursorCreatedAt", window.recentCursor.createdAt);
+    query.set("recentCursorScheduleId", window.recentCursor.scheduleId.value);
+  }
+  if (window.upcomingCursor) {
+    query.set("upcomingCursorNextRunAt", window.upcomingCursor.nextRunAt);
+    query.set("upcomingCursorScheduleId", window.upcomingCursor.scheduleId.value);
   }
 
-  const active = await workableFetch<WorkScheduleQueryResult>(
+  return `schedules/overview?${query}`;
+}
+
+export function createSchedulePagePath(cursor: WorkScheduleCursor) {
+  const query = new URLSearchParams({
+    cursorCreatedAt: cursor.createdAt,
+    cursorScheduleId: cursor.scheduleId.value,
+    take: String(schedulePageSize),
+  });
+  return `schedules?${query}`;
+}
+
+export function createUpcomingSchedulePagePath(cursor: WorkScheduleUpcomingCursor) {
+  const query = new URLSearchParams({
+    cursorNextRunAt: cursor.nextRunAt,
+    cursorScheduleId: cursor.scheduleId.value,
+    take: String(schedulePageSize),
+  });
+  return `schedules/upcoming?${query}`;
+}
+
+export function loadScheduleOverview(
+  connection: WorkableConnection,
+  selectedScheduleId?: string | null,
+  signal?: AbortSignal,
+  window?: ScheduleOverviewWindow
+) {
+  return workableFetch<WorkScheduleOverviewResult>(
     connection,
-    `schedules?status=Active&take=${schedulePageSize}`
+    createScheduleOverviewPath(selectedScheduleId, window),
+    { signal },
+    { coalesce: false }
   );
-  const schedulesById = new Map(
-    recent.schedules.map((schedule) => [schedule.id.value, schedule] as const)
-  );
-  const followedCursors = new Set<string>();
-  let activePage = active;
-  while (true) {
-    for (const schedule of activePage.schedules) {
-      schedulesById.set(schedule.id.value, schedule);
-    }
+}
 
-    if (!activePage.cursor) {
-      break;
+export function appendProviderOrderedSchedulePage(
+  current: WorkScheduleSummary[],
+  incoming: WorkScheduleSummary[],
+  maximumSize = scheduleLoadedWindowSize
+) {
+  const seen = new Set(current.map((schedule) => schedule.id.value));
+  const combined = [...current];
+  for (const schedule of incoming) {
+    if (!seen.has(schedule.id.value)) {
+      seen.add(schedule.id.value);
+      combined.push(schedule);
     }
-
-    const cursorKey = `${activePage.cursor.createdAt}\n${activePage.cursor.scheduleId.value}`;
-    if (followedCursors.has(cursorKey)) {
-      throw new Error("The schedule list returned a repeated continuation cursor.");
-    }
-    followedCursors.add(cursorKey);
-
-    activePage = await workableFetch<WorkScheduleQueryResult>(
-      connection,
-      `schedules?status=Active&take=${schedulePageSize}` +
-        `&cursorCreatedAt=${encodeURIComponent(activePage.cursor.createdAt)}` +
-        `&cursorScheduleId=${encodeURIComponent(activePage.cursor.scheduleId.value)}`
-    );
   }
-
-  return Array.from(schedulesById.values());
+  const trimCount = Math.max(0, combined.length - maximumSize);
+  return {
+    schedules: trimCount === 0 ? combined : combined.slice(trimCount),
+    trimmedThrough: trimCount === 0 ? null : combined[trimCount - 1],
+  };
 }
 
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -141,9 +201,9 @@ export function formatScheduleTiming(schedule: WorkScheduleSummary) {
 }
 
 export function getUpcomingSchedules(schedules: WorkScheduleSummary[]) {
-  return schedules
-    .filter((schedule) => schedule.status === "Active" && Boolean(schedule.nextRunAt))
-    .toSorted((left, right) => Date.parse(left.nextRunAt!) - Date.parse(right.nextRunAt!));
+  return schedules.filter(
+    (schedule) => schedule.status === "Active" && Boolean(schedule.nextRunAt)
+  );
 }
 
 export function SchedulesView({
@@ -151,22 +211,36 @@ export function SchedulesView({
   isLoadingTarget,
   onOpenWorker,
   onReady,
+  pollIntervalMs = schedulePollIntervalMs,
+  loadedWindowSize = scheduleLoadedWindowSize,
   refreshToken,
 }: {
   connection: WorkableConnection;
   isLoadingTarget: boolean;
   onOpenWorker: (workerId: string) => void;
   onReady: () => void;
+  pollIntervalMs?: number;
+  loadedWindowSize?: number;
   refreshToken: number;
 }) {
   const [schedules, setSchedules] = useState<WorkScheduleSummary[]>([]);
+  const [recentCursor, setRecentCursor] = useState<WorkScheduleCursor | null>(null);
+  const [upcomingSchedules, setUpcomingSchedules] = useState<WorkScheduleSummary[]>([]);
+  const [upcomingCursor, setUpcomingCursor] = useState<WorkScheduleUpcomingCursor | null>(null);
+  const [activeCount, setActiveCount] = useState(0);
+  const [upcomingCount, setUpcomingCount] = useState(0);
+  const [recurringCount, setRecurringCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadingRecentPage, setLoadingRecentPage] = useState(false);
+  const [loadingUpcomingPage, setLoadingUpcomingPage] = useState(false);
+  const [recentWindowTrimmed, setRecentWindowTrimmed] = useState(false);
+  const [upcomingWindowTrimmed, setUpcomingWindowTrimmed] = useState(false);
   const [error, setError] = useState<string>();
   const [localRefreshToken, setLocalRefreshToken] = useState(0);
   const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+  const [selectedSchedule, setSelectedSchedule] = useState<WorkScheduleSummary | null>(null);
   const [occurrences, setOccurrences] = useState<WorkScheduleOccurrence[]>([]);
   const [occurrencesLoading, setOccurrencesLoading] = useState(false);
-  const [occurrencesError, setOccurrencesError] = useState<string>();
   const [pendingCancel, setPendingCancel] = useState<WorkScheduleSummary | null>(null);
   const [canceling, setCanceling] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -174,8 +248,59 @@ export function SchedulesView({
   const [pickerError, setPickerError] = useState<string>();
   const [loadingDefinitionName, setLoadingDefinitionName] = useState<string | null>(null);
   const [queueDialog, setQueueDialog] = useState<QueueScheduleDialogState | null>(null);
+  const [pollState, setPollState] = useState({ consecutiveFailures: 0, revision: 0 });
+  const loadingRef = useRef(false);
+  const pagingRef = useRef(false);
+  const recentExpandedRef = useRef(false);
+  const upcomingExpandedRef = useRef(false);
+  const recentWindowTakeRef = useRef(schedulePageSize);
+  const upcomingWindowTakeRef = useRef(schedulePageSize);
+  const recentWindowStartCursorRef = useRef<WorkScheduleCursor | null>(null);
+  const upcomingWindowStartCursorRef = useRef<WorkScheduleUpcomingCursor | null>(null);
+  const schedulesRef = useRef<WorkScheduleSummary[]>([]);
+  const upcomingSchedulesRef = useRef<WorkScheduleSummary[]>([]);
+  const connectionGenerationRef = useRef(0);
+  const selectedScheduleIdRef = useRef<string | null>(null);
 
-  const reload = useCallback(() => setLocalRefreshToken((current) => current + 1), []);
+  useLayoutEffect(() => {
+    connectionGenerationRef.current += 1;
+    pagingRef.current = false;
+    recentExpandedRef.current = false;
+    upcomingExpandedRef.current = false;
+    recentWindowTakeRef.current = schedulePageSize;
+    upcomingWindowTakeRef.current = schedulePageSize;
+    recentWindowStartCursorRef.current = null;
+    upcomingWindowStartCursorRef.current = null;
+    schedulesRef.current = [];
+    upcomingSchedulesRef.current = [];
+    selectedScheduleIdRef.current = null;
+    setSchedules([]);
+    setRecentCursor(null);
+    setUpcomingSchedules([]);
+    setUpcomingCursor(null);
+    setSelectedScheduleId(null);
+    setSelectedSchedule(null);
+    setOccurrences([]);
+    setActiveCount(0);
+    setUpcomingCount(0);
+    setRecurringCount(0);
+    setLoadingRecentPage(false);
+    setLoadingUpcomingPage(false);
+    setRecentWindowTrimmed(false);
+    setUpcomingWindowTrimmed(false);
+    setPendingCancel(null);
+    setCanceling(false);
+    setPickerOpen(false);
+    setPickerPath("");
+    setPickerError(undefined);
+    setLoadingDefinitionName(null);
+    setQueueDialog(null);
+  }, [connection.apiUrl, connection.systemName]);
+
+  const reload = useCallback(() => {
+    loadingRef.current = true;
+    setLocalRefreshToken((current) => current + 1);
+  }, []);
 
   useEffect(() => {
     if (!isLoadingTarget) {
@@ -183,102 +308,241 @@ export function SchedulesView({
     }
 
     let canceled = false;
+    const controller = new AbortController();
+    loadingRef.current = true;
     queueMicrotask(() => {
       if (!canceled) {
         setLoading(true);
+        setOccurrencesLoading(true);
         setError(undefined);
       }
     });
-    loadScheduleIndex(connection)
-      .then((loadedSchedules) => {
+    const overviewWindow: ScheduleOverviewWindow = {
+      recentCursor: recentWindowStartCursorRef.current,
+      recentTake: recentExpandedRef.current
+        ? recentWindowTakeRef.current
+        : schedulePageSize,
+      upcomingCursor: upcomingWindowStartCursorRef.current,
+      upcomingTake: upcomingExpandedRef.current
+        ? upcomingWindowTakeRef.current
+        : schedulePageSize,
+    };
+    loadScheduleOverview(
+      connection,
+      selectedScheduleIdRef.current,
+      controller.signal,
+      overviewWindow
+    )
+      .then((overview) => {
         if (canceled) {
           return;
         }
 
-        setSchedules(loadedSchedules);
-        setSelectedScheduleId((current) =>
-          current && loadedSchedules.some((schedule) => schedule.id.value === current)
-            ? current
-            : loadedSchedules[0]?.id.value ?? null
-        );
+        const resolvedSelectedScheduleId = overview.selectedSchedule?.id.value ?? null;
+        selectedScheduleIdRef.current = resolvedSelectedScheduleId;
+        schedulesRef.current = overview.recent.schedules;
+        setSchedules(overview.recent.schedules);
+        setRecentCursor(overview.recent.cursor ?? null);
+        upcomingSchedulesRef.current = overview.upcoming.schedules;
+        setUpcomingSchedules(overview.upcoming.schedules);
+        setUpcomingCursor(overview.upcoming.cursor ?? null);
+        setActiveCount(overview.upcoming.activeScheduleCount);
+        setUpcomingCount(overview.upcoming.upcomingScheduleCount);
+        setRecurringCount(overview.upcoming.recurringScheduleCount);
+        setSelectedScheduleId(resolvedSelectedScheduleId);
+        setSelectedSchedule(overview.selectedSchedule ?? null);
+        setOccurrences(overview.occurrences);
         setLoading(false);
+        setOccurrencesLoading(false);
+        setPollState((current) => ({
+          consecutiveFailures: 0,
+          revision: current.revision + 1,
+        }));
         onReady();
       })
       .catch((caught) => {
         if (!canceled) {
           setError(caught instanceof Error ? caught.message : "Schedules could not be loaded.");
           setLoading(false);
+          setOccurrencesLoading(false);
+          setPollState((current) => ({
+            consecutiveFailures: current.consecutiveFailures + 1,
+            revision: current.revision + 1,
+          }));
           onReady();
+        }
+      })
+      .finally(() => {
+        if (!canceled) {
+          loadingRef.current = false;
         }
       });
 
     return () => {
       canceled = true;
+      controller.abort();
     };
-  }, [connection, isLoadingTarget, localRefreshToken, onReady, refreshToken]);
+  }, [connection, isLoadingTarget, loadedWindowSize, localRefreshToken, onReady, refreshToken]);
 
-  const selectedSchedule = schedules.find((schedule) => schedule.id.value === selectedScheduleId) ?? null;
   useEffect(() => {
-    if (!selectedScheduleId) {
-      queueMicrotask(() => {
-        setOccurrences([]);
-        setOccurrencesError(undefined);
-        setOccurrencesLoading(false);
-      });
+    if (!isLoadingTarget) {
       return;
     }
 
-    let canceled = false;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setOccurrencesLoading(true);
-        setOccurrencesError(undefined);
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible" && !loadingRef.current && !pagingRef.current) {
+        reload();
       }
-    });
-    workableFetch<WorkScheduleOccurrenceQueryResult>(
-      connection,
-      `schedules/${selectedScheduleId}/occurrences?take=50`
-    )
-      .then((result) => {
-        if (!canceled) {
-          setOccurrences(result.occurrences);
-          setOccurrencesLoading(false);
-        }
-      })
-      .catch((caught) => {
-        if (!canceled) {
-          setOccurrences([]);
-          setOccurrencesError(
-            caught instanceof Error ? caught.message : "Schedule history could not be loaded."
-          );
-          setOccurrencesLoading(false);
-        }
-      });
-
-    return () => {
-      canceled = true;
     };
-  }, [connection, selectedScheduleId, localRefreshToken, refreshToken]);
 
-  const upcoming = useMemo(() => getUpcomingSchedules(schedules), [schedules]);
-  const activeCount = schedules.filter((schedule) => schedule.status === "Active").length;
-  const recurringCount = schedules.filter((schedule) =>
-    schedule.status === "Active" && Boolean(schedule.timing.interval || schedule.timing.cronExpression)
-  ).length;
+    const timeout = window.setTimeout(
+      refreshIfVisible,
+      calculateSchedulePollDelay(pollIntervalMs, pollState.consecutiveFailures)
+    );
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.clearTimeout(timeout);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [isLoadingTarget, pollIntervalMs, pollState, reload]);
+
+  const selectSchedule = useCallback((scheduleId: string) => {
+    selectedScheduleIdRef.current = scheduleId;
+    setSelectedScheduleId(scheduleId);
+    setSelectedSchedule(
+      schedules.find((schedule) => schedule.id.value === scheduleId) ??
+      upcomingSchedules.find((schedule) => schedule.id.value === scheduleId) ??
+      null
+    );
+    reload();
+  }, [reload, schedules, upcomingSchedules]);
+
+  const upcoming = useMemo(() => getUpcomingSchedules(upcomingSchedules), [upcomingSchedules]);
+
+  const loadMoreRecent = async (cursor: WorkScheduleCursor) => {
+    if (pagingRef.current) {
+      return;
+    }
+
+    pagingRef.current = true;
+    const generation = connectionGenerationRef.current;
+    setLoadingRecentPage(true);
+    setError(undefined);
+    try {
+      const page = await workableFetch<WorkScheduleQueryResult>(
+        connection,
+        createSchedulePagePath(cursor)
+      );
+      if (generation !== connectionGenerationRef.current) {
+        return;
+      }
+      const result = appendProviderOrderedSchedulePage(
+        schedulesRef.current,
+        page.schedules,
+        loadedWindowSize
+      );
+      schedulesRef.current = result.schedules;
+      setSchedules(result.schedules);
+      recentWindowTakeRef.current = recentExpandedRef.current
+        ? Math.min(
+            loadedWindowSize,
+            Math.max(recentWindowTakeRef.current, result.schedules.length)
+          )
+        : Math.max(1, result.schedules.length);
+      if (result.trimmedThrough) {
+        recentWindowStartCursorRef.current = {
+          createdAt: result.trimmedThrough.createdAt,
+          scheduleId: result.trimmedThrough.id,
+        };
+        setRecentWindowTrimmed(true);
+      }
+      setRecentCursor(page.cursor ?? null);
+      recentExpandedRef.current = true;
+    } catch (caught) {
+      if (generation === connectionGenerationRef.current) {
+        setError(caught instanceof Error ? caught.message : "More schedules could not be loaded.");
+      }
+    } finally {
+      if (generation === connectionGenerationRef.current) {
+        pagingRef.current = false;
+        setLoadingRecentPage(false);
+      }
+    }
+  };
+
+  const loadMoreUpcoming = async (cursor: WorkScheduleUpcomingCursor) => {
+    if (pagingRef.current) {
+      return;
+    }
+
+    pagingRef.current = true;
+    const generation = connectionGenerationRef.current;
+    setLoadingUpcomingPage(true);
+    setError(undefined);
+    try {
+      const page = await workableFetch<WorkScheduleUpcomingQueryResult>(
+        connection,
+        createUpcomingSchedulePagePath(cursor)
+      );
+      if (generation !== connectionGenerationRef.current) {
+        return;
+      }
+      const result = appendProviderOrderedSchedulePage(
+        upcomingSchedulesRef.current,
+        page.schedules,
+        loadedWindowSize
+      );
+      upcomingSchedulesRef.current = result.schedules;
+      setUpcomingSchedules(result.schedules);
+      upcomingWindowTakeRef.current = upcomingExpandedRef.current
+        ? Math.min(
+            loadedWindowSize,
+            Math.max(upcomingWindowTakeRef.current, result.schedules.length)
+          )
+        : Math.max(1, result.schedules.length);
+      if (result.trimmedThrough) {
+        upcomingWindowStartCursorRef.current = {
+          nextRunAt: result.trimmedThrough.nextRunAt!,
+          scheduleId: result.trimmedThrough.id,
+        };
+        setUpcomingWindowTrimmed(true);
+      }
+      setUpcomingCursor(page.cursor ?? null);
+      setActiveCount(page.activeScheduleCount);
+      setUpcomingCount(page.upcomingScheduleCount);
+      setRecurringCount(page.recurringScheduleCount);
+      upcomingExpandedRef.current = true;
+    } catch (caught) {
+      if (generation === connectionGenerationRef.current) {
+        setError(caught instanceof Error ? caught.message : "More upcoming schedules could not be loaded.");
+      }
+    } finally {
+      if (generation === connectionGenerationRef.current) {
+        pagingRef.current = false;
+        setLoadingUpcomingPage(false);
+      }
+    }
+  };
 
   const cancelSchedule = async () => {
     if (!pendingCancel) {
       return;
     }
 
+    const generation = connectionGenerationRef.current;
+    const schedule = pendingCancel;
     setCanceling(true);
     setError(undefined);
     try {
       const outcome = await workableFetch<WorkScheduleCancellationOutcome>(
         connection,
-        `schedules/${pendingCancel.id.value}/cancel`,
+        `schedules/${schedule.id.value}/cancel`,
         { method: "POST" }
       );
+      if (generation !== connectionGenerationRef.current) {
+        return;
+      }
+
       if (outcome.status !== "Accepted") {
         const detail = outcome.messages.map((message) => message.text).filter(Boolean).join(" ");
         setError(detail || `Cancellation returned ${outcome.status}.`);
@@ -286,24 +550,34 @@ export function SchedulesView({
       }
 
       if (outcome.schedule) {
-        setSchedules((current) => current.map((schedule) =>
+        const recent = schedulesRef.current.map((schedule) =>
           schedule.id.value === outcome.schedule!.id.value ? outcome.schedule! : schedule
-        ));
+        );
+        schedulesRef.current = recent;
+        setSchedules(recent);
+        const nextUpcoming = upcomingSchedulesRef.current.filter((schedule) =>
+          schedule.id.value !== outcome.schedule!.id.value
+        );
+        upcomingSchedulesRef.current = nextUpcoming;
+        setUpcomingSchedules(nextUpcoming);
+        setSelectedSchedule(outcome.schedule);
       }
       setPendingCancel(null);
       reload();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Schedule could not be canceled.");
+      if (generation === connectionGenerationRef.current) {
+        setError(caught instanceof Error ? caught.message : "Schedule could not be canceled.");
+      }
     } finally {
-      setCanceling(false);
+      if (generation === connectionGenerationRef.current) {
+        setCanceling(false);
+      }
     }
   };
 
   return (
     <>
       <ConsolePageLayout
-        fill
-        scrollMode="panel"
         toolbar={(
           <Button
             disabled={connection.schedulingAvailable !== true}
@@ -318,67 +592,92 @@ export function SchedulesView({
           </Button>
         )}
       >
-        <div className="workable-grid-scrollbar min-h-0 flex-1 space-y-6 overflow-y-auto pb-2">
+        <div className="space-y-6 pb-2">
           {error && <ErrorBanner message={error} title="Schedule operation failed" />}
           <div className="grid gap-3 sm:grid-cols-3">
             <ScheduleMetric label="Active schedules" value={activeCount} />
-            <ScheduleMetric label="Upcoming work" value={upcoming.length} />
+            <ScheduleMetric label="Upcoming work" value={upcomingCount} />
             <ScheduleMetric label="Recurring schedules" value={recurringCount} />
           </div>
 
           <PanelShell
-            description="The next persisted execution for every active schedule, ordered by due time."
+            description="The next persisted execution for the active schedules shown on this page, ordered by due time."
             title="Upcoming work"
           >
             <ScheduleTableEmptyOrLoading
               empty="No scheduled work is currently pending."
               loading={loading}
+              renderWhenEmpty={upcomingWindowTrimmed}
               rows={upcoming.length}
             >
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Definition</TableHead>
-                    <TableHead>Next execution</TableHead>
-                    <TableHead>Timing</TableHead>
-                    <TableHead>Created by</TableHead>
-                    <TableHead className="w-24" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {upcoming.map((schedule) => (
-                    <TableRow
-                      className="cursor-pointer"
-                      data-state={selectedScheduleId === schedule.id.value ? "selected" : undefined}
-                      key={schedule.id.value}
-                      onClick={() => setSelectedScheduleId(schedule.id.value)}
-                    >
-                      <TableCell className="font-mono font-medium">{schedule.definitionName}</TableCell>
-                      <TableCell>
-                        <div>{formatScheduleDateTime(schedule.nextRunAt)}</div>
-                        <div className="text-muted-foreground text-xs"><LiveRelativeTime value={schedule.nextRunAt} /></div>
-                      </TableCell>
-                      <TableCell className="max-w-80 truncate" title={formatScheduleTiming(schedule)}>
-                        {formatScheduleTiming(schedule)}
-                      </TableCell>
-                      <TableCell>{schedule.createdBy.name || schedule.createdBy.email || schedule.createdBy.id || "Unknown"}</TableCell>
-                      <TableCell>
-                        <Button
-                          aria-label={`Cancel schedule for ${schedule.definitionName}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setPendingCancel(schedule);
-                          }}
-                          size="icon-sm"
-                          variant="ghost"
-                        >
-                          <XCircle className="size-4" />
-                        </Button>
-                      </TableCell>
+              <PanelScrollViewport
+                className="schedule-upcoming-viewport h-[28rem] rounded-lg border [&_[data-slot=table-container]]:overflow-visible"
+                hasMore={Boolean(upcomingCursor)}
+                loadedCount={upcoming.length}
+                loading={loading}
+                loadingMore={loadingUpcomingPage}
+                noun="upcoming schedule"
+                onLoadMore={() => void loadMoreUpcoming(upcomingCursor!)}
+              >
+                <Table>
+                  <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_var(--border)]">
+                    <TableRow>
+                      <TableHead>Definition</TableHead>
+                      <TableHead>Next execution</TableHead>
+                      <TableHead>Timing</TableHead>
+                      <TableHead>Created by</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {upcoming.length === 0 && (
+                      <TableRow>
+                        <TableCell className="py-8 text-center text-muted-foreground" colSpan={4}>
+                          No scheduled work is currently pending in this window.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {upcoming.map((schedule) => (
+                      <TableRow
+                        className="cursor-pointer"
+                        data-state={selectedScheduleId === schedule.id.value ? "selected" : undefined}
+                        key={schedule.id.value}
+                        onClick={() => selectSchedule(schedule.id.value)}
+                      >
+                        <TableCell className="font-mono font-medium">{schedule.definitionName}</TableCell>
+                        <TableCell>
+                          <div>{formatScheduleDateTime(schedule.nextRunAt)}</div>
+                          <div className="text-muted-foreground text-xs"><LiveRelativeTime value={schedule.nextRunAt} /></div>
+                        </TableCell>
+                        <TableCell className="max-w-80 truncate" title={formatScheduleTiming(schedule)}>
+                          {formatScheduleTiming(schedule)}
+                        </TableCell>
+                        <TableCell>{schedule.createdBy.name || schedule.createdBy.email || schedule.createdBy.id || "Unknown"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {upcomingWindowTrimmed && (
+                  <div className="flex justify-center border-t p-3">
+                    <Button
+                      disabled={loading}
+                      onClick={() => {
+                        upcomingExpandedRef.current = false;
+                        upcomingWindowTakeRef.current = schedulePageSize;
+                        upcomingWindowStartCursorRef.current = null;
+                        upcomingSchedulesRef.current = [];
+                        setUpcomingSchedules([]);
+                        setUpcomingCursor(null);
+                        setUpcomingWindowTrimmed(false);
+                        reload();
+                      }}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      Return to soonest
+                    </Button>
+                  </div>
+                )}
+              </PanelScrollViewport>
             </ScheduleTableEmptyOrLoading>
           </PanelShell>
 
@@ -389,39 +688,78 @@ export function SchedulesView({
             <ScheduleTableEmptyOrLoading
               empty="No schedules have been created for this work system."
               loading={loading}
+              renderWhenEmpty={recentWindowTrimmed}
               rows={schedules.length}
             >
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Definition</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Timing</TableHead>
-                    <TableHead>Next run</TableHead>
-                    <TableHead>Last run</TableHead>
-                    <TableHead className="w-10" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {schedules.map((schedule) => (
-                    <TableRow
-                      className="cursor-pointer"
-                      data-state={selectedScheduleId === schedule.id.value ? "selected" : undefined}
-                      key={schedule.id.value}
-                      onClick={() => setSelectedScheduleId(schedule.id.value)}
-                    >
-                      <TableCell className="font-mono font-medium">{schedule.definitionName}</TableCell>
-                      <TableCell><ScheduleStatusBadge status={schedule.status} /></TableCell>
-                      <TableCell className="max-w-72 truncate" title={formatScheduleTiming(schedule)}>
-                        {formatScheduleTiming(schedule)}
-                      </TableCell>
-                      <TableCell>{formatScheduleDateTime(schedule.nextRunAt)}</TableCell>
-                      <TableCell>{formatScheduleDateTime(schedule.lastRunAt)}</TableCell>
-                      <TableCell><ChevronRight className="size-4 text-muted-foreground" /></TableCell>
+              <PanelScrollViewport
+                className="schedule-recent-viewport h-[28rem] rounded-lg border [&_[data-slot=table-container]]:overflow-visible"
+                hasMore={Boolean(recentCursor)}
+                loadedCount={schedules.length}
+                loading={loading}
+                loadingMore={loadingRecentPage}
+                noun="schedule"
+                onLoadMore={() => void loadMoreRecent(recentCursor!)}
+              >
+                <Table>
+                  <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_var(--border)]">
+                    <TableRow>
+                      <TableHead>Definition</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Timing</TableHead>
+                      <TableHead>Next run</TableHead>
+                      <TableHead>Last run</TableHead>
+                      <TableHead className="w-10" />
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {schedules.length === 0 && (
+                      <TableRow>
+                        <TableCell className="py-8 text-center text-muted-foreground" colSpan={6}>
+                          No schedules remain in this window.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {schedules.map((schedule) => (
+                      <TableRow
+                        className="cursor-pointer"
+                        data-state={selectedScheduleId === schedule.id.value ? "selected" : undefined}
+                        key={schedule.id.value}
+                        onClick={() => selectSchedule(schedule.id.value)}
+                      >
+                        <TableCell className="font-mono font-medium">{schedule.definitionName}</TableCell>
+                        <TableCell><ScheduleStatusBadge status={schedule.status} /></TableCell>
+                        <TableCell className="max-w-72 truncate" title={formatScheduleTiming(schedule)}>
+                          {formatScheduleTiming(schedule)}
+                        </TableCell>
+                        <TableCell>{formatScheduleDateTime(schedule.nextRunAt)}</TableCell>
+                        <TableCell>{formatScheduleDateTime(schedule.lastRunAt)}</TableCell>
+                        <TableCell><ChevronRight className="size-4 text-muted-foreground" /></TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {recentWindowTrimmed && (
+                  <div className="flex justify-center border-t p-3">
+                    <Button
+                      disabled={loading}
+                      onClick={() => {
+                        recentExpandedRef.current = false;
+                        recentWindowTakeRef.current = schedulePageSize;
+                        recentWindowStartCursorRef.current = null;
+                        schedulesRef.current = [];
+                        setSchedules([]);
+                        setRecentCursor(null);
+                        setRecentWindowTrimmed(false);
+                        reload();
+                      }}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      Return to newest
+                    </Button>
+                  </div>
+                )}
+              </PanelScrollViewport>
             </ScheduleTableEmptyOrLoading>
           </PanelShell>
 
@@ -449,14 +787,11 @@ export function SchedulesView({
               </div>
               <div>
                 <h3 className="mb-2 font-medium text-sm">Recent dispatches</h3>
-                {occurrencesError ? (
-                  <ErrorBanner message={occurrencesError} title="Schedule history unavailable" />
-                ) : (
-                  <ScheduleTableEmptyOrLoading
-                    empty="This schedule has no retained dispatches yet."
-                    loading={occurrencesLoading}
-                    rows={occurrences.length}
-                  >
+                <ScheduleTableEmptyOrLoading
+                  empty="This schedule has no retained dispatches yet."
+                  loading={occurrencesLoading}
+                  rows={occurrences.length}
+                >
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -489,8 +824,7 @@ export function SchedulesView({
                         ))}
                       </TableBody>
                     </Table>
-                  </ScheduleTableEmptyOrLoading>
-                )}
+                </ScheduleTableEmptyOrLoading>
               </div>
             </PanelShell>
           )}
@@ -502,19 +836,28 @@ export function SchedulesView({
         error={pickerError}
         loadingDefinitionName={loadingDefinitionName}
         onDefinitionSelected={async (definitionName, loadDefinitionInfo) => {
+          const generation = connectionGenerationRef.current;
           setPickerError(undefined);
           setLoadingDefinitionName(definitionName);
           try {
             const info = await loadDefinitionInfo(definitionName);
+            if (generation !== connectionGenerationRef.current) {
+              return;
+            }
+
             setQueueDialog({
               definition: info.definition,
               queueRequestSchema: info.queueRequestSchema,
             });
             setPickerOpen(false);
           } catch (caught) {
-            setPickerError(caught instanceof Error ? caught.message : "Definition could not be loaded.");
+            if (generation === connectionGenerationRef.current) {
+              setPickerError(caught instanceof Error ? caught.message : "Definition could not be loaded.");
+            }
           } finally {
-            setLoadingDefinitionName(null);
+            if (generation === connectionGenerationRef.current) {
+              setLoadingDefinitionName(null);
+            }
           }
         }}
         onOpenChange={setPickerOpen}
@@ -557,10 +900,14 @@ export function SchedulesView({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={canceling}>Keep schedule</AlertDialogCancel>
-            <AlertDialogAction disabled={canceling} onClick={(event) => {
-              event.preventDefault();
-              void cancelSchedule();
-            }}>
+            <AlertDialogAction
+              className="bg-[var(--status-danger-solid)] text-[var(--status-danger-contrast)] hover:bg-[var(--status-danger-text)] focus-visible:ring-[var(--status-danger-border)]"
+              disabled={canceling}
+              onClick={(event) => {
+                event.preventDefault();
+                void cancelSchedule();
+              }}
+            >
               {canceling && <Loader2 className="size-4 animate-spin" />}
               Cancel schedule
             </AlertDialogAction>
@@ -627,22 +974,24 @@ function ScheduleTableEmptyOrLoading({
   children,
   empty,
   loading,
+  renderWhenEmpty = false,
   rows,
 }: {
   children: ReactNode;
   empty: string;
   loading: boolean;
+  renderWhenEmpty?: boolean;
   rows: number;
 }) {
   if (loading && rows === 0) {
     return <div className="space-y-2">{Array.from({ length: 3 }).map((_, index) => <Skeleton className="h-12" key={index} />)}</div>;
   }
 
-  if (rows === 0) {
+  if (rows === 0 && !renderWhenEmpty) {
     return <ConsoleEmptyState padding="spacious">{empty}</ConsoleEmptyState>;
   }
 
-  return <div className="overflow-x-auto rounded-lg border">{children}</div>;
+  return children;
 }
 
 function ScheduleDefinitionPicker({

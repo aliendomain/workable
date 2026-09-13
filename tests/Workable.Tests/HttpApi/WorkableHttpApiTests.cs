@@ -26,6 +26,52 @@ public sealed class WorkableHttpApiTests
     private static readonly string[] CompletedStatuses = ["Completed"];
 
     [Fact]
+    public async Task HttpApiOnlySuppressesCanceledOperationsAfterTheClientDisconnects()
+    {
+        var context = new DefaultHttpContext();
+        var expected = new object();
+
+        var completed = await WorkableHttpApiExtensions.ExecuteWithClientDisconnectHandling(
+            context,
+            () => ValueTask.FromResult<object?>(expected));
+        Assert.Same(expected, completed);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            WorkableHttpApiExtensions.ExecuteWithClientDisconnectHandling(
+                context,
+                () => ValueTask.FromException<object?>(new InvalidOperationException("failure")))
+            .AsTask());
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            WorkableHttpApiExtensions.ExecuteWithClientDisconnectHandling(
+                context,
+                () => ValueTask.FromException<object?>(new OperationCanceledException("still connected")))
+            .AsTask());
+
+        context.RequestAborted = new(canceled: true);
+        var disconnected = await WorkableHttpApiExtensions.ExecuteWithClientDisconnectHandling(
+            context,
+            () => ValueTask.FromException<object?>(new OperationCanceledException("disconnected")));
+        Assert.IsAssignableFrom<IResult>(disconnected);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            WorkableHttpApiExtensions.ExecuteWithClientDisconnectHandling(
+                context,
+                () => ValueTask.FromException<object?>(new InvalidOperationException("failure after disconnect")))
+            .AsTask());
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            WorkableHttpApiExtensions.ExecuteWithClientDisconnectHandling(
+                null!,
+                () => ValueTask.FromResult<object?>(null))
+            .AsTask());
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            WorkableHttpApiExtensions.ExecuteWithClientDisconnectHandling(
+                context,
+                null!)
+            .AsTask());
+    }
+
+    [Fact]
     public async Task MappedHttpRoutesManagePersistentExecutionDiagnosticCaptureRules()
     {
         var repository = new TestExecutionDiagnosticsRepository();
@@ -969,7 +1015,29 @@ public sealed class WorkableHttpApiTests
         var detail = await client.GetAsync($"/workable/schedules/{scheduleId:D}");
         var occurrences = await client.GetAsync($"/workable/schedules/{scheduleId:D}/occurrences?take=10");
         var defaultOccurrences = await client.GetAsync($"/workable/schedules/{scheduleId:D}/occurrences");
+        var overview = await client.GetAsync(
+            $"/workable/schedules/overview?selectedScheduleId={scheduleId:D}&recentTake=10&upcomingTake=10&occurrenceTake=10");
+        var overviewCursorTimestamp = DateTimeOffset.UtcNow;
+        var overviewWithCursors = await client.GetAsync(
+            "/workable/schedules/overview?recentTake=10&upcomingTake=10" +
+            $"&recentCursorCreatedAt={Uri.EscapeDataString(overviewCursorTimestamp.ToString("O"))}" +
+            $"&recentCursorScheduleId={scheduleId:D}" +
+            $"&upcomingCursorNextRunAt={Uri.EscapeDataString(overviewCursorTimestamp.ToString("O"))}" +
+            $"&upcomingCursorScheduleId={scheduleId:D}");
+        var upcoming = await client.GetAsync("/workable/schedules/upcoming?take=10");
         var invalidId = await client.GetAsync("/workable/schedules/not-a-guid");
+        var invalidOverviewId = await client.GetAsync(
+            "/workable/schedules/overview?selectedScheduleId=not-a-guid");
+        var invalidOverviewRecentTake = await client.GetAsync("/workable/schedules/overview?recentTake=0");
+        var invalidOverviewUpcomingTake = await client.GetAsync("/workable/schedules/overview?upcomingTake=0");
+        var invalidOverviewOccurrenceTake = await client.GetAsync("/workable/schedules/overview?occurrenceTake=101");
+        var incompleteOverviewRecentCursor = await client.GetAsync(
+            "/workable/schedules/overview?recentCursorCreatedAt=2026-09-11T12%3A00%3A00Z");
+        var incompleteOverviewUpcomingCursor = await client.GetAsync(
+            "/workable/schedules/overview?upcomingCursorNextRunAt=2026-09-11T12%3A00%3A00Z");
+        var invalidUpcomingTake = await client.GetAsync("/workable/schedules/upcoming?take=1001");
+        var incompleteUpcomingCursor = await client.GetAsync(
+            "/workable/schedules/upcoming?cursorNextRunAt=2026-09-11T12%3A00%3A00Z");
         var invalidListTake = await client.GetAsync("/workable/schedules?take=0");
         var invalidMaximumListTake = await client.GetAsync("/workable/schedules?take=1001");
         var incompleteCursor = await client.GetAsync(
@@ -1008,8 +1076,34 @@ public sealed class WorkableHttpApiTests
         var defaultOccurrenceJson = JsonNode.Parse(await defaultOccurrences.Content.ReadAsStringAsync())
             ?? throw new InvalidOperationException("Expected default occurrence JSON.");
         Assert.Single(defaultOccurrenceJson["occurrences"]!.AsArray());
+        overview.EnsureSuccessStatusCode();
+        overviewWithCursors.EnsureSuccessStatusCode();
+        var overviewJson = JsonNode.Parse(await overview.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected schedule overview JSON.");
+        Assert.Single(overviewJson["recent"]!["schedules"]!.AsArray());
+        Assert.Single(overviewJson["upcoming"]!["schedules"]!.AsArray());
+        Assert.Equal(1, overviewJson["upcoming"]!["activeScheduleCount"]!.GetValue<int>());
+        Assert.Equal(1, overviewJson["upcoming"]!["upcomingScheduleCount"]!.GetValue<int>());
+        Assert.Equal(1, overviewJson["upcoming"]!["recurringScheduleCount"]!.GetValue<int>());
+        Assert.Equal(
+            scheduleId.ToString("D"),
+            overviewJson["selectedSchedule"]!["id"]!["value"]!.GetValue<string>());
+        Assert.Single(overviewJson["occurrences"]!.AsArray());
+        upcoming.EnsureSuccessStatusCode();
+        var upcomingJson = JsonNode.Parse(await upcoming.Content.ReadAsStringAsync())
+            ?? throw new InvalidOperationException("Expected upcoming schedule JSON.");
+        Assert.Single(upcomingJson["schedules"]!.AsArray());
+        Assert.Equal(1, upcomingJson["activeScheduleCount"]!.GetValue<int>());
         Assert.Equal(HttpStatusCode.BadRequest, invalidId.StatusCode);
         Assert.Contains("workable.schedule.id_invalid", await invalidId.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.BadRequest, invalidOverviewId.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidOverviewRecentTake.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidOverviewUpcomingTake.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidOverviewOccurrenceTake.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, incompleteOverviewRecentCursor.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, incompleteOverviewUpcomingCursor.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidUpcomingTake.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, incompleteUpcomingCursor.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, invalidListTake.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, invalidMaximumListTake.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, incompleteCursor.StatusCode);
@@ -5173,6 +5267,11 @@ public sealed class WorkableHttpApiTests
             (HttpMethod.Get, "/work/missing/info"),
             (HttpMethod.Post, "/work/example/schedules"),
             (HttpMethod.Get, "/schedules"),
+            (HttpMethod.Get, "/schedules/upcoming"),
+            (HttpMethod.Get, "/schedules/overview"),
+            (HttpMethod.Get, "/schedules/overview?selectedScheduleId=not-a-guid"),
+            (HttpMethod.Get, "/schedules/overview?recentTake=0"),
+            (HttpMethod.Get, "/schedules/overview?upcomingTake=0"),
             (HttpMethod.Get, $"/schedules/{workerId}"),
             (HttpMethod.Get, $"/schedules/{workerId}/occurrences"),
             (HttpMethod.Post, $"/schedules/{workerId}/cancel"),
