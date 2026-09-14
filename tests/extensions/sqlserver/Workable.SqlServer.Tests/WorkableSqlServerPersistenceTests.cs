@@ -1370,7 +1370,9 @@ WHERE PersistenceScope = N'{persistenceScope}'
             .BuildServiceProvider();
         var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
         await system.Start();
-        var dueAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(300);
+        // Keep the due boundary beyond the scheduler's five-second host-presence lease so
+        // a delayed graceful shutdown cannot make this host appear available at that time.
+        var dueAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(6);
         var retry = await system.Schedules.Create(new(
             "sql.schedule.restart",
             WorkScheduleTiming.Once(dueAt, runMissedExecution: true)));
@@ -1378,7 +1380,11 @@ WHERE PersistenceScope = N'{persistenceScope}'
             "sql.schedule.restart",
             WorkScheduleTiming.Once(dueAt, runMissedExecution: false)));
         await system.Stop();
-        await Task.Delay(TimeSpan.FromMilliseconds(450));
+        var restartDelay = dueAt + TimeSpan.FromMilliseconds(150) - DateTimeOffset.UtcNow;
+        if (restartDelay > TimeSpan.Zero)
+        {
+            await Task.Delay(restartDelay);
+        }
 
         await system.Start();
         var retryOccurrence = await WaitForSqlOccurrence(system.Schedules, retry.Schedule!.Id);
