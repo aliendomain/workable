@@ -2902,10 +2902,44 @@ WHERE WorkerId = '{remainingWorkerId.Value:D}';
             runId);
 
         resumedBetaRelease.TrySetResult();
-        await TestEventually.Until(
-            () => WorkflowStatus(secondSystem, runId) == WorkflowRunStatus.Completed.ToString(),
-            "Expected the recovered durable workflow to complete after inspection.",
-            timeout: TimeSpan.FromSeconds(15));
+        try
+        {
+            await TestEventually.Until(
+                () => WorkflowStatus(secondSystem, runId) == WorkflowRunStatus.Completed.ToString(),
+                "Expected the recovered durable workflow to complete after inspection.",
+                timeout: TimeSpan.FromSeconds(15));
+        }
+        catch (Xunit.Sdk.XunitException)
+        {
+            try
+            {
+                const BindingFlags PrivateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
+                var runtime = secondSystem.GetType().GetProperty("WorkflowRuntime", PrivateInstance)?.GetValue(secondSystem);
+                var runs = runtime?.GetType().GetField("runs", PrivateInstance)?.GetValue(runtime) as System.Collections.IDictionary;
+                var run = runs?[runId];
+                var completion = run?.GetType().GetMethod("WaitForCompletion")?.Invoke(run, null) as Task;
+                this.output.WriteLine($"Recovered workflow {runId} completion task: {completion?.Status.ToString() ?? "unavailable"}");
+                if (completion?.Exception is { } completionError)
+                {
+                    this.output.WriteLine(completionError.ToString());
+                }
+
+                var snapshot = WorkflowSnapshot(secondSystem, runId);
+                this.output.WriteLine($"Workflow and step states: {JsonSerializer.Serialize(snapshot, DurableJsonOptions)}");
+                using var diagnosticTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                var session = await secondSystem.CreateSession(
+                    WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+                    diagnosticTimeout.Token);
+                var beta = await session.Query.Worker(remainingWorkerId, diagnosticTimeout.Token);
+                this.output.WriteLine($"Recovered worker {remainingWorkerId}: {beta?.State.ToString() ?? "unavailable"}");
+            }
+            catch (Exception diagnosticError)
+            {
+                this.output.WriteLine($"Unable to collect recovered workflow diagnostics: {diagnosticError.Message}");
+            }
+
+            throw;
+        }
 
         await StopWithTimeout(secondSystem);
 
