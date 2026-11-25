@@ -1009,24 +1009,23 @@ public sealed class WorkableViewQueryAdapterTests
         await WaitForReadModel(system);
         var adapter = new WorkableViewQueryAdapter();
 
-        var firstPage = await adapter.WorkerIterationMessages(
+        var firstPage = Assert.IsType<WorkIterationMessageSection>(await adapter.WorkerIterationMessages(
             session,
             new WorkerIterationReference(RequiredWorkerId(handle), 1),
             new WorkIterationMessageCriteria(
                 Take: 1,
                 SortDirection: WorkWorkerOverviewSortDirection.Asc,
-                Severities: [WorkMessageSeverity.Information, WorkMessageSeverity.Warning]));
+                Severities: [WorkMessageSeverity.Information, WorkMessageSeverity.Warning])));
 
         var secondPage = await adapter.WorkerIterationMessages(
             session,
             new WorkerIterationReference(RequiredWorkerId(handle), 1),
             new WorkIterationMessageCriteria(
                 Take: 1,
-                Cursor: firstPage?.Page.Cursor,
+                Cursor: firstPage.Page.Cursor,
                 SortDirection: WorkWorkerOverviewSortDirection.Asc,
                 Severities: [WorkMessageSeverity.Information, WorkMessageSeverity.Warning]));
 
-        Assert.NotNull(firstPage);
         Assert.Equal(3, firstPage.Summary.Total);
         Assert.Equal(1, firstPage.Summary.Warning);
         Assert.Equal(1, firstPage.Summary.Information);
@@ -1071,13 +1070,13 @@ public sealed class WorkableViewQueryAdapterTests
                 ActivityTake: 10,
                 TimelineCategories: [WorkWorkerOverviewTimelineCategory.SystemEvent]));
 
-        var firstPage = await adapter.WorkerOverview(
+        var firstPage = Assert.IsType<WorkWorkerOverviewComponent>(await adapter.WorkerOverview(
             session,
             RequiredWorkerId(handle),
             new WorkWorkerOverviewCriteria(
                 Activity: WorkWorkerOverviewActivity.Timeline,
                 ActivityTake: 1,
-                TimelineSortDirection: WorkWorkerOverviewSortDirection.Desc));
+                TimelineSortDirection: WorkWorkerOverviewSortDirection.Desc)));
 
         Assert.NotNull(filtered);
         Assert.True(filtered.Timeline.Summary.Total >= 1);
@@ -1085,7 +1084,7 @@ public sealed class WorkableViewQueryAdapterTests
             Assert.IsType<WorkWorkerOverviewPage<WorkWorkerOverviewTimelineItem>>(filtered.Timeline.Page).Items,
             item => Assert.Equal(WorkWorkerOverviewTimelineCategory.SystemEvent, item.Category));
 
-        Assert.NotNull(firstPage?.Timeline.Page);
+        Assert.NotNull(firstPage.Timeline.Page);
         Assert.Single(firstPage.Timeline.Page.Items);
     }
 

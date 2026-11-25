@@ -6,6 +6,67 @@ namespace Workable.Tests;
 [Trait("Category", "Queueing")]
 public sealed class WorkQueueServiceShould
 {
+    [Theory]
+    [InlineData(true, "malformed", "workable.identifier.invalid")]
+    [InlineData(false, "malformed", "workable.identifier.invalid")]
+    [InlineData(true, "reserved", "workable.workflow.identifier.reserved")]
+    [InlineData(false, "reserved", "workable.workflow.identifier.reserved")]
+    [InlineData(true, "channel", "workable.invocation.channel_not_allowed")]
+    [InlineData(false, "channel", "workable.invocation.channel_not_allowed")]
+    public async Task RejectInvalidInputsAtScheduledAndResolvedQueueBoundaries(
+        bool scheduled,
+        string reason,
+        string expectedCode)
+    {
+        var definition = WorkDefinition.Create(
+            "queue.authorized-boundaries",
+            configuration: WorkConfiguration.Default with
+            {
+                Invocation = WorkInvocationConfiguration.Allow(WorkInvocationChannel.HttpApi),
+            });
+        await using var system = CreateSystem(definition);
+        var queue = Assert.IsType<WorkQueueService>(system.Queue);
+        var catalog = Assert.IsType<WorkSystemCatalog>(system.Catalog);
+        Assert.True(catalog.TryGetWork(definition.Name, out var work));
+        var input = reason switch
+        {
+            "malformed" => WorkInput.Empty.WithIdentifier(new WorkIdentifier(" ", "invalid")),
+            "reserved" => WorkInput.Empty.WithIdentifier(new WorkIdentifier("workflow-run", WorkflowRunId.New().ToString())),
+            _ => null,
+        };
+        var context = WorkRequestContext.Create(WorkInvocationChannel.InProcess);
+
+        var handle = scheduled
+            ? await queue.EnqueueScheduled(
+                definition.Name, input, WorkScheduleTiming.Once(DateTimeOffset.UtcNow), null,
+                context, WorkScheduleExecutionGrant.Unrestricted, CancellationToken.None)
+            : await queue.EnqueueResolved(work, input, null, context, CancellationToken.None);
+
+        Assert.Equal(WorkQueueStatus.Invalid, handle.QueueOutcome.Status);
+        Assert.Equal(expectedCode, Assert.Single(handle.QueueOutcome.Messages).Code);
+        Assert.Null(handle.WorkerId);
+        Assert.Equal(WorkCompletionStatus.Invalid, (await handle.WaitForCompletion()).Status);
+        if (reason == "channel")
+        {
+            Assert.Contains("in-process code", Assert.Single(handle.QueueOutcome.Messages).Text);
+        }
+    }
+
+    [Fact]
+    public async Task RejectScheduledDispatchWhenItsDefinitionHasBeenRemoved()
+    {
+        await using var system = CreateSystem(WorkDefinition.Create("queue.still-registered"));
+        var queue = Assert.IsType<WorkQueueService>(system.Queue);
+
+        var handle = await queue.EnqueueScheduled(
+            "queue.removed", null, WorkScheduleTiming.Once(DateTimeOffset.UtcNow), null,
+            WorkRequestContext.Create(WorkInvocationChannel.InProcess),
+            WorkScheduleExecutionGrant.Unrestricted, CancellationToken.None);
+
+        Assert.Equal(WorkQueueStatus.NotFound, handle.QueueOutcome.Status);
+        Assert.Null(handle.WorkerId);
+    }
+
     [Fact]
     public async Task ValidateDelegatedAndWorkflowChildInputsBeforeQueueing()
     {

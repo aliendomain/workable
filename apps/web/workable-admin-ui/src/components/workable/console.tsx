@@ -17,7 +17,7 @@ import {
   Rows4,
   X,
 } from "lucide-react";
-import { Fragment, type KeyboardEvent, type PointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, type PointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   overviewPanelIds,
   type OverviewPanelId,

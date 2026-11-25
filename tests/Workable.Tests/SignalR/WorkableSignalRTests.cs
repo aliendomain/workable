@@ -3914,6 +3914,7 @@ public sealed class WorkableSignalRTests
 
             while (reader.TryRead(out _))
             {
+                // Drain queued updates before waiting for the next notification.
             }
         }
     }

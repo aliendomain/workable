@@ -3348,6 +3348,30 @@ FROM workable.WorkflowRuns;
         Assert.Contains("lease", renewalJson, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(null, null, null, null)]
+    [InlineData("input-subject", null, "input", "input-subject")]
+    [InlineData(null, "reserved-subject", "reservation", "reserved-subject")]
+    [InlineData("input-subject", "reserved-subject", "reservation", "reserved-subject")]
+    public void DurableEnqueuePayloadPreservesOptionalSubjectAndReservationPrecedence(
+        string? inputSubject,
+        string? reservedSubject,
+        string? expectedType,
+        string? expectedValue)
+    {
+        var request = CreateNonConcurrentDurableEnqueueRequest(
+            WorkSystemId.New(), WorkerId.New(), "subject-projection", "unused") with
+        {
+            Input = inputSubject is null ? null : WorkInput.Empty.WithSubject(new WorkSubjectId("input", inputSubject)),
+            Idempotency = reservedSubject is null ? null : new WorkQueueDurabilityIdempotency(new WorkSubjectId("reservation", reservedSubject)),
+        };
+
+        using var payload = JsonDocument.Parse(SerializePrivatePayload("CreateEnqueuePayload", request));
+
+        Assert.Equal(expectedType, payload.RootElement.GetProperty("subjectType").GetString());
+        Assert.Equal(expectedValue, payload.RootElement.GetProperty("subjectValue").GetString());
+    }
+
     [Fact]
     public void DurabilityDeserializationSupportsNullPayloadEnvelopeAndLegacyOriginRows()
     {
@@ -3572,6 +3596,7 @@ FROM workable.WorkflowRuns;
                 case "workflow-list":
                     await foreach (var _ in store.ListWorkflowRuns(new WorkflowPersistenceReadRequest("coverage")))
                     {
+                        // Enumerate the lazy query so connection failures reach the assertion.
                     }
                     break;
                 case "claim-ready":
@@ -7644,7 +7669,7 @@ END;
             "@ConcurrencyMaximumCapacity",
             hasPersistentConcurrency ? rowConfiguration.Coordination.Concurrency.MaximumCapacity : DBNull.Value);
         command.Parameters.AddWithValue("@SubjectType", (object?)subjectId?.Type ?? DBNull.Value);
-        command.Parameters.AddWithValue("@SubjectValue", (object?)subjectId?.Value ?? subjectValue);
+        command.Parameters.AddWithValue("@SubjectValue", (subjectId is { } subject ? subject.Value : null) ?? subjectValue);
         var concurrencyKey = rowInput.ConcurrencyKey;
         command.Parameters.AddWithValue("@ConcurrencyType", concurrencyKey is null ? DBNull.Value : concurrencyKey.Value.Type);
         command.Parameters.AddWithValue("@ConcurrencyValue", concurrencyKey is null ? DBNull.Value : concurrencyKey.Value.Value);
