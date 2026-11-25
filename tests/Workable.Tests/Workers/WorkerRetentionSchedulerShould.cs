@@ -255,36 +255,35 @@ public sealed class WorkerRetentionSchedulerShould
     public async Task DeferredScheduleSupersedesAnEarlierPurgeDeadline()
     {
         var index = new WorkerIndex();
-        var purged = new TaskCompletionSource<IReadOnlyList<WorkerId>>(
+        var purged = new TaskCompletionSource<(IReadOnlyList<WorkerId> WorkerIds, DateTimeOffset PurgedAt)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var workerId = WorkerId.New();
+        var deferredPurgeInterval = TimeSpan.FromMilliseconds(600);
         var originallyScheduled = CreateWorker(
             "retention.deferred-deadline.original",
             purgeInterval: TimeSpan.FromMilliseconds(50),
             workerId: workerId);
         var deferred = CreateWorker(
             "retention.deferred-deadline.replacement",
-            purgeInterval: TimeSpan.FromMilliseconds(600),
+            purgeInterval: deferredPurgeInterval,
             workerId: workerId);
         using var scheduler = new WorkerRetentionScheduler(
             index,
             WorkSystemRetentionConfiguration.Default,
             (workerIds, _) =>
             {
-                purged.TrySetResult(workerIds);
+                purged.TrySetResult((workerIds, DateTimeOffset.UtcNow));
                 return workerIds.Count;
             });
         scheduler.Schedule(originallyScheduled);
+        var earliestDeferredPurge = DateTimeOffset.UtcNow + deferredPurgeInterval;
         scheduler.ScheduleDeferred(deferred);
         scheduler.Start();
 
-        var prematurePurge = await Task.WhenAny(
-            purged.Task,
-            Task.Delay(TimeSpan.FromMilliseconds(250)));
-
-        Assert.NotSame(purged.Task, prematurePurge);
-        var purgedWorkerIds = await purged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var (purgedWorkerIds, purgedAt) = await purged.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await scheduler.Stop(CancellationToken.None);
+        Assert.True(purgedAt >= earliestDeferredPurge,
+            $"Worker was purged at {purgedAt:O}, before the deferred deadline {earliestDeferredPurge:O}.");
         Assert.Equal(workerId, Assert.Single(purgedWorkerIds));
     }
 
