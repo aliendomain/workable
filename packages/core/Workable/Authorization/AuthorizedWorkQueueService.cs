@@ -145,16 +145,10 @@ internal sealed class AuthorizedWorkQueueService(
                         canViewDiagnostics));
             }
 
-            var completion = WorkProfileAccessFilter.Apply(
+            // Read permission already permits retained messages; diagnostics filtering still applies.
+            return WorkProfileAccessFilter.Apply(
                 await inner.WaitForCompletion<TOutput>(cancellationToken),
                 canViewDiagnostics);
-            completion = completion with
-            {
-                Messages = WorkMessageAccessFilter.Apply(
-                    completion.Messages,
-                    canRead || canViewDiagnostics),
-            };
-            return completion;
         }
     }
 }

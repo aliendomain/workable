@@ -59,8 +59,10 @@ public class BaselineProfilingTeardownBenchmarks
 
         // BenchmarkDotNet collects before iteration setup. This fixture allocates a large live activity graph,
         // so collect once more outside the measurement to keep setup-triggered GC work out of UnregisterSystem.
+        // codeql[cs/call-to-gc] Intentional benchmark setup, outside the measured teardown operation.
         GC.Collect();
         GC.WaitForPendingFinalizers();
+        // codeql[cs/call-to-gc] Collect finalized setup objects before measuring teardown.
         GC.Collect();
     }
 

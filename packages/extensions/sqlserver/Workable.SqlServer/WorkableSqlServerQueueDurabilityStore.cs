@@ -1442,7 +1442,7 @@ WHERE RunId = @RunId;
         Add(command, "@ConcurrencyMaximumCapacity", GetPersistentConcurrencyMaximumCapacity(request, hasPersistentConcurrency));
         var subjectId = request.Idempotency?.SubjectId ?? request.Input?.SubjectId;
         Add(command, "@SubjectType", subjectId?.Type);
-        Add(command, "@SubjectValue", subjectId?.Value);
+        Add(command, "@SubjectValue", subjectId is { } subject ? subject.Value : null);
         Add(command, "@ConcurrencyType", request.Input?.ConcurrencyKey?.Type);
         Add(command, "@ConcurrencyValue", request.Input?.ConcurrencyKey?.Value);
         Add(command, "@InputJson", Serialize(request.Input));
@@ -1824,7 +1824,7 @@ VALUES
             GetPersistentConcurrencyScope(request, hasPersistentConcurrency),
             GetPersistentConcurrencyMaximumCapacity(request, hasPersistentConcurrency),
             subjectId?.Type,
-            subjectId?.Value,
+            subjectId is { } subject ? subject.Value : null,
             request.Input?.ConcurrencyKey?.Type,
             request.Input?.ConcurrencyKey?.Value,
             Serialize(request.Input),

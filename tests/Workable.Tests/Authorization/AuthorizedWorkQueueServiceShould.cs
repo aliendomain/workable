@@ -207,10 +207,25 @@ public sealed class AuthorizedWorkQueueServiceShould
         var outcome = await queue.Enqueue(
             visible.Definition.Name,
             WorkInput.FromJson("\"not-an-object\""));
+        var typedOutcome = await queue.Enqueue(visible.Definition.Name, "not-an-object");
 
         Assert.Equal(WorkQueueStatus.Invalid, outcome.QueueOutcome.Status);
         Assert.Contains(outcome.QueueOutcome.Messages, message => message.Code == "workable.authorization.operate_requirement_input_invalid");
+        Assert.Equal(WorkQueueStatus.Invalid, typedOutcome.QueueOutcome.Status);
+        Assert.Contains(typedOutcome.QueueOutcome.Messages, message => message.Code == "workable.authorization.operate_requirement_input_invalid");
         Assert.Empty(inner.Calls);
+    }
+
+    [Fact]
+    public async Task PreserveNullInputThroughTheAuthorizedGenericOverload()
+    {
+        var visible = CreateRegisteredWork("queue.null-input", authorize => authorize.AllowQueueToGroups("runners"));
+        var queue = CreateQueueService(["runners"], [visible], out _, out var inner);
+
+        var handle = await queue.Enqueue<QueueInput?>(visible.Definition.Name, null);
+
+        Assert.True(handle.QueueOutcome.IsAccepted);
+        Assert.Null(Assert.Single(inner.Calls).Input);
     }
 
     [Fact]
@@ -367,11 +382,18 @@ public sealed class AuthorizedWorkQueueServiceShould
             "System.InvalidOperationException: retained detail");
         inner.Completion = new WorkCompletion(WorkCompletionStatus.Failed, worker, output, [exception]);
 
-        var completion = await (await queue.Enqueue(visible.Definition.Name)).WaitForCompletion();
+        var handle = await queue.Enqueue(visible.Definition.Name);
+        var completion = await handle.WaitForCompletion();
+        var typedCompletion = await handle.WaitForCompletion<string>();
 
         Assert.Same(worker, completion.Worker);
         Assert.Same(output, completion.Output);
         Assert.Same(exception, Assert.Single(completion.Messages));
+        Assert.Equal(WorkCompletionStatus.Failed, typedCompletion.Status);
+        Assert.Same(worker, typedCompletion.Worker);
+        Assert.Equal("retained completion output", typedCompletion.Output);
+        Assert.Same(output, typedCompletion.RawOutput);
+        Assert.Same(exception, Assert.Single(typedCompletion.Messages));
     }
 
     [Fact]

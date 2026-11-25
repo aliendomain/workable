@@ -43,7 +43,6 @@ import {
   useConsoleRealtimeEventStream,
 } from "@/components/features/console/realtime";
 import type { Loadable, OverviewScope } from "@/components/features/console/types";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";

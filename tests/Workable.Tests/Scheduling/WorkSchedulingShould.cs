@@ -6,6 +6,116 @@ namespace Workable.Tests;
 [Trait("Category", "Scheduling")]
 public sealed class WorkSchedulingShould
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReturnEmptyReadsAndUnavailableWritesWhenSchedulingIsDisabled(bool registerStore)
+    {
+        var services = new ServiceCollection();
+        if (registerStore)
+        {
+            services.AddSingleton<IWorkScheduleStore>(new InMemoryScheduleStore());
+        }
+        await using var provider = services.AddWorkableSystem(builder => builder
+            .RequireAuthorization(false)
+            .AddWork(WorkDefinition.Create("disabled.schedule"), (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider();
+        var schedules = provider.GetRequiredService<IWorkSystemRegistry>().Default.Schedules;
+        var id = WorkScheduleId.New();
+
+        Assert.Null(await schedules.Get(id));
+        Assert.Empty((await schedules.List()).Schedules);
+        Assert.Empty((await schedules.ListUpcoming()).Schedules);
+        Assert.Empty((await schedules.ListOccurrences(id)).Occurrences);
+        var overview = await schedules.GetOverview();
+        Assert.Empty(overview.Recent.Schedules);
+        Assert.Empty(overview.Upcoming.Schedules);
+        Assert.Null(overview.SelectedSchedule);
+        Assert.Empty(overview.Occurrences);
+        Assert.Equal(WorkScheduleCancellationStatus.Unavailable, (await schedules.Cancel(id)).Status);
+        var timing = WorkScheduleTiming.Once(DateTimeOffset.UtcNow.AddHours(1));
+        Assert.Equal(WorkScheduleCreationStatus.Unavailable, (await schedules.Create<string?>("disabled.schedule", null, timing)).Status);
+        Assert.Equal(WorkScheduleCreationStatus.Unavailable, (await schedules.Create("disabled.schedule", "payload", timing)).Status);
+    }
+
+    [Theory]
+    [InlineData("timing", "workable.schedule.timing_required", "timing")]
+    [InlineData("zone", "workable.schedule.cron_invalid", "timing.timeZoneId")]
+    public async Task RejectIncompleteTimingWithoutPersistingTheSchedule(string missing, string expectedCode, string expectedTarget)
+    {
+        var store = new InMemoryScheduleStore();
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddWorkableSystem(builder => builder.RequireAuthorization(false).EnableScheduling()
+                .AddWork(WorkDefinition.Create("incomplete.timing"), (_, _, _) => Task.FromResult(WorkExecutionResult.Success())))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var timing = missing == "timing" ? null : new WorkScheduleTiming(DateTimeOffset.UtcNow.AddHours(1), CronExpression: "* * * * *");
+
+        var outcome = await system.Schedules.Create(new WorkScheduleRequest("incomplete.timing", timing!));
+
+        Assert.Equal(WorkScheduleCreationStatus.Invalid, outcome.Status);
+        Assert.Contains(outcome.Messages, message => message.Code == expectedCode && message.Target == expectedTarget);
+        Assert.Empty(await store.List(new(null)));
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("missing.definition")]
+    [InlineData("hidden.definition")]
+    public async Task HideUnknownAndUndiscoverableDefinitionsDuringScheduleCreation(string name)
+    {
+        var store = new InMemoryScheduleStore();
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddWorkableSystem(builder => builder.RequireAuthorization().EnableScheduling()
+                .AddWork(WorkDefinition.Create("hidden.definition"), (_, _, _) => Task.FromResult(WorkExecutionResult.Success()),
+                    configure: null, authorize: authorization => authorization.AllowQueueToGroups("hidden-runners")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var session = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess, new WorkActor("outsider"), isAuthenticated: true));
+
+        var outcome = await session.Schedules.Create<string?>(name, null, WorkScheduleTiming.Once(DateTimeOffset.UtcNow.AddHours(1)));
+
+        Assert.Equal(WorkScheduleCreationStatus.NotFound, outcome.Status);
+        Assert.Null(outcome.Schedule);
+        Assert.Empty(await store.List(new(null)));
+        Assert.Equal(WorkScheduleCancellationStatus.NotFound, (await session.Schedules.Cancel(WorkScheduleId.New())).Status);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task RequireOperateAllToCancelOrphansAndReadAllToReturnTheirDetails(bool canOperate, bool canRead)
+    {
+        var store = new InMemoryScheduleStore();
+        var record = ScheduleRecord("removed.definition", WorkScheduleTiming.Once(DateTimeOffset.UtcNow.AddHours(1)),
+            new WorkActor("creator"), WorkScheduleExecutionGrant.Unrestricted);
+        Assert.Equal(WorkScheduleStoreCreationStatus.Accepted, await store.Create(StoreRequest(record)));
+        var groups = new HashSet<string>();
+        if (canOperate) { groups.Add("operators"); }
+        if (canRead) { groups.Add("readers"); }
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IWorkScheduleStore>(store)
+            .AddSingleton<IWorkAuthorizationGroupProvider>(new MutableGroupProvider(groups))
+            .AddWorkableSystem(builder => builder.RequireAuthorization().EnableScheduling()
+                .ConfigureAuthorization(authorization => authorization.AllowOperateAllWorkToGroups("operators").AllowReadAllWorkToGroups("readers")))
+            .BuildServiceProvider();
+        var system = provider.GetRequiredService<IWorkSystemRegistry>().Default;
+        await system.Start();
+        var session = await system.CreateSession(WorkRequestContext.Create(WorkInvocationChannel.InProcess, new WorkActor("caller"), isAuthenticated: true));
+
+        var overview = await session.Schedules.GetOverview(new(record.Schedule.Id));
+        var outcome = await session.Schedules.Cancel(record.Schedule.Id);
+
+        Assert.Equal(canOperate ? WorkScheduleCancellationStatus.Accepted : WorkScheduleCancellationStatus.NotFound, outcome.Status);
+        Assert.Equal(canRead, overview.SelectedSchedule is not null);
+        Assert.Equal(canRead, outcome.Schedule is not null);
+        Assert.Equal(canOperate ? WorkScheduleStatus.Canceled : WorkScheduleStatus.Active, (await store.Get(new(null, record.Schedule.Id)))!.Schedule.Status);
+    }
+
     [Fact]
     public async Task DispatchOneTimeWorkByNameUsingTheLatestDefinition()
     {
@@ -579,7 +689,7 @@ public sealed class WorkSchedulingShould
     {
         var store = new InMemoryScheduleStore();
         var executions = new List<(WorkerId WorkerId, bool RecurrenceEnabled)>();
-        var executionSignal = new SemaphoreSlim(0);
+        using var executionSignal = new SemaphoreSlim(0);
         await using var provider = new ServiceCollection()
             .AddSingleton<IWorkScheduleStore>(store)
             .AddWorkableSystem(builder => builder
@@ -1142,9 +1252,12 @@ public sealed class WorkSchedulingShould
         var manualOccurrence = await WaitForOccurrence(store, manual.Schedule!.Id);
         var autoCancelOccurrence = await WaitForOccurrence(store, autoCancel.Schedule!.Id);
         var recurringOccurrence = await WaitForOccurrence(store, recurring.Schedule!.Id);
-        await WaitForWorkerState(system, manualOccurrence.WorkerId!.Value, WorkerState.Failed);
-        await WaitForWorkerState(system, autoCancelOccurrence.WorkerId!.Value, WorkerState.Canceled);
-        await WaitForWorkerState(system, recurringOccurrence.WorkerId!.Value, WorkerState.Failed);
+        var manualWorkerId = Assert.IsType<WorkerId>(manualOccurrence.WorkerId);
+        var autoCancelWorkerId = Assert.IsType<WorkerId>(autoCancelOccurrence.WorkerId);
+        var recurringWorkerId = Assert.IsType<WorkerId>(recurringOccurrence.WorkerId);
+        await WaitForWorkerState(system, manualWorkerId, WorkerState.Failed);
+        await WaitForWorkerState(system, autoCancelWorkerId, WorkerState.Canceled);
+        await WaitForWorkerState(system, recurringWorkerId, WorkerState.Failed);
         await TestEventually.Until(
             async () => (await store.ListOccurrences(new(null, recurring.Schedule.Id))).Count >= 2,
             "Expected the recurring schedule to dispatch again after a failed worker.");
@@ -1152,8 +1265,8 @@ public sealed class WorkSchedulingShould
         var active = await system.Schedules.Get(recurring.Schedule.Id);
 
         Assert.Equal(WorkScheduleStatus.Active, active!.Status);
-        Assert.Equal(WorkerState.Failed, (await system.Query.Worker(manualOccurrence.WorkerId.Value))!.State);
-        Assert.Equal(WorkerState.Canceled, (await system.Query.Worker(autoCancelOccurrence.WorkerId.Value))!.State);
+        Assert.Equal(WorkerState.Failed, (await system.Query.Worker(manualWorkerId))!.State);
+        Assert.Equal(WorkerState.Canceled, (await system.Query.Worker(autoCancelWorkerId))!.State);
         await system.Schedules.Cancel(recurring.Schedule.Id);
     }
 
@@ -1626,7 +1739,7 @@ public sealed class WorkSchedulingShould
             CompleteFailures = 1,
             CleanupFailures = 1,
         };
-        var executionSignal = new SemaphoreSlim(0);
+        using var executionSignal = new SemaphoreSlim(0);
         var executions = 0;
         await using var provider = new ServiceCollection()
             .AddSingleton<IWorkScheduleStore>(store)

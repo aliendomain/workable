@@ -1474,6 +1474,7 @@ public sealed class WorkSystemAuthorizationConfigurationTests
     {
         var actor = new WorkActor("legacy-user");
 #pragma warning disable CS0618
+        // codeql[cs/call-to-obsolete-method] Verify backward compatibility of legacy authorization snapshots.
         var legacy = WorkAuthorizationSnapshot.Create(actor, groups: null, readableDefinitionIds: null);
 #pragma warning restore CS0618
         var scoped = WorkAuthorizationSnapshot.CreateForSystem(
